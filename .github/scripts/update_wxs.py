@@ -20,7 +20,7 @@ def update_wxs_file(wxs_path):
     content = re.sub(r'UpgradeCode="PUT-GUID-HERE"', f'UpgradeCode="{upgrade_guid}"', content)
     content = re.sub(r'Guid="PUT-GUID-HERE"', f'Guid="{component_guid}"', content, count=1)
     content = re.sub(r'Guid="PUT-GUID-HERE"', f'Guid="{uninstall_guid}"', content, count=1)
-    content = re.sub(r'Key="Software\\\\YourName\\\\rxdl"', 'Key="Software\\TharukRenuja\\rxdl"', content)
+    content = re.sub(r'Key="Software\\\\YourName\\\\rxdl"', 'Key="Software\\\\TharukRenuja\\\\rxdl"', content)
     
     # Write the updated content back to the file
     with open(wxs_path, 'w') as file:

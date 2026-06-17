@@ -33,13 +33,6 @@ display-name = "rxdl"
 short-version = "0.1.0"
 long-version = "0.1.0"
 frameworks = ["CoreFoundation", "Foundation"]
-name = "rxdl"
-identifier = "com.tharukrj.rxdl"
-version = "0.1.0"
-display-name = "rxdl"
-short-version = "0.1.0"
-long-version = "0.1.0"
-frameworks = ["CoreFoundation", "Foundation"]
 
 [[bin]]
 name = "rxdl"
