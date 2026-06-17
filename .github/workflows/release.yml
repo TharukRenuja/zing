@@ -5,117 +5,132 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-jobs:
-  build:
-    name: ${{ matrix.target }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            ext: ""
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            ext: ""
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-            ext: ""
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-20.04
-            ext: ""
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            ext: ""
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            ext: ""
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            ext: ".exe"
+env:
+  CARGO_TERM_COLOR: always
 
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Install cargo tools
+        run: |
+          cargo install cargo-deb || echo "Failed to install cargo-deb"
+          cargo install cargo-generate-rpm || echo "Failed to install cargo-generate-rpm"
+
+      - name: Build and Package
+        run: |
+          cargo build --release
+          cargo deb
+          cargo generate-rpm
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/release/rxdl artifacts/rxdl-linux-amd64
+          cp target/debian/*.deb artifacts/ || true
+          cp target/generate-rpm/*.rpm artifacts/ || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          targets: ${{ matrix.target }}
+          name: linux-artifacts
+          path: artifacts/
 
-      - uses: Swatinem/rust-cache@v2
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Install cross-compile deps (Linux aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate GUIDs and update WIX file
+        shell: pwsh
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          $upgradeGuid = [guid]::NewGuid().ToString()
+          $componentGuid = [guid]::NewGuid().ToString()
+          $uninstallGuid = [guid]::NewGuid().ToString()
+          $content = Get-Content "wix/rxdl.wxs"
+          $content = $content -replace 'Manufacturer="YourName"', 'Manufacturer="TharukRenuja"'
+          $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode='" + $upgradeGuid + "'"
+          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid='" + $componentGuid + "'"
+          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid='" + $uninstallGuid + "'"
+          $content = $content -replace 'Key=\"Software\\\\YourName\\\\rxdl\"', 'Key="Software\\TharukRenuja\\rxdl"'
+          $content | Set-Content "wix/rxdl.wxs"
+          echo "UPGRADE_GUID=$upgradeGuid" >> $env:GITHUB_ENV
+          echo "COMPONENT_GUID=$componentGuid" >> $env:GITHUB_ENV
+          echo "UNINSTALL_GUID=$uninstallGuid" >> $env:GITHUB_ENV
 
-      - name: Install cargo-deb (Linux)
-        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-20.04'
-        run: cargo install cargo-deb
+      - name: Install cargo-wix
+        run: cargo install cargo-wix || echo "Failed to install cargo-wix"
 
-      - name: Install cargo-generate-rpm (Linux)
-        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-20.04'
-        run: cargo install cargo-generate-rpm
+      - name: Build and Package
+        run: cargo wix --nocapture --target-dir target/wix
 
-      - name: Install cargo-bundle (macOS)
-        if: matrix.os == 'macos-latest'
-        run: cargo install cargo-bundle
-
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Prepare archive
-        shell: bash
+      - name: Prepare artifacts
         run: |
-          cd target/${{ matrix.target }}/release
-          name="rxdl-${{ matrix.target }}-${{ matrix.os }}"
-          mkdir -p "$name"
-          cp rxdl${{ matrix.ext }} "$name/"
-          cp "${{ github.workspace }}/LICENSE" "$name/"
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a -tzip "${name}.zip" "$name"
-          else
-            tar czf "${name}.tar.gz" "$name"
-          fi
-          mv "${name}.zip" "${name}.tar.gz" "${{ github.workspace }}/"
+          mkdir artifacts
+          Copy-Item target\wix\*.msi artifacts\ || echo "No MSI package found"
+          Copy-Item target\release\rxdl.exe artifacts\rxdl-windows-amd64.exe
 
-      - name: Build .deb package (Linux)
-        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-20.04'
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: artifacts/
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle || echo "Failed to install cargo-bundle"
+
+      - name: Build and Bundle
+        run: cargo bundle --release
+
+      - name: Prepare artifacts
         run: |
-          cargo deb --target ${{ matrix.target }} --no-build --no-strip
-          mv target/${{ matrix.target }}/debian/*.deb ./
+          mkdir artifacts
+          cp target/release/bundle/osx/rxdl.app artifacts/
+          cp target/release/rxdl artifacts/rxdl-macos-amd64
 
-      - name: Build .rpm package (Linux)
-        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-20.04'
-        run: |
-          cargo generate-rpm --target ${{ matrix.target }} --no-build --no-strip
-          mv target/${{ matrix.target }}/generate-rpm/*.rpm ./
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: artifacts/
 
-      - name: Install create-dmg (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install create-dmg
+  release:
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-      - name: Install cargo-wix (Windows)
-        if: matrix.os == 'windows-latest'
-        run: cargo install cargo-wix
-
-      - name: Create Windows installer (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          cargo wix --no-build --target ${{ matrix.target }} --wxs wix/rxdl.wxs
-          mv target/wix/*.msi ./
-          cp target/${{ matrix.target }}/release/rxdl.exe ./
-
-      - uses: softprops/action-gh-release@v2
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            rxdl-*.tar.gz
-            rxdl-*.zip
-            *.deb
-            *.rpm
-            *.app
-            *.msi
-            *.exe
+            artifacts/linux-artifacts/*
+            artifacts/windows-artifacts/*
+            artifacts/macos-artifacts/*
+            LICENSE
           generate_release_notes: true

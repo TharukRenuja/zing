@@ -1,6 +1,6 @@
 [package.metadata.wix]
-path-guid = "PUT-GUID-HERE"
-upgrade-guid = "PUT-GUID-HERE"
+path-guid = "637329ae-96ef-4783-808f-1ea9b93ac8ae"
+upgrade-guid = "9469988e-7729-41cc-bad7-f5f0debe607f"
 license = false
 eula = false
 
@@ -8,7 +8,7 @@ eula = false
 name = "rxcli"
 license = "GPL-3.0-only"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [[bin]]
 name = "rxdl"

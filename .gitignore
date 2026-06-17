@@ -20,4 +20,23 @@ Cargo.lock
 *.log
 *.bak
 
+# Scripts
+.github/scripts/
+
+# Windows build
+wix/*.obj
+wix/*.pdb
+wix/*.pch
+
+# MacOS build
+!target/release/bundle/osx/rxdl.app
+
+# Debug files
+.debug
+.pdb
+
+# OS-specific files
+.DS_Store
+.Trash
+
 

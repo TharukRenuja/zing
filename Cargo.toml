@@ -2,3 +2,6 @@
 members = ["rxcore", "rxcli", "rxdaemon", "rxext"]
 resolver = "2"
 default-members = ["rxcli"]
+
+[workspace.dependencies]
+cargo-wix = "0.3"
