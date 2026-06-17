@@ -85,7 +85,7 @@ jobs:
         run: cargo install cargo-bundle || echo "Failed to install cargo-bundle"
 
       - name: Build and Bundle
-        run: cd rxcli && cargo bundle --release --bin rxdl --no-default-features
+        run: cd rxcli && cargo bundle --release --bin rxdl --no-default-features && cp target/release/bundle/osx/rxdl.app artifacts/rxdl-macos-app && cp target/release/rxdl artifacts/rxdl-macos-amd64
 
       - name: Prepare artifacts
         run: |
