@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.target }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ""
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ""
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            ext: ""
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-20.04
+            ext: ""
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            ext: ""
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            ext: ""
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross-compile deps (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Install cargo-deb (Linux)
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-20.04'
+        run: cargo install cargo-deb
+
+      - name: Install cargo-generate-rpm (Linux)
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-20.04'
+        run: cargo install cargo-generate-rpm
+
+      - name: Install cargo-bundle (macOS)
+        if: matrix.os == 'macos-latest'
+        run: cargo install cargo-bundle
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare archive
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          name="rxdl-${{ matrix.target }}-${{ matrix.os }}"
+          mkdir -p "$name"
+          cp rxdl${{ matrix.ext }} "$name/"
+          cp "${{ github.workspace }}/LICENSE" "$name/"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a -tzip "${name}.zip" "$name"
+          else
+            tar czf "${name}.tar.gz" "$name"
+          fi
+          mv "${name}.zip" "${name}.tar.gz" "${{ github.workspace }}/"
+
+      - name: Build .deb package (Linux)
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-20.04'
+        run: |
+          cargo deb --target ${{ matrix.target }} --no-build --no-strip
+          mv target/${{ matrix.target }}/debian/*.deb ./
+
+      - name: Build .rpm package (Linux)
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-20.04'
+        run: |
+          cargo generate-rpm --target ${{ matrix.target }} --no-build --no-strip
+          mv target/${{ matrix.target }}/generate-rpm/*.rpm ./
+
+      - name: Install create-dmg (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install create-dmg
+
+      - name: Install cargo-wix (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo install cargo-wix
+
+      - name: Create Windows installer (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          cargo wix --no-build --target ${{ matrix.target }} --wxs wix/rxdl.wxs
+          mv target/wix/*.msi ./
+          cp target/${{ matrix.target }}/release/rxdl.exe ./
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            rxdl-*.tar.gz
+            rxdl-*.zip
+            *.deb
+            *.rpm
+            *.app
+            *.msi
+            *.exe
+          generate_release_notes: true

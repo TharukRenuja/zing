@@ -1,0 +1,29 @@
+[package.metadata.wix]
+path-guid = "PUT-GUID-HERE"
+upgrade-guid = "PUT-GUID-HERE"
+license = false
+eula = false
+
+[package]
+name = "rxcli"
+license = "GPL-3.0-only"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "rxdl"
+path = "src/main.rs"
+
+[dependencies]
+rxcore = { path = "../rxcore" }
+rxext = { path = "../rxext" }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+indicatif = "0.18"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+url = "2"
+serde_json = "1"
+color-eyre = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+cargo-wix = "0.3"

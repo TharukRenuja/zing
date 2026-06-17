@@ -1,0 +1,4 @@
+[workspace]
+members = ["rxcore", "rxcli", "rxdaemon", "rxext"]
+resolver = "2"
+default-members = ["rxcli"]

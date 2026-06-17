@@ -1,0 +1,3 @@
+[build]
+# Required for reqwest HTTP/3 (quinn) support
+rustflags = ["--cfg", "reqwest_unstable"]

@@ -1,0 +1,23 @@
+# Rust
+/target
+Cargo.lock
+
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product Id="*" Name="rxdl" Language="1033" Version="0.1.0" Manufacturer="rxdl" UpgradeCode="PUT-GUID-HERE">
+        <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+
+        <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+
+        <MediaTemplate EmbedCab="yes" />
+
+        <Feature Id="ProductFeature" Title="rxdl" Level="1">
+            <ComponentGroupRef Id="rxdl" />
+        </Feature>
+    </Product>
+
+    <Fragment>
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="ProgramFilesFolder">
+                <Directory Id="INSTALLDIR" Name="rxdl" />
+            </Directory>
+        </Directory>
+    </Fragment>
+
+    <Fragment>
+        <ComponentGroup Id="rxdl" Directory="INSTALLDIR">
+            <Component Id="rxdl.exe" Guid="PUT-GUID-HERE">
+                <File Id="rxdl.exe" Source="target\release\rxdl.exe" KeyPath="yes" />
+            </Component>
+        </ComponentGroup>
+    </Fragment>
+</Wix>
