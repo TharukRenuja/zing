@@ -20,9 +20,6 @@ Cargo.lock
 *.log
 *.bak
 
-# Scripts
-.github/scripts/
-
 # Windows build
 wix/*.obj
 wix/*.pdb

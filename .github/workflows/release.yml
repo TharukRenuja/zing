@@ -27,9 +27,8 @@ jobs:
 
       - name: Build and Package
         run: |
-          cargo build --release
-          cargo deb
-          cargo generate-rpm
+          cd rxcli && cargo build --release
+          cd .. && cargo deb --manifest-path rxcli/Cargo.toml
 
       - name: Prepare artifacts
         run: |
@@ -63,8 +62,11 @@ jobs:
           
           $content = $content -replace 'Manufacturer="YourName"', 'Manufacturer="TharukRenuja"'
           $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode=\"$upgradeGuid\""
-          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid=\"$componentGuid\""
-          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid=\"$uninstallGuid\"
+          $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode=`"$upgradeGuid`""
+          $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode=`"$upgradeGuid`""
+          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid=`"$componentGuid`""
+          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid=`"$uninstallGuid`""
+          $content = $content -replace 'Key="Software\\\\YourName\\\\rxdl"', 'Key="Software\\TharukRenuja\\rxdl"'  # Corrected line  # Fixed and corrected  # Correcting the missing quote
           $content = $content -replace 'Key="Software\\\\YourName\\\\rxdl"', 'Key="Software\\TharukRenuja\\rxdl"'
           
           $content | Set-Content -Path "wix/rxdl.wxs"
@@ -103,7 +105,7 @@ jobs:
         run: cargo install cargo-bundle || echo "Failed to install cargo-bundle"
 
       - name: Build and Bundle
-        run: cargo bundle --release --bin rxdl
+        run: cd rxcli && cargo bundle --release --bin rxdl
 
       - name: Prepare artifacts
         run: |

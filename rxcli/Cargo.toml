@@ -13,8 +13,8 @@ authors = ["Tharuk Renuja"]
 license = "GPL-3.0-only"
 
 [package.metadata.deb]
-copyright = "© 2026 Tharuk Renuja"
-maintainer = "Tharuk Renuja"
+copyright = "© 2026 Tharuk Renuja <your.email@example.com>"
+maintainer = "Tharuk Renuja <your.email@example.com>"
 section = "net"
 depends = "libc6, libssl3"
 extended-description = """
@@ -24,6 +24,10 @@ Features include segmented concurrent downloads, daemon mode, and adaptive conne
 assets = [
     ["target/release/rxdl", "/usr/bin/rxdl", "755"]
 ]
+
+[package.metadata.deb.package]
+name = "rxdl"
+version = "0.1.0"
 
 [[bin]]
 name = "rxdl"
