@@ -58,13 +58,17 @@ jobs:
           $upgradeGuid = [guid]::NewGuid().ToString()
           $componentGuid = [guid]::NewGuid().ToString()
           $uninstallGuid = [guid]::NewGuid().ToString()
-          $content = Get-Content "wix/rxdl.wxs"
+          
+          $content = Get-Content -Path "wix/rxdl.wxs" -Raw
+          
           $content = $content -replace 'Manufacturer="YourName"', 'Manufacturer="TharukRenuja"'
-          $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode='" + $upgradeGuid + "'"
-          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid='" + $componentGuid + "'"
-          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid='" + $uninstallGuid + "'"
-          $content = $content -replace 'Key=\"Software\\\\YourName\\\\rxdl\"', 'Key="Software\\TharukRenuja\\rxdl"'
-          $content | Set-Content "wix/rxdl.wxs"
+          $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode=\"$upgradeGuid\""
+          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid=\"$componentGuid\""
+          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid=\"$uninstallGuid\"
+          $content = $content -replace 'Key="Software\\\\YourName\\\\rxdl"', 'Key="Software\\TharukRenuja\\rxdl"'
+          
+          $content | Set-Content -Path "wix/rxdl.wxs"
+          
           echo "UPGRADE_GUID=$upgradeGuid" >> $env:GITHUB_ENV
           echo "COMPONENT_GUID=$componentGuid" >> $env:GITHUB_ENV
           echo "UNINSTALL_GUID=$uninstallGuid" >> $env:GITHUB_ENV
