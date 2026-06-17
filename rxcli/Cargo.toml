@@ -5,29 +5,41 @@ license = false
 eula = false
 
 [package]
-name = "rxcli"
+name = "rxdl"
 version = "0.1.0"
 edition = "2021"
-description = "A simple, modern HTTP downloader"
+description = "A modern HTTP downloader with segmented concurrent downloads"
 authors = ["Tharuk Renuja"]
 license = "GPL-3.0-only"
 
 [package.metadata.deb]
-copyright = "© 2026 Tharuk Renuja <your.email@example.com>"
-maintainer = "Tharuk Renuja <your.email@example.com>"
+copyright = "© 2026 Tharuk Renuja"
+maintainer = "Tharuk Renuja"
 section = "net"
 depends = "libc6, libssl3"
+assets = [
+    ["target/release/rxdl", "/usr/bin/rxdl", "755"]
+]
 extended-description = """
 A modern HTTP downloader with support for HTTP/1.1, HTTP/2, and HTTP/3.
 Features include segmented concurrent downloads, daemon mode, and adaptive connection management.
 """
-assets = [
-    ["target/release/rxdl", "/usr/bin/rxdl", "755"]
-]
 
-[package.metadata.deb.package]
+[package.metadata.bundle]
 name = "rxdl"
+identifier = "com.tharukrj.rxdl"
 version = "0.1.0"
+display-name = "rxdl"
+short-version = "0.1.0"
+long-version = "0.1.0"
+frameworks = ["CoreFoundation", "Foundation"]
+name = "rxdl"
+identifier = "com.tharukrj.rxdl"
+version = "0.1.0"
+display-name = "rxdl"
+short-version = "0.1.0"
+long-version = "0.1.0"
+frameworks = ["CoreFoundation", "Foundation"]
 
 [[bin]]
 name = "rxdl"

@@ -28,7 +28,7 @@ jobs:
       - name: Build and Package
         run: |
           cd rxcli && cargo build --release
-          cd .. && cargo deb --manifest-path rxcli/Cargo.toml
+          cd .. && cargo deb
 
       - name: Prepare artifacts
         run: |
@@ -52,28 +52,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Generate GUIDs and update WIX file
-        shell: pwsh
-        run: |
-          $upgradeGuid = [guid]::NewGuid().ToString()
-          $componentGuid = [guid]::NewGuid().ToString()
-          $uninstallGuid = [guid]::NewGuid().ToString()
-          
-          $content = Get-Content -Path "wix/rxdl.wxs" -Raw
-          
-          $content = $content -replace 'Manufacturer="YourName"', 'Manufacturer="TharukRenuja"'
-          $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode=\"$upgradeGuid\""
-          $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode=`"$upgradeGuid`""
-          $content = $content -replace 'UpgradeCode="PUT-GUID-HERE"', "UpgradeCode=`"$upgradeGuid`""
-          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid=`"$componentGuid`""
-          $content = $content -replace 'Guid="PUT-GUID-HERE"', "Guid=`"$uninstallGuid`""
-          $content = $content -replace 'Key="Software\\\\YourName\\\\rxdl"', 'Key="Software\\TharukRenuja\\rxdl"'  # Corrected line  # Fixed and corrected  # Correcting the missing quote
-          $content = $content -replace 'Key="Software\\\\YourName\\\\rxdl"', 'Key="Software\\TharukRenuja\\rxdl"'
-          
-          $content | Set-Content -Path "wix/rxdl.wxs"
-          
-          echo "UPGRADE_GUID=$upgradeGuid" >> $env:GITHUB_ENV
-          echo "COMPONENT_GUID=$componentGuid" >> $env:GITHUB_ENV
-          echo "UNINSTALL_GUID=$uninstallGuid" >> $env:GITHUB_ENV
+        run: python .github/scripts/update_wxs.py wix/rxdl.wxs && . .github/scripts/update_env_vars.sh
+        shell: bash
 
       - name: Install cargo-wix
         run: cargo install cargo-wix || echo "Failed to install cargo-wix"
@@ -109,7 +89,7 @@ jobs:
 
       - name: Prepare artifacts
         run: |
-          mkdir artifacts
+          mkdir -p artifacts
           cp target/release/bundle/osx/rxdl.app artifacts/
           cp target/release/rxdl artifacts/rxdl-macos-amd64
 
