@@ -1,8 +1,10 @@
 [package]
 name = "rxcore"
-license = "GPL-3.0-only"
 version = "0.1.0"
 edition = "2021"
+description = "Core functionality for the rxdl downloader"
+authors = ["Tharuk Renuja"]
+license = "GPL-3.0-only"
 
 [dependencies]
 rxext = { path = "../rxext" }

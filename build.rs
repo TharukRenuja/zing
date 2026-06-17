@@ -6,4 +6,7 @@ fn main() {
     println!("cargo:rustc-link-lib=crypto");
     println!("cargo:rustc-link-lib=z");
     println!("cargo:rustc-link-lib=iconv");
+    
+    // Ensure the Debian package metadata is correctly set
+    println!("cargo:package.metadata.deb.copyright = "© 2026 Tharuk Renuja"");
 }

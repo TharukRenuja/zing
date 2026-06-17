@@ -1,8 +1,10 @@
 [package]
 name = "rxdaemon"
-license = "GPL-3.0-only"
 version = "0.1.0"
 edition = "2021"
+description = "Daemon mode for the rxdl downloader"
+authors = ["Tharuk Renuja"]
+license = "GPL-3.0-only"
 
 [[bin]]
 name = "rxdaemon"

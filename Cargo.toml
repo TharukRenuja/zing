@@ -1,7 +1,7 @@
 [workspace]
-members = ["rxcore", "rxcli", "rxdaemon", "rxext"]
 resolver = "2"
+members = ["rxcore", "rxcli", "rxdaemon", "rxext"]
 default-members = ["rxcli"]
 
-[workspace.dependencies]
-cargo-wix = "0.3"
+[workspace.metadata.deb]
+copyright = "© 2026 Tharuk Renuja"
