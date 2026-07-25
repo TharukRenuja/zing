@@ -59,5 +59,5 @@ impl Config {
 
 fn default_config_path() -> Option<PathBuf> {
     let config_dir = dirs::config_dir()?;
-    Some(config_dir.join("rxdl").join("config.json"))
+    Some(config_dir.join("zing").join("config.json"))
 }

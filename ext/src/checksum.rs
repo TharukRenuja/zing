@@ -56,7 +56,7 @@ mod tests {
 
     #[test]
     fn test_hash_empty_string() {
-        let dir = std::path::PathBuf::from(std::env::temp_dir()).join("rxdl_test_checksum");
+        let dir = std::path::PathBuf::from(std::env::temp_dir()).join("zing_test_checksum");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("empty");
         std::fs::write(&path, b"").unwrap();
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn test_hash_known_content() {
-        let dir = std::path::PathBuf::from(std::env::temp_dir()).join("rxdl_test_checksum2");
+        let dir = std::path::PathBuf::from(std::env::temp_dir()).join("zing_test_checksum2");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("test.txt");
         std::fs::write(&path, b"Hello, World!").unwrap();
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn test_verify_file() {
-        let dir = std::path::PathBuf::from(std::env::temp_dir()).join("rxdl_test_verify");
+        let dir = std::path::PathBuf::from(std::env::temp_dir()).join("zing_test_verify");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("verify.txt");
         std::fs::write(&path, b"test data").unwrap();

@@ -7,10 +7,10 @@ use config::Config;
 use clap::Parser;
 use color_eyre::Result;
 use indicatif::{ProgressBar, ProgressStyle};
-use rxcore::downloader::DownloadTask;
-use rxcore::engine::event::{EngineEvent, EventBus};
-use rxext::checksum;
-use rxext::filename;
+use zing_core::downloader::DownloadTask;
+use zing_core::engine::event::{EngineEvent, EventBus};
+use zing_ext::checksum;
+use zing_ext::filename;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::path::PathBuf;
@@ -82,7 +82,7 @@ async fn run(args: Args) -> Result<()> {
     // Download mode — check for daemon proxy
     #[cfg(unix)]
     if daemon_client::daemon_is_running().await {
-        tracing::info!("rxdl daemon detected, proxying commands");
+        tracing::info!("zing daemon detected, proxying commands");
         let mut handles = Vec::new();
         for url_str in &args.urls {
             let params = serde_json::json!({
@@ -96,10 +96,10 @@ async fn run(args: Args) -> Result<()> {
                 "mirror": args.mirror,
                 "bwlimit": args.bwlimit,
             });
-            match daemon_client::send_request("rxdl.addUri", Some(params)).await {
+            match daemon_client::send_request("zing.addUri", Some(params)).await {
                 Ok(resp) => {
                     let id = resp.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let name = rxext::filename::from_url(url_str);
+                    let name = zing_ext::filename::from_url(url_str);
                     tracing::info!("Downloading: {name}");
                     #[cfg(unix)]
                     handles.push(tokio::spawn(async move {
@@ -183,7 +183,7 @@ async fn run(args: Args) -> Result<()> {
         let content = tokio::fs::read_to_string(path).await.map_err(|e| {
             color_eyre::eyre::eyre!("Cannot read metalink '{}': {e}", path)
         })?;
-        let files = rxext::metalink::parse_metalink_str(&content).map_err(|e| {
+        let files = zing_ext::metalink::parse_metalink_str(&content).map_err(|e| {
             color_eyre::eyre::eyre!("Failed to parse metalink '{}': {e}", path)
         })?;
         if let Some(entry) = files.into_iter().next() {
@@ -234,10 +234,10 @@ async fn run(args: Args) -> Result<()> {
                 let base = if i == 0 && metalink.is_some() {
                     metalink.as_ref().unwrap().filename.clone()
                 } else {
-                    rxext::filename::from_url(&url)
+                    zing_ext::filename::from_url(&url)
                 };
                 if base.is_empty() {
-                    rxext::filename::from_url(&url)
+                    zing_ext::filename::from_url(&url)
                 } else {
                     download_dir.join(base).to_string_lossy().to_string()
                 }
@@ -299,13 +299,13 @@ async fn run(args: Args) -> Result<()> {
                 }
 
                 if quit_requested.load(Ordering::Acquire) {
-                    let control_path = rxcore::storage::control::ControlFile::control_path(Path::new(&filename));
+                    let control_path = zing_core::storage::control::ControlFile::control_path(Path::new(&filename));
                     let _ = tokio::fs::remove_file(&control_path).await;
                     tracing::info!("Quit requested, cleaning up...");
                     break;
                 }
 
-                let control_path = rxcore::storage::control::ControlFile::control_path(Path::new(&filename));
+                let control_path = zing_core::storage::control::ControlFile::control_path(Path::new(&filename));
                 if control_path.exists() {
                     tracing::info!("Download paused. Send SIGCONT (fg) to resume, or Ctrl+C to quit.");
                     let _ = bus.emit(EngineEvent::Paused {
@@ -366,16 +366,16 @@ async fn run(args: Args) -> Result<()> {
 fn schedule_config_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("rxdl")
+        .join("zing")
         .join("schedule.json")
 }
 
 async fn run_daemon_start() -> Result<()> {
     let daemon_path = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(&p).join("rxdaemon"))
-        .unwrap_or_else(|_| PathBuf::from("rxdaemon"));
+        .map(|p| p.parent().unwrap_or(&p).join("zing-daemon"))
+        .unwrap_or_else(|_| PathBuf::from("zing-daemon"));
 
-    tracing::info!("Starting rxdl daemon: {}", daemon_path.display());
+    tracing::info!("Starting zing daemon: {}", daemon_path.display());
     let child = std::process::Command::new(&daemon_path)
         .spawn()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to start daemon: {e}"))?;
@@ -388,19 +388,19 @@ fn daemon_service_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("systemd")
         .join("user")
-        .join("rxdaemon.service")
+        .join("zing-daemon.service")
 }
 
 fn daemon_service_content() -> String {
     let daemon_path = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(&p).join("rxdaemon"))
-        .unwrap_or_else(|_| PathBuf::from("rxdaemon"))
+        .map(|p| p.parent().unwrap_or(&p).join("zing-daemon"))
+        .unwrap_or_else(|_| PathBuf::from("zing-daemon"))
         .to_string_lossy()
         .to_string();
 
     format!(
         r#"[Unit]
-Description=rxdl download daemon
+Description=zing download daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -445,12 +445,12 @@ async fn run_daemon_install() -> Result<()> {
             tracing::warn!("systemctl daemon-reload: {}", String::from_utf8_lossy(&out.stderr));
         }
         Err(e) => {
-            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user daemon-reload && systemctl --user enable --now rxdaemon.service");
+            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user daemon-reload && systemctl --user enable --now zing-daemon.service");
         }
     }
 
     let enable_output = tokio::process::Command::new("systemctl")
-        .args(["--user", "enable", "--now", "rxdaemon.service"])
+        .args(["--user", "enable", "--now", "zing-daemon.service"])
         .output()
         .await;
 
@@ -462,11 +462,11 @@ async fn run_daemon_install() -> Result<()> {
             tracing::warn!("systemctl enable: {}", String::from_utf8_lossy(&out.stderr));
         }
         Err(e) => {
-            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user enable --now rxdaemon.service");
+            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user enable --now zing-daemon.service");
         }
     }
 
-    tracing::info!("Daemon installed. Use 'rxdl daemon start' to run manually, or 'rxdl daemon uninstall' to remove.");
+    tracing::info!("Daemon installed. Use 'zing daemon start' to run manually, or 'zing daemon uninstall' to remove.");
     Ok(())
 }
 
@@ -475,7 +475,7 @@ async fn run_daemon_uninstall() -> Result<()> {
 
     // Try to stop/disable
     let disable = tokio::process::Command::new("systemctl")
-        .args(["--user", "disable", "--now", "rxdaemon.service"])
+        .args(["--user", "disable", "--now", "zing-daemon.service"])
         .output()
         .await;
 
@@ -487,7 +487,7 @@ async fn run_daemon_uninstall() -> Result<()> {
             tracing::warn!("systemctl disable: {}", String::from_utf8_lossy(&out.stderr));
         }
         Err(e) => {
-            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user disable --now rxdaemon.service");
+            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user disable --now zing-daemon.service");
         }
     }
 
@@ -510,7 +510,7 @@ async fn run_daemon_uninstall() -> Result<()> {
 
 async fn run_daemon_status() -> Result<()> {
     let output = tokio::process::Command::new("systemctl")
-        .args(["--user", "status", "rxdaemon.service"])
+        .args(["--user", "status", "zing-daemon.service"])
         .output()
         .await;
 
@@ -529,7 +529,7 @@ async fn run_daemon_status() -> Result<()> {
         }
         Err(e) => {
             println!("systemctl not found: {e}");
-            println!("Check manually: systemctl --user status rxdaemon.service");
+            println!("Check manually: systemctl --user status zing-daemon.service");
         }
     }
 
@@ -634,7 +634,7 @@ async fn run_schedule(_args: &Args, sched: &args::ScheduleArgs) -> Result<()> {
 fn config_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("rxdl")
+        .join("zing")
         .join("config.json")
 }
 
@@ -702,7 +702,7 @@ async fn run_config(conf: &args::ConfigArgs) -> Result<()> {
 async fn run_list() -> Result<()> {
     #[cfg(unix)]
     if daemon_client::daemon_is_running().await {
-        match daemon_client::send_request("rxdl.list", None).await {
+        match daemon_client::send_request("zing.list", None).await {
             Ok(resp) => {
                 let tasks = resp.get("tasks").and_then(|v| v.as_array()).map(|a| a.clone()).unwrap_or_default();
                 if tasks.is_empty() {
@@ -739,7 +739,7 @@ async fn run_list() -> Result<()> {
         #[cfg(not(unix))]
         return Ok(());
         #[cfg(unix)]
-        eprintln!("No daemon running. Start one with: rxdl daemon");
+        eprintln!("No daemon running. Start one with: zing daemon");
     }
     Ok(())
 }

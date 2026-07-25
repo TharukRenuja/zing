@@ -1,13 +1,13 @@
 [package]
-name = "rxcore"
+name = "zing-core"
 version = "0.1.0"
 edition = "2021"
-description = "Core functionality for the rxdl downloader"
+description = "Core functionality for the zing downloader"
 authors = ["Tharuk Renuja"]
 license = "GPL-3.0-only"
 
 [dependencies]
-rxext = { path = "../rxext" }
+zing-ext = { path = "../ext" }
 tokio = { version = "1", features = ["sync", "time", "signal", "rt", "fs", "io-util", "net", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

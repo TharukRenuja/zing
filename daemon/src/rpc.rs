@@ -1,6 +1,6 @@
 use crate::task_manager::TaskManager;
-use rxcore::engine::event::EngineEvent;
-use rxext::filename;
+use zing_core::engine::event::EngineEvent;
+use zing_ext::filename;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -31,11 +31,11 @@ pub async fn handle_request(
     manager: &TaskManager,
 ) -> RpcResponse {
     match req.method.as_str() {
-        "rxdl.addUri" => handle_add_uri(req.params, manager).await,
-        "rxdl.list" => handle_list(req.params, manager).await,
-        "rxdl.tellStatus" => handle_tell_status(req.params, manager).await,
-        "rxdl.pause" => handle_pause(req.params, manager).await,
-        "rxdl.remove" => handle_remove(req.params, manager).await,
+        "zing.addUri" => handle_add_uri(req.params, manager).await,
+        "zing.list" => handle_list(req.params, manager).await,
+        "zing.tellStatus" => handle_tell_status(req.params, manager).await,
+        "zing.pause" => handle_pause(req.params, manager).await,
+        "zing.remove" => handle_remove(req.params, manager).await,
         _ => RpcResponse {
             id: req.id,
             result: None,
@@ -48,7 +48,7 @@ pub async fn handle_request(
 }
 
 pub fn is_subscribe(method: &str) -> bool {
-    method == "rxdl.subscribe"
+    method == "zing.subscribe"
 }
 
 pub async fn handle_subscribe_and_stream(
@@ -332,7 +332,7 @@ mod tests {
             "url": "http://example.com/file",
             "filename": "/tmp/test",
         });
-        let req = make_req("rxdl.addUri", Some(params));
+        let req = make_req("zing.addUri", Some(params));
         let resp = handle_request(req, &mgr).await;
         assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
         let result = resp.result.unwrap();
@@ -344,7 +344,7 @@ mod tests {
     async fn test_handle_add_uri_missing_url() {
         let mgr = TaskManager::new();
         let params = json!({ "filename": "/tmp/test" });
-        let req = make_req("rxdl.addUri", Some(params));
+        let req = make_req("zing.addUri", Some(params));
         let resp = handle_request(req, &mgr).await;
         assert!(resp.error.is_some(), "expected error for missing url");
     }
@@ -352,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_list_empty() {
         let mgr = TaskManager::new();
-        let req = make_req("rxdl.list", None);
+        let req = make_req("zing.list", None);
         let resp = handle_request(req, &mgr).await;
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
@@ -365,7 +365,7 @@ mod tests {
         let mgr = TaskManager::new();
         mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
 
-        let req = make_req("rxdl.list", None);
+        let req = make_req("zing.list", None);
         let resp = handle_request(req, &mgr).await;
         let result = resp.result.unwrap();
         let tasks = result["tasks"].as_array().unwrap();
@@ -378,7 +378,7 @@ mod tests {
         let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
 
         let params = json!({ "id": id });
-        let req = make_req("rxdl.tellStatus", Some(params));
+        let req = make_req("zing.tellStatus", Some(params));
         let resp = handle_request(req, &mgr).await;
         assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
         let result = resp.result.unwrap();
@@ -389,7 +389,7 @@ mod tests {
     async fn test_handle_tell_status_not_found() {
         let mgr = TaskManager::new();
         let params = json!({ "id": 999 });
-        let req = make_req("rxdl.tellStatus", Some(params));
+        let req = make_req("zing.tellStatus", Some(params));
         let resp = handle_request(req, &mgr).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32000);
@@ -401,7 +401,7 @@ mod tests {
         let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
 
         let params = json!({ "id": id });
-        let req = make_req("rxdl.pause", Some(params));
+        let req = make_req("zing.pause", Some(params));
         let resp = handle_request(req, &mgr).await;
         let result = resp.result.unwrap();
         assert_eq!(result["status"], "paused");
@@ -413,7 +413,7 @@ mod tests {
         let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
 
         let params = json!({ "id": id });
-        let req = make_req("rxdl.remove", Some(params));
+        let req = make_req("zing.remove", Some(params));
         let resp = handle_request(req, &mgr).await;
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
@@ -426,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_unknown_method() {
         let mgr = TaskManager::new();
-        let req = make_req("rxdl.unknown", None);
+        let req = make_req("zing.unknown", None);
         let resp = handle_request(req, &mgr).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
@@ -434,8 +434,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_subscribe() {
-        assert!(is_subscribe("rxdl.subscribe"));
-        assert!(!is_subscribe("rxdl.addUri"));
+        assert!(is_subscribe("zing.subscribe"));
+        assert!(!is_subscribe("zing.addUri"));
         assert!(!is_subscribe(""));
     }
 }

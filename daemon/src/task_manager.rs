@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use rxcore::downloader::DownloadTask;
-use rxcore::engine::event::{EngineEvent, EventBus, TaskId};
+use zing_core::downloader::DownloadTask;
+use zing_core::engine::event::{EngineEvent, EventBus, TaskId};
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 

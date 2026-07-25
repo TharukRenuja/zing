@@ -8,12 +8,12 @@ use tokio::net::UnixStream;
 
 fn default_socket() -> String {
     if let Ok(dir) = std::env::var("RUNTIME_DIRECTORY") {
-        return PathBuf::from(dir).join("rxdl.sock").to_string_lossy().to_string();
+        return PathBuf::from(dir).join("zing.sock").to_string_lossy().to_string();
     }
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir).join("rxdl.sock").to_string_lossy().to_string();
+        return PathBuf::from(dir).join("zing.sock").to_string_lossy().to_string();
     }
-    "/tmp/rxdl.sock".to_string()
+    "/tmp/zing.sock".to_string()
 }
 
 pub async fn daemon_is_running() -> bool {
@@ -79,7 +79,7 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
     let (reader, mut writer) = stream.into_split();
 
     let request = serde_json::json!({
-        "method": "rxdl.subscribe",
+        "method": "zing.subscribe",
         "id": 2,
     });
     let mut req_str = match serde_json::to_string(&request) {
@@ -127,7 +127,7 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
         match event_type {
             "TaskCreated" => {
                 let url = event.get("url").and_then(|v| v.as_str()).unwrap_or("download");
-                let display = rxext::filename::from_url(url);
+                let display = zing_ext::filename::from_url(url);
                 let bar = indicatif::ProgressBar::new(0);
                 bar.set_prefix(display);
                 bar.set_style(

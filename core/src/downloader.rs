@@ -197,7 +197,7 @@ impl DownloadTask {
 
         if self.state.is_auto_name {
             if let Some(ref cd) = profile.content_disposition {
-                if let Some(cd_name) = rxext::filename::from_content_disposition(cd) {
+                if let Some(cd_name) = zing_ext::filename::from_content_disposition(cd) {
                     tracing::info!("Using server-provided filename: {cd_name}");
                     let current = self.state.filename.lock().await.clone();
                     let new_name = if let Some(parent) = std::path::Path::new(&current).parent() {

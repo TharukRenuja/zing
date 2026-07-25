@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["rxcore", "rxcli", "rxdaemon", "rxext"]
-default-members = ["rxcli"]
+members = ["core", "cli", "daemon", "ext"]
+default-members = ["cli"]
 
 [workspace.metadata.deb]
 copyright = "© 2026 Tharuk Renuja"

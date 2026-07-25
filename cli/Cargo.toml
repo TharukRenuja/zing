@@ -5,7 +5,7 @@ license = false
 eula = false
 
 [package]
-name = "rxdl"
+name = "zing"
 version = "0.1.0"
 edition = "2021"
 description = "A modern HTTP downloader with segmented concurrent downloads"
@@ -18,7 +18,7 @@ maintainer = "Tharuk Renuja"
 section = "net"
 depends = "libc6, libssl3"
 assets = [
-    ["target/release/rxdl", "/usr/bin/rxdl", "755"]
+    ["target/release/zing", "/usr/bin/zing", "755"]
 ]
 extended-description = """
 A modern HTTP downloader with support for HTTP/1.1, HTTP/2, and HTTP/3.
@@ -26,21 +26,21 @@ Features include segmented concurrent downloads, daemon mode, and adaptive conne
 """
 
 [package.metadata.bundle]
-name = "rxdl"
-identifier = "com.tharukrj.rxdl"
+name = "zing"
+identifier = "com.tharukrj.zing"
 version = "0.1.0"
-display-name = "rxdl"
+display-name = "zing"
 short-version = "0.1.0"
 long-version = "0.1.0"
 frameworks = ["CoreFoundation", "Foundation"]
 
 [[bin]]
-name = "rxdl"
+name = "zing"
 path = "src/main.rs"
 
 [dependencies]
-rxcore = { path = "../rxcore" }
-rxext = { path = "../rxext" }
+zing-core = { path = "../core" }
+zing-ext = { path = "../ext" }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 indicatif = "0.18"

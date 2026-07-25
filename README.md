@@ -1,31 +1,31 @@
-# rxdl
+# zing
 
 Simple, modern, intelligent, cross-platform HTTP downloader with adaptive connection management, server probing, and concurrent segmented downloads.
 
 ```
-rxdl https://example.com/file.zip
+zing https://example.com/file.zip
 ```
 
 ## Install
 
 ```bash
 # Download pre-built binary (recommended)
-curl -fsSL https://raw.githubusercontent.com/TharukRenuja/rxdl/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/TharukRenuja/zing/main/install.sh | sh
 
 # Or install with cargo (requires Rust)
-cargo install rxdl
+cargo install zing
 
 # Or build from source
 cargo build --release
-./target/release/rxdl --help
+./target/release/zing --help
 ```
 
 ## How it works
 
 ```
-rxdl https://example.com/file.zip
+zing https://example.com/file.zip
 
-→ checks /tmp/rxdl.sock
+→ checks /tmp/zing.sock
   exists?  proxies to daemon, shows progress, exits
   absent?  downloads directly (like curl)
 ```
@@ -34,44 +34,50 @@ rxdl https://example.com/file.zip
 
 ```bash
 # Download a file (auto-named from URL)
-rxdl https://example.com/file.zip
+zing https://example.com/file.zip
 
 # Save to a specific filename
-rxdl -o myfile.zip https://example.com/file.zip
+zing -o myfile.zip https://example.com/file.zip
 
 # Download to a directory
-rxdl -d downloads/ https://example.com/file.zip
+zing -d downloads/ https://example.com/file.zip
 
 # Rate limit to 2 MB/s
-rxdl -r 2MB https://example.com/file.zip
+zing -r 2MB https://example.com/file.zip
 
 # Skip TLS verification
-rxdl -k https://example.com/file.zip
+zing -k https://example.com/file.zip
 
 # Verify checksum after download
-rxdl -c d41d8cd98f00b204e9800998ecf8427e https://example.com/file.zip
+zing -c d41d8cd98f00b204e9800998ecf8427e https://example.com/file.zip
 
 # Use a proxy
-rxdl -x http://user:pass@proxy:8080 https://example.com/file.zip
+zing -x http://user:pass@proxy:8080 https://example.com/file.zip
 
 # Use mirror URLs for failover
-rxdl -m https://mirror1.example.com/file.zip https://example.com/file.zip
+zing -m https://mirror1.example.com/file.zip https://example.com/file.zip
 
 # Schedule bandwidth (8AM: 500KB/s, 6PM: 2MB/s)
-rxdl -b "08:00,500KB 18:00,2MB" https://example.com/file.zip
+zing -b "08:00,500KB 18:00,2MB" https://example.com/file.zip
 
-# Pause mid-download with Ctrl+Z, resume with fg
-# rxdl saves state on pause and resumes seamlessly
+# Limit file size (skip if Content-Length exceeds)
+zing -S 1GB https://example.com/large-file.zip
+
+# Custom HTTP headers
+zing -H "Authorization: Bearer token" https://example.com/private.zip
+
+# Use a Metalink file for mirrors + checksums
+zing -M file.meta4
 ```
 
 ## Pause / Resume
 
-In standalone mode, suspend a download with **Ctrl+Z** (`SIGTSTP`). The download saves its state to a `.rxdl` control file and stops. Bring it back to the foreground with **`fg`** (`SIGCONT`) — it resumes from where it left off.
+In standalone mode, zing saves its state to a `.zing` control file on exit. Re-running the same URL resumes from where it left off.
 
 ```
-rxdl https://example.com/large-file.zip
-  ^Z  → pauses, saves state
-  fg  → resumes download
+zing https://example.com/large-file.zip
+  ^C  → saves state, exits
+  zing https://example.com/large-file.zip  → resumes
 ```
 
 ## Daemon mode
@@ -79,30 +85,17 @@ rxdl https://example.com/large-file.zip
 Start a background daemon so downloads continue even after you close the terminal.
 
 ```bash
-# Start the daemon (also: rxdl d)
-rxdl daemon
+# Start the daemon in the foreground
+zing daemon start
 
-# Now any rxdl download will proxy through the daemon automatically
-rxdl https://example.com/file.zip
-```
+# Install as a systemd user service (auto-start on login)
+zing daemon install
 
-### systemd autostart
+# Check daemon status
+zing daemon status
 
-```ini
-# ~/.config/systemd/user/rxdl.service
-[Unit]
-Description=rxdl download daemon
-
-[Service]
-ExecStart=/path/to/rxdl daemon
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user enable --now rxdl
+# Now any zing download will proxy through the daemon automatically
+zing https://example.com/file.zip
 ```
 
 ## Scheduled downloads
@@ -111,41 +104,41 @@ Schedule downloads with an optional time window. The daemon must be running.
 
 ```bash
 # Download at a specific time
-rxdl schedule add https://example.com/file.zip --at 02:00
+zing schedule add https://example.com/file.zip --at 02:00
 
-# Download within a time window (e.g. free hours: 00:00–07:00)
-rxdl schedule add https://example.com/file.zip --at 00:00 --end 07:00
+# Download within a time window
+zing schedule add https://example.com/file.zip --at 00:00 --end 07:00
 
 # On specific days only
-rxdl schedule add https://example.com/file.zip --at 06:00 --end 07:00 --days Mon,Wed,Fri
+zing schedule add https://example.com/file.zip --at 06:00 --end 07:00 --days Mon,Wed,Fri
 
 # List scheduled downloads
-rxdl schedule list       # also: rxdl schedule ls
+zing schedule list
 
 # Remove a schedule
-rxdl schedule remove <id>   # also: rxdl schedule rm
+zing schedule remove <id>
 ```
 
 ## Configuration
 
 ```bash
 # List current config
-rxdl config list       # also: rxdl config ls
+zing config list
 
 # Get a value
-rxdl config get download_dir
+zing config get download_dir
 
-# Set a value (paths support ~, $HOME, $USER, etc.)
-rxdl config set download_dir "~/Downloads"
+# Set a value
+zing config set download_dir "~/Downloads"
 
 # Delete a config key
-rxdl config delete prompt_location   # also: rxdl config del, rxdl config rm
+zing config delete download_dir
 
 # Open config in $EDITOR
-rxdl config edit       # also: rxdl config e
+zing config edit
 ```
 
-Config file: `~/.config/rxdl/config.json`
+Config file: `~/.config/zing/config.json`
 
 ```json
 {
@@ -153,21 +146,6 @@ Config file: `~/.config/rxdl/config.json`
   "prompt_location": false
 }
 ```
-
-Supports shell expansion: `~`, `$HOME`, `$USER`, `$HOME/Downloads` all resolve to your actual home directory.
-
-### Subcommand aliases
-
-| Full | Aliases |
-|------|---------|
-| `daemon` | `d` |
-| `schedule` | `sched`, `s` |
-| `config` | `cfg`, `c` |
-| `schedule list` | `ls` |
-| `schedule remove` | `rm` |
-| `config list` | `ls` |
-| `config delete` | `del`, `rm` |
-| `config edit` | `e` |
 
 ## Features
 
@@ -185,38 +163,12 @@ Supports shell expansion: `~`, `$HOME`, `$USER`, `$HOME/Downloads` all resolve t
 - **Daemon mode** with live progress updates
 - **Scheduled downloads** with cron-like day/time triggers
 - **Download resume** to continue interrupted downloads
-- **Pause/resume** via Ctrl+Z and fg
-- **Preallocation** of file space for faster downloads
-
-## All options
-
-```
-Usage: rxdl [OPTIONS] [COMMAND]
-
-Commands:
-  daemon    Start the download daemon
-  schedule  Manage scheduled downloads
-  config    Manage configuration
-  help      Print this message or the help of the given subcommand(s)
-
-Options:
-  -o, --output <OUTPUT>                    Output filename
-  -d, --dir <DIR>                          Output directory
-  -n, --connections <CONNECTIONS>          Max parallel connections [default: 4]
-  -q, --quiet                              Quiet mode
-  -k, --insecure                           Skip TLS verification
-  -r, --max-download-rate <RATE>           Max download rate (500KB, 2MB, 1.5GB, 0 = unlimited) [default: 0]
-  -c, --checksum <CHECKSUM>                Verify checksum (auto-detect type by length)
-  -x, --proxy <PROXY>                      HTTP/HTTPS proxy
-  -m, --mirror <MIRROR>                    Mirror URLs for failover
-  -b, --bwlimit <SCHEDULE>                 Bandwidth schedule (e.g. '08:00,500KB 18:00,2MB')
-  -h, --help                               Print help
-  -V, --version                            Print version
-```
+- **Concurrent multi-URL downloads** with `--max-concurrent`
+- **Metalink (.meta4)** support for mirrors + checksums
 
 ## Comparison
 
-| Capability | rxdl | aria2 | curl | wget2 | gopeed |
+| Capability | zing | aria2 | curl | wget2 | gopeed |
 | --- | --- | --- | --- | --- | --- |
 | HTTP/1.1 + H2 + H3 | Yes | Yes | Yes | Yes | Yes |
 | Segmented concurrent | PID + slow-start + steal | Static split | No | No | Static split |
@@ -228,25 +180,26 @@ Options:
 | Rate limiting | TokenBucket | Yes | No | No | No |
 | Bandwidth scheduling | Yes | No | No | No | No |
 | Mirror failover | Rotate on fail/throttle | Multi-URL | No | No | No |
+| Metalink | .meta4 parser | Yes | No | No | No |
 | Proxy | Yes | Yes | Yes | Yes | Yes |
 | Daemon + RPC | Unix socket JSON-RPC | RPC | No | No | Web |
 | Scheduled downloads | Day/time triggers | No | No | No | No |
-| Resume | .rxdl control file | .aria2 | Yes | Yes | Yes |
+| Resume | .zing control file | .aria2 | Yes | Yes | Yes |
 | Checksum verify | Post-download auto-detect | Metalink | No | No | No |
+| Concurrent multi-URL | Yes (--max-concurrent) | Yes | No | No | No |
 
 ## Architecture
 
 4 crates in a workspace:
 
-- **rxcore**: Download engine: probe, segment management, PID control, rate limiting, retry, bandwidth scheduling, connection pool
-- **rxcli**: CLI frontend with progress bar, daemon auto-detection, checksum verification, config/schedule management
-- **rxdaemon**: Unix socket JSON-RPC server for background and scheduled downloads
-- **rxext**: Utilities: checksum verification, filename extraction, aria2 session import
+- **core**: Download engine: probe, segment management, PID control, rate limiting, retry, bandwidth scheduling, connection pool
+- **cli**: CLI frontend with progress bar, daemon auto-detection, checksum verification, config/schedule management
+- **daemon**: Unix socket JSON-RPC server for background and scheduled downloads
+- **ext**: Utilities: checksum verification, filename extraction, aria2 session import, metalink parsing
 
 ## Design
 
 - **Pwrite over mmap**: Sequential streaming writes benefit from `pwrite`'s direct kernel path. Mmap adds page fault overhead for write-once workloads.
 - **reqwest over hyper**: reqwest provides HTTP/2 ALPN negotiation, HTTP/3 via quinn, connection pooling, and proxy support out of the box.
 - **Unix socket over TCP**: No port conflicts, filesystem permissions control access, no network exposure.
-- **No BitTorrent / browser impersonation**: rxdl focuses on clean HTTP download intelligence.
-
+- **No BitTorrent / browser impersonation**: zing focuses on clean HTTP download intelligence.

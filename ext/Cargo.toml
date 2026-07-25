@@ -1,8 +1,8 @@
 [package]
-name = "rxext"
+name = "zing-ext"
 version = "0.1.0"
 edition = "2021"
-description = "Extensions for the rxdl downloader"
+description = "Extensions for the zing downloader"
 authors = ["Tharuk Renuja"]
 license = "GPL-3.0-only"
 

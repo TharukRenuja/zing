@@ -36,7 +36,7 @@ pub struct ConnectionPool {
 impl ConnectionPool {
     fn build_client(insecure: bool, proxy_url: Option<&str>) -> reqwest::Client {
         let mut builder = reqwest::Client::builder()
-            .user_agent("rxdl/0.1.0")
+            .user_agent("zing/0.1.0")
             .no_gzip()
             .no_brotli()
             .no_deflate()

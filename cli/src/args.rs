@@ -5,11 +5,11 @@ fn parse_bandwidth(s: &str) -> Result<u64, String> {
     if s.trim() == "0" {
         return Ok(0);
     }
-    rxext::bandwidth::parse_rate(s).ok_or_else(|| format!("invalid bandwidth value: '{s}'"))
+    zing_ext::bandwidth::parse_rate(s).ok_or_else(|| format!("invalid bandwidth value: '{s}'"))
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "rxdl", version, about = "A modern HTTP downloader with segmented concurrent downloads", long_about = None, disable_help_subcommand = true)]
+#[command(name = "zing", version, about = "A modern HTTP downloader with segmented concurrent downloads", long_about = None, disable_help_subcommand = true)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -175,7 +175,7 @@ pub enum ConfigAction {
     #[command(about = "List all configuration values", alias = "ls")]
     List,
 
-    #[command(about = "Set a configuration value (e.g. rxdl config set download_dir ~/Downloads)")]
+    #[command(about = "Set a configuration value (e.g. zing config set download_dir ~/Downloads)")]
     Set {
         #[arg(help = "Configuration key")]
         key: String,

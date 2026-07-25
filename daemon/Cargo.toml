@@ -1,18 +1,18 @@
 [package]
-name = "rxdaemon"
+name = "zing-daemon"
 version = "0.1.0"
 edition = "2021"
-description = "Daemon mode for the rxdl downloader"
+description = "Daemon mode for the zing downloader"
 authors = ["Tharuk Renuja"]
 license = "GPL-3.0-only"
 
 [[bin]]
-name = "rxdaemon"
+name = "zing-daemon"
 path = "src/main.rs"
 
 [dependencies]
-rxcore = { path = "../rxcore" }
-rxext = { path = "../rxext" }
+zing-core = { path = "../core" }
+zing-ext = { path = "../ext" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "time"] }
 chrono = "0.4"
 dirs = "6"

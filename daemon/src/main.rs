@@ -15,7 +15,7 @@ async fn main() {
         .compact()
         .init();
 
-    tracing::info!("rxdl daemon starting (PID {})", std::process::id());
+    tracing::info!("zing daemon starting (PID {})", std::process::id());
 
     let socket_path = PathBuf::from(
         std::env::var("RXD_SOCKET").unwrap_or_else(|_| default_socket_path())
@@ -39,10 +39,10 @@ async fn main() {
 
 fn default_socket_path() -> String {
     if let Ok(dir) = std::env::var("RUNTIME_DIRECTORY") {
-        return PathBuf::from(dir).join("rxdl.sock").to_string_lossy().to_string();
+        return PathBuf::from(dir).join("zing.sock").to_string_lossy().to_string();
     }
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir).join("rxdl.sock").to_string_lossy().to_string();
+        return PathBuf::from(dir).join("zing.sock").to_string_lossy().to_string();
     }
-    "/tmp/rxdl.sock".to_string()
+    "/tmp/zing.sock".to_string()
 }

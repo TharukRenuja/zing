@@ -1,10 +1,10 @@
 mod common;
 
 use common::{test_payload, TestServer};
-use rxcore::connection::ConnectionPool;
-use rxcore::downloader::DownloadTask;
-use rxcore::engine::event::EventBus;
-use rxcore::storage::{ControlFile, SegmentEntry};
+use zing_core::connection::ConnectionPool;
+use zing_core::downloader::DownloadTask;
+use zing_core::engine::event::EventBus;
+use zing_core::storage::{ControlFile, SegmentEntry};
 use tokio::sync::broadcast;
 
 /// test that the mock server serves the full file on a plain GET
@@ -83,7 +83,7 @@ async fn test_full_download() {
     assert_eq!(downloaded, payload, "file content mismatch");
 
     // no control file left behind
-    let control_path = output.with_extension("rxdl");
+    let control_path = output.with_extension("zing");
     assert!(!control_path.exists(), "control file should be removed");
 }
 

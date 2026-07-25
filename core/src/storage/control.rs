@@ -41,7 +41,7 @@ impl ControlFile {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "download".to_string());
-        name.push_str(".rxdl");
+        name.push_str(".zing");
         p.set_file_name(name);
         p
     }
@@ -51,7 +51,7 @@ impl ControlFile {
         let json =
             serde_json::to_string(self).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         // Atomic write: write to temp file then rename
-        let tmp_path = path.with_extension("rxdl.tmp");
+        let tmp_path = path.with_extension("zing.tmp");
         tokio::fs::write(&tmp_path, &json).await?;
         tokio::fs::rename(&tmp_path, path).await
     }

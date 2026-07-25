@@ -1,6 +1,6 @@
 use crate::task_manager::TaskManager;
 use chrono::{Datelike, Timelike};
-use rxext::filename;
+use zing_ext::filename;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -46,7 +46,7 @@ impl Scheduler {
     pub fn new(manager: TaskManager) -> Self {
         let config_path = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("rxdl")
+            .join("zing")
             .join("schedule.json");
 
         Self { config_path, manager }
