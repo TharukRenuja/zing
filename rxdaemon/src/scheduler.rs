@@ -52,11 +52,13 @@ impl Scheduler {
         Self { config_path, manager }
     }
 
+    #[allow(dead_code)]
     pub fn with_config_path(mut self, path: PathBuf) -> Self {
         self.config_path = path;
         self
     }
 
+    #[allow(dead_code)]
     pub async fn load_entries(&self) -> HashMap<String, ScheduleEntry> {
         let content = match tokio::fs::read_to_string(&self.config_path).await {
             Ok(c) => c,

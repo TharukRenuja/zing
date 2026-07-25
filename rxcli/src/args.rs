@@ -64,6 +64,13 @@ pub struct Args {
     )]
     pub header: Vec<String>,
 
+    #[arg(
+        long = "metalink",
+        short = 'M',
+        help = "Metalink (.meta4) file — extracts mirrors, checksums, and filename"
+    )]
+    pub metalink: Option<String>,
+
 }
 
 #[derive(Subcommand, Debug)]

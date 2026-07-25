@@ -183,13 +183,76 @@ async fn run(args: Args) -> Result<()> {
     let cfg = Config::load(None);
     let download_dir = args.dir.clone().unwrap_or_else(|| cfg.download_dir());
 
-    for url_str in &args.urls {
-        let is_auto_name = args.output.is_none();
+    struct MetalinkOverride {
+        url: String,
+        mirrors: Vec<String>,
+        checksum: Option<String>,
+        is_auto_name: bool,
+        filename: String,
+    }
+
+    let metalink_override = if let Some(ref path) = args.metalink {
+        let content = tokio::fs::read_to_string(path).await.map_err(|e| {
+            color_eyre::eyre::eyre!("Cannot read metalink '{}': {e}", path)
+        })?;
+        let files = rxext::metalink::parse_metalink_str(&content).map_err(|e| {
+            color_eyre::eyre::eyre!("Failed to parse metalink '{}': {e}", path)
+        })?;
+        if let Some(entry) = files.into_iter().next() {
+            let url = entry.urls.first().cloned().unwrap_or_default();
+            let mirrors: Vec<String> = entry.urls.into_iter().skip(1).collect();
+            let checksum = entry.checksums.first().map(|(_, h)| h.clone());
+            let fname = entry.filename.clone().unwrap_or_default();
+            let filename = match &args.output {
+                Some(name) => name.to_string_lossy().to_string(),
+                None => {
+                    if fname.is_empty() {
+                        download_dir.join(filename::from_url(&url)).to_string_lossy().to_string()
+                    } else {
+                        download_dir.join(&fname).to_string_lossy().to_string()
+                    }
+                }
+            };
+            Some(MetalinkOverride { url, mirrors, checksum, is_auto_name: args.output.is_none(), filename })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let metalink = metalink_override.as_ref();
+
+    let urls: Vec<&String> = if let Some(m) = metalink {
+        // Synthesize a single pseudo-URL to re-use the loop
+        vec![&m.url]
+    } else {
+        args.urls.iter().collect()
+    };
+
+    for (i, url_str) in urls.iter().enumerate() {
+        let is_auto_name = args.output.is_none()
+            && metalink.map_or(true, |m| i == 0 && m.is_auto_name);
 
         let filename = match &args.output {
             Some(name) => name.to_string_lossy().to_string(),
-            None => download_dir.join(filename::from_url(url_str)).to_string_lossy().to_string(),
+            None => {
+                let base = if i == 0 && metalink.is_some() {
+                    metalink.as_ref().unwrap().filename.clone()
+                } else {
+                    filename::from_url(url_str)
+                };
+                if base.is_empty() {
+                    filename::from_url(url_str)
+                } else {
+                    download_dir.join(base).to_string_lossy().to_string()
+                }
+            }
         };
+
+        let effective_url = url_str.as_str();
+        let effective_mirrors = metalink.map_or_else(|| args.mirror.clone(), |m| m.mirrors.clone());
+        let effective_checksum = metalink.and_then(|m| m.checksum.clone()).or_else(|| args.checksum.clone());
 
         tokio::fs::create_dir_all(&download_dir).await.map_err(|e| {
             color_eyre::eyre::eyre!("Cannot create download directory '{}': {e}", download_dir.display())
@@ -198,13 +261,13 @@ async fn run(args: Args) -> Result<()> {
         loop {
             let _ = bus.emit(EngineEvent::TaskCreated {
                 id: 1,
-                url: url_str.clone(),
+                url: url_str.to_string(),
             });
 
             let headers = parse_headers(&args.header);
             let task = DownloadTask::new(
                 NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
-                url_str,
+                effective_url,
                 &filename,
                 is_auto_name,
                 args.connections,
@@ -212,7 +275,7 @@ async fn run(args: Args) -> Result<()> {
                 args.insecure,
                 args.max_download_rate,
                 args.proxy.clone(),
-                args.mirror.clone(),
+                effective_mirrors.clone(),
                 args.bwlimit.clone(),
                 headers,
             );
@@ -269,7 +332,7 @@ async fn run(args: Args) -> Result<()> {
 
             // Normal completion
             tracing::info!("{filename}: done");
-            if let Some(ref chk) = args.checksum {
+            if let Some(ref chk) = effective_checksum {
                 let path = Path::new(&filename);
                 match checksum::verify_file(path, chk) {
                     Ok(true) => tracing::info!("Checksum: OK ({chk})"),
