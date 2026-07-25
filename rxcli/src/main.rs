@@ -91,6 +91,7 @@ async fn run(args: Args) -> Result<()> {
                 "connections": args.connections,
                 "insecure": args.insecure,
                 "max_download_rate": args.max_download_rate,
+                "max_filesize": args.max_filesize,
                 "proxy": args.proxy,
                 "mirror": args.mirror,
                 "bwlimit": args.bwlimit,
@@ -285,6 +286,7 @@ async fn run(args: Args) -> Result<()> {
                     effective_mirrors.clone(),
                     bwlimit.clone(),
                     headers.clone(),
+                    args.max_filesize,
                 );
 
                 let task_shutdown = shutdown_tx.subscribe();

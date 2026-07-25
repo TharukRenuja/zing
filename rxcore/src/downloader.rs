@@ -36,6 +36,7 @@ struct SharedState {
     pub reprobe: AtomicBool,
     pub peak_speed: AtomicU64,
     pub bandwidth_estimate: AtomicU64,
+    pub max_filesize: u64,
 }
 
 impl SharedState {
@@ -83,6 +84,7 @@ impl DownloadTask {
         mirrors: Vec<String>,
         bw_schedule: Option<String>,
         headers: Vec<(String, String)>,
+        max_filesize: u64,
     ) -> Self {
         let pool = ConnectionPool::new(insecure, proxy_url.as_deref())
             .with_event_bus(bus.clone())
@@ -118,6 +120,7 @@ impl DownloadTask {
                 reprobe: AtomicBool::new(false),
                 peak_speed: AtomicU64::new(0),
                 bandwidth_estimate: AtomicU64::new(0),
+                max_filesize,
             }),
         }
     }
@@ -179,6 +182,18 @@ impl DownloadTask {
             profile.bandwidth_estimate.unwrap_or(0.0) as u64,
             Ordering::Relaxed,
         );
+
+        // Max filesize check
+        if self.state.max_filesize > 0 {
+            if let Some(size) = profile.total_size {
+                if size > self.state.max_filesize {
+                    bail!(
+                        "File size {} exceeds max-filesize limit of {}",
+                        size, self.state.max_filesize
+                    );
+                }
+            }
+        }
 
         if self.state.is_auto_name {
             if let Some(ref cd) = profile.content_disposition {
@@ -725,6 +740,7 @@ mod tests {
             reprobe: AtomicBool::new(false),
             peak_speed: AtomicU64::new(0),
             bandwidth_estimate: AtomicU64::new(0),
+            max_filesize: 0,
         });
 
         // Manually insert segments into the manager

@@ -72,6 +72,7 @@ async fn test_full_download() {
         vec![],
         None,
         vec![],
+        0,
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;
@@ -145,6 +146,7 @@ async fn test_resume_download() {
         vec![],
         None,
         vec![],
+        0,
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;

@@ -48,6 +48,15 @@ pub struct Args {
     )]
     pub max_concurrent: usize,
 
+    #[arg(
+        long = "max-filesize",
+        short = 'S',
+        value_parser = parse_bandwidth,
+        default_value = "0",
+        help = "Max file size (500KB, 2MB, 1GB, 0 = unlimited). Skips download if Content-Length exceeds this."
+    )]
+    pub max_filesize: u64,
+
     #[arg(long = "checksum", short = 'c', help = "Verify checksum (auto-detect type by length)")]
     pub checksum: Option<String>,
 

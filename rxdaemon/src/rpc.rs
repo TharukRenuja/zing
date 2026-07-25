@@ -200,7 +200,12 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         }))
         .unwrap_or_default();
 
-    let id = manager.add_task(&url, &filename, is_auto_name, connections, insecure, max_download_rate, proxy_url, mirrors, bw_schedule, headers).await;
+    let max_filesize = map
+        .remove("max_filesize")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let id = manager.add_task(&url, &filename, is_auto_name, connections, insecure, max_download_rate, proxy_url, mirrors, bw_schedule, headers, max_filesize).await;
 
     RpcResponse {
         id: None,
@@ -358,7 +363,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_list_with_tasks() {
         let mgr = TaskManager::new();
-        mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![]).await;
+        mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
 
         let req = make_req("rxdl.list", None);
         let resp = handle_request(req, &mgr).await;
@@ -370,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_tell_status() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![]).await;
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
 
         let params = json!({ "id": id });
         let req = make_req("rxdl.tellStatus", Some(params));
@@ -393,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_pause() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![]).await;
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
 
         let params = json!({ "id": id });
         let req = make_req("rxdl.pause", Some(params));
@@ -405,7 +410,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_remove() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![]).await;
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
 
         let params = json!({ "id": id });
         let req = make_req("rxdl.remove", Some(params));
