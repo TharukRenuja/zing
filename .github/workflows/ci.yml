@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,8 +14,11 @@ env:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -32,12 +37,81 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
 
-  build-release:
-    name: Build (release)
-    runs-on: ubuntu-latest
+  release:
+    name: Build & package (${{ matrix.target }})
+    needs: [test, lint]
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --workspace
-      - run: cargo test --workspace --release
+
+      - name: Build release
+        run: cargo build --release --workspace
+
+      - name: Build .deb (Linux x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cargo install cargo-deb
+          cargo deb -p zing
+
+      - name: Prepare archive (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          mkdir -p staging/zing
+          cp target/release/zing staging/zing/
+          cp target/release/zing-daemon staging/zing/
+          cp README.md LICENSE staging/zing/ 2>/dev/null || true
+          tar czf zing-${{ matrix.target }}.tar.gz -C staging zing
+
+      - name: Prepare archive (Windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          mkdir -p staging/zing
+          cp target/release/zing.exe staging/zing/
+          cp target/release/zing-daemon.exe staging/zing/
+          cp README.md LICENSE staging/zing/ 2>/dev/null || true
+          7z a zing-${{ matrix.target }}.zip ./staging/zing/*
+
+      - name: Upload artifacts (archive)
+        uses: actions/upload-artifact@v4
+        with:
+          name: zing-${{ matrix.target }}
+          path: zing-${{ matrix.target }}.*
+
+      - name: Upload .deb artifact
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zing-${{ matrix.target }}-deb
+          path: target/debian/*.deb
+
+      - name: Upload .deb to release
+        if: github.ref_type == 'tag' && matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/debian/*.deb
+
+      - name: Upload archive to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zing-${{ matrix.target }}.*
+          generate_release_notes: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}

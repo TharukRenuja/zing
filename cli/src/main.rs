@@ -99,11 +99,17 @@ async fn run(args: Args) -> Result<()> {
     #[cfg(unix)]
     if daemon_client::daemon_is_running().await {
         tracing::info!("zing daemon detected, proxying commands");
+
+        let cfg = Config::load(None);
+        let download_dir = args.dir.clone().unwrap_or_else(|| cfg.download_dir());
+        let download_dir_str = download_dir.to_string_lossy().to_string();
+
         let mut handles = Vec::new();
         for url_str in &args.urls {
             let params = serde_json::json!({
                 "url": url_str,
                 "filename": args.output.as_ref().and_then(|p| p.to_str()).filter(|s| !s.is_empty()),
+                "dir": download_dir_str,
                 "connections": args.connections,
                 "insecure": args.insecure,
                 "max_download_rate": args.max_download_rate,

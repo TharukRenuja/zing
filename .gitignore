@@ -8,6 +8,13 @@ Cargo.lock
 *.dylib
 *.dll
 *.exe
+*.tar.gz
+*.zip
+*.rpm
+
+# Packaging
+target/debian/
+staging/
 
 # IDE
 .idea
@@ -20,20 +27,12 @@ Cargo.lock
 *.log
 *.bak
 
-# Windows build
-wix/*.obj
-wix/*.pdb
-wix/*.pch
-
-# MacOS build
-!target/release/bundle/osx/rxdl.app
+# macOS
+.DS_Store
+.Trash
 
 # Debug files
 .debug
 .pdb
-
-# OS-specific files
-.DS_Store
-.Trash
 
 

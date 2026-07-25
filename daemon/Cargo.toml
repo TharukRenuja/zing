@@ -10,6 +10,9 @@ license = "GPL-3.0-only"
 name = "zing-daemon"
 path = "src/main.rs"
 
+[package.metadata.deb]
+depends = "libc6, libssl3"
+
 [dependencies]
 zing-core = { path = "../core" }
 zing-ext = { path = "../ext" }

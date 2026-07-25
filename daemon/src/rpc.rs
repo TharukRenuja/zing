@@ -184,7 +184,18 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .and_then(|v| v.as_str().map(String::from))
         .filter(|s| !s.is_empty());
     let is_auto_name = user_filename.is_none();
-    let filename = user_filename.unwrap_or_else(|| filename::from_url(&url));
+
+    let dir = map
+        .remove("dir")
+        .and_then(|v| v.as_str().map(String::from))
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from);
+
+    let base_filename = user_filename.unwrap_or_else(|| filename::from_url(&url));
+    let filename = match dir {
+        Some(d) => d.join(&base_filename).to_string_lossy().to_string(),
+        None => base_filename,
+    };
 
     let connections = map
         .remove("connections")
