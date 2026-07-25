@@ -146,24 +146,6 @@ async fn run(args: Args) -> Result<()> {
         });
     }
 
-    // SIGTSTP (Ctrl+Z): pause
-    let suspend_requested = Arc::new(AtomicBool::new(false));
-    {
-        let tx = shutdown_tx.clone();
-        let suspend = Arc::clone(&suspend_requested);
-        tokio::spawn(async move {
-            let mut sigtstp = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP),
-            ).expect("sigtstp handler");
-            sigtstp.recv().await;
-            tracing::info!("Pause signal received, saving state...");
-            let _ = tx.send(());
-            // Don't raise SIGSTOP here — wait for run_with_shutdown to complete
-            // so the control file is saved first.
-            suspend.store(true, Ordering::Release);
-        });
-    }
-
     // SIGCONT: resume
     {
         let resume = Arc::clone(&resume_requested);
@@ -223,14 +205,20 @@ async fn run(args: Args) -> Result<()> {
 
     let metalink = metalink_override.as_ref();
 
-    let urls: Vec<&String> = if let Some(m) = metalink {
-        // Synthesize a single pseudo-URL to re-use the loop
-        vec![&m.url]
+    let urls: Vec<String> = if let Some(m) = metalink {
+        vec![m.url.clone()]
     } else {
-        args.urls.iter().collect()
+        args.urls.clone()
     };
 
-    for (i, url_str) in urls.iter().enumerate() {
+    let semaphore = match args.max_concurrent {
+        0 => None,
+        n => Some(Arc::new(tokio::sync::Semaphore::new(n.max(1)))),
+    };
+
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for (i, url) in urls.into_iter().enumerate() {
         let is_auto_name = args.output.is_none()
             && metalink.map_or(true, |m| i == 0 && m.is_auto_name);
 
@@ -240,111 +228,126 @@ async fn run(args: Args) -> Result<()> {
                 let base = if i == 0 && metalink.is_some() {
                     metalink.as_ref().unwrap().filename.clone()
                 } else {
-                    filename::from_url(url_str)
+                    rxext::filename::from_url(&url)
                 };
                 if base.is_empty() {
-                    filename::from_url(url_str)
+                    rxext::filename::from_url(&url)
                 } else {
                     download_dir.join(base).to_string_lossy().to_string()
                 }
             }
         };
 
-        let effective_url = url_str.as_str();
         let effective_mirrors = metalink.map_or_else(|| args.mirror.clone(), |m| m.mirrors.clone());
         let effective_checksum = metalink.and_then(|m| m.checksum.clone()).or_else(|| args.checksum.clone());
+        let headers = parse_headers(&args.header);
+        let proxy = args.proxy.clone();
+        let bwlimit = args.bwlimit.clone();
+        let download_dir = download_dir.clone();
+        let bus = bus.clone();
+        let shutdown_tx = shutdown_tx.clone();
+        let quit_requested = Arc::clone(&quit_requested);
+        let resume_requested = Arc::clone(&resume_requested);
+        let sem = semaphore.clone();
 
-        tokio::fs::create_dir_all(&download_dir).await.map_err(|e| {
-            color_eyre::eyre::eyre!("Cannot create download directory '{}': {e}", download_dir.display())
-        })?;
-
-        loop {
-            let _ = bus.emit(EngineEvent::TaskCreated {
-                id: 1,
-                url: url_str.to_string(),
-            });
-
-            let headers = parse_headers(&args.header);
-            let task = DownloadTask::new(
-                NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
-                effective_url,
-                &filename,
-                is_auto_name,
-                args.connections,
-                bus.clone(),
-                args.insecure,
-                args.max_download_rate,
-                args.proxy.clone(),
-                effective_mirrors.clone(),
-                args.bwlimit.clone(),
-                headers,
-            );
-
-            let task_shutdown = shutdown_tx.subscribe();
-            match task.run_with_shutdown(task_shutdown).await {
-                Ok(()) => {}
-                Err(e) => {
-                    tracing::error!("{filename}: {e}");
-                    break;
-                }
+        join_set.spawn(async move {
+            if let Some(ref s) = sem {
+                let _permit = s.acquire().await.expect("semaphore");
             }
 
-            if suspend_requested.swap(false, Ordering::AcqRel) {
-                // Control file is now saved — suspend so the shell says "Stopped".
-                unsafe { libc::raise(libc::SIGSTOP); }
-            }
+            tokio::fs::create_dir_all(&download_dir).await.map_err(|e| {
+                color_eyre::eyre::eyre!("Cannot create download directory '{}': {e}", download_dir.display())
+            })?;
 
-            if quit_requested.load(Ordering::Acquire) {
-                let control_path = rxcore::storage::control::ControlFile::control_path(Path::new(&filename));
-                let _ = tokio::fs::remove_file(&control_path).await;
-                tracing::info!("Quit requested, cleaning up...");
-                break;
-            }
+            let task_id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
 
-            let control_path = rxcore::storage::control::ControlFile::control_path(Path::new(&filename));
-            if control_path.exists() {
-                tracing::info!("Download paused. Send SIGCONT (fg) to resume, or Ctrl+C to quit.");
-                let _ = bus.emit(EngineEvent::Paused {
-                    id: 1,
-                    bytes_downloaded: 0,
-                    total_bytes: 0,
+            loop {
+                let _ = bus.emit(EngineEvent::TaskCreated {
+                    id: task_id,
+                    url: url.clone(),
                 });
 
-                // Wait for resume or quit
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    if resume_requested.swap(false, Ordering::AcqRel) {
-                        tracing::info!("Resuming download...");
-                        break;
-                    }
-                    if quit_requested.load(Ordering::Acquire) {
-                        let _ = tokio::fs::remove_file(&control_path).await;
-                        tracing::info!("Quit requested, cleaning up...");
+                let task = DownloadTask::new(
+                    task_id,
+                    &url,
+                    &filename,
+                    is_auto_name,
+                    args.connections,
+                    bus.clone(),
+                    args.insecure,
+                    args.max_download_rate,
+                    proxy.clone(),
+                    effective_mirrors.clone(),
+                    bwlimit.clone(),
+                    headers.clone(),
+                );
+
+                let task_shutdown = shutdown_tx.subscribe();
+                match task.run_with_shutdown(task_shutdown).await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::error!("{filename}: {e}");
                         break;
                     }
                 }
 
                 if quit_requested.load(Ordering::Acquire) {
+                    let control_path = rxcore::storage::control::ControlFile::control_path(Path::new(&filename));
+                    let _ = tokio::fs::remove_file(&control_path).await;
+                    tracing::info!("Quit requested, cleaning up...");
                     break;
                 }
-                continue; // resume from control file
-            }
 
-            // Normal completion
-            tracing::info!("{filename}: done");
-            if let Some(ref chk) = effective_checksum {
-                let path = Path::new(&filename);
-                match checksum::verify_file(path, chk) {
-                    Ok(true) => tracing::info!("Checksum: OK ({chk})"),
-                    Ok(false) => tracing::error!("Checksum: MISMATCH (expected {chk})"),
-                    Err(e) => tracing::error!("Checksum: {e}"),
+                let control_path = rxcore::storage::control::ControlFile::control_path(Path::new(&filename));
+                if control_path.exists() {
+                    tracing::info!("Download paused. Send SIGCONT (fg) to resume, or Ctrl+C to quit.");
+                    let _ = bus.emit(EngineEvent::Paused {
+                        id: task_id,
+                        bytes_downloaded: 0,
+                        total_bytes: 0,
+                    });
+
+                    // Wait for resume or quit
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        if resume_requested.swap(false, Ordering::AcqRel) {
+                            tracing::info!("Resuming download...");
+                            break;
+                        }
+                        if quit_requested.load(Ordering::Acquire) {
+                            let _ = tokio::fs::remove_file(&control_path).await;
+                            tracing::info!("Quit requested, cleaning up...");
+                            break;
+                        }
+                    }
+
+                    if quit_requested.load(Ordering::Acquire) {
+                        break;
+                    }
+                    continue;
                 }
-            }
-            break;
-        }
 
-        if quit_requested.load(Ordering::Acquire) {
-            break;
+                // Normal completion
+                tracing::info!("{filename}: done");
+                if let Some(ref chk) = effective_checksum {
+                    let path = Path::new(&filename);
+                    match checksum::verify_file(path, chk) {
+                        Ok(true) => tracing::info!("Checksum: OK ({chk})"),
+                        Ok(false) => tracing::error!("Checksum: MISMATCH (expected {chk})"),
+                        Err(e) => tracing::error!("Checksum: {e}"),
+                    }
+                }
+                break;
+            }
+
+            Ok::<(), color_eyre::Report>(())
+        });
+    }
+
+    // Wait for all downloads to complete
+    while let Some(result) = join_set.join_next().await {
+        if let Err(e) = result {
+            tracing::error!("Download task failed: {e}");
         }
     }
 

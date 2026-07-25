@@ -41,6 +41,13 @@ pub struct Args {
     )]
     pub max_download_rate: u64,
 
+    #[arg(
+        long = "max-concurrent",
+        default_value = "1",
+        help = "Max concurrent downloads (0 = unlimited)"
+    )]
+    pub max_concurrent: usize,
+
     #[arg(long = "checksum", short = 'c', help = "Verify checksum (auto-detect type by length)")]
     pub checksum: Option<String>,
 
