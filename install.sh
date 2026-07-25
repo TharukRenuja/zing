@@ -109,31 +109,29 @@ case "$os" in
   linux)
     if command -v systemctl >/dev/null 2>&1; then
       echo
-      printf "Set up systemd service for zing-daemon? [Y/n] "
+      printf "Set up systemd user service for zing-daemon? [Y/n] "
       read -r ans
       case "$ans" in
         n*|N*) ;;
         *)
           svc="zing-daemon.service"
-          svc_tmp=$(mktemp)
+          svc_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
           svc_url="https://raw.githubusercontent.com/${REPO}/main/daemon/${svc}"
-          if curl -fsSL "$svc_url" -o "$svc_tmp"; then
-            user="${SUDO_USER:-$USER}"
-            sed "s/^Type=simple/User=$user\\nType=simple/" "$svc_tmp" | $maybe_sudo tee "/etc/systemd/system/$svc" > /dev/null
-            $maybe_sudo systemctl daemon-reload
+          mkdir -p "$svc_dir"
+          if curl -fsSL "$svc_url" -o "$svc_dir/$svc"; then
+            systemctl --user daemon-reload
             printf "Enable and start zing-daemon now? [Y/n] "
             read -r ans2
             case "$ans2" in
-              n*|N*) echo "  Run later: sudo systemctl enable --now zing-daemon" ;;
+              n*|N*) echo "  Run later: systemctl --user enable --now zing-daemon" ;;
               *)
-                $maybe_sudo systemctl enable --now zing-daemon
+                systemctl --user enable --now zing-daemon
                 echo "  zing-daemon enabled and started"
                 ;;
             esac
           else
             echo "  warning: failed to download service file from $svc_url"
           fi
-          rm -f "$svc_tmp"
           ;;
       esac
     fi

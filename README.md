@@ -8,16 +8,23 @@ zing https://example.com/file.zip
 
 ## Install
 
+#### Install script (Linux/macOS)
 ```bash
-# Download pre-built binary (recommended)
+curl -fsSL https://raw.githubusercontent.com/TharukRenuja/zing/main/install.sh | sh
+```
 
-Download the latest release from [Releases](https://raw.githubusercontent.com/TharukRenuja/zing/releases).
+Optionally sets up zing-daemon as a systemd service. Installs to `/usr/local/bin`.
 
+#### Download pre-built binary
 
-# Or install with cargo (requires Rust)
-cargo install zing
+Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/releases).
 
-# Or build from source
+- Linux: `zing-<tag>-{arch}-linux.tar.gz` (contains `zing` + `zing-daemon`)
+- macOS: `zing-<tag>-aarch64-mac.dmg`
+- Windows: `zing-<tag>-{arch}-windows.exe`
+
+#### Build from source
+```bash
 cargo build --release
 ./target/release/zing --help
 ```

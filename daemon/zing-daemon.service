@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/bin/zing-daemon
 Restart=on-failure
-RuntimeDirectory=zing
+RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
