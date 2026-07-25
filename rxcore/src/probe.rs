@@ -154,7 +154,7 @@ fn decide_strategy(
     total_size: Option<u64>,
     supports_ranges: bool,
     rtt: Duration,
-    _bandwidth: Option<f64>,
+    bandwidth: Option<f64>,
     max_connections: usize,
 ) -> (usize, DownloadMode) {
     let rtt_ms = rtt.as_secs_f64() * 1000.0;
@@ -169,19 +169,32 @@ fn decide_strategy(
     }
 
     // Protocol + RTT heuristics
-    let target = match protocol {
+    let mut target = match protocol {
         Protocol::Http3 => {
             if rtt_ms > 100.0 { 6 } else { 4 }
         }
         Protocol::Http2 => {
-            // H2 multiplexing is efficient; fewer connections needed
             if rtt_ms > 200.0 { 4 } else { 3 }
         }
         Protocol::Http1 => {
-            // H1 needs more connections to saturate the link
             if rtt_ms > 200.0 { 8 } else if rtt_ms > 100.0 { 6 } else { 4 }
         }
     };
+
+    // If we have a bandwidth estimate, refine the target.
+    // A high bandwidth-per-connection means fewer connections needed.
+    // A low bandwidth with high RTT means more connections could help.
+    if let Some(bw) = bandwidth {
+        let bw_mbps = bw / 1_000_000.0;
+        let est_per_conn = bw_mbps / target as f64;
+        if est_per_conn > 5.0 {
+            // Each connection is already fast (>5 Mbps), reduce count
+            target = (target / 2).max(1);
+        } else if rtt_ms > 100.0 && est_per_conn < 1.0 {
+            // High latency & low per-conn bandwidth — more connections may help
+            target = (target as f64 * 1.5).ceil() as usize;
+        }
+    }
 
     // Scale with file size: 1 conn per 5MB, min 1
     let size_based = ((size as f64) / (5.0 * 1024.0 * 1024.0)).ceil() as usize;
