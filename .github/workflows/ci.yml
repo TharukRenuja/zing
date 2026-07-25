@@ -45,30 +45,45 @@ jobs:
       - run: cargo clippy --workspace -- -D warnings
 
   release:
-    name: Build & package (${{ matrix.target }})
+    name: Package (${{ matrix.suffix }})
     needs: [test, lint]
     if: github.ref_type == 'tag'
     permissions:
       contents: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: tar.gz
+            suffix: x86_64-linux
             pkgs: -p zing -p zing-daemon
+            ext: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            suffix: aarch64-linux
+            pkgs: -p zing -p zing-daemon
+            ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive: zip
+            suffix: x86_64-windows
             pkgs: -p zing
+            ext: exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            suffix: aarch64-windows
+            pkgs: -p zing
+            ext: exe
           - os: macos-13
             target: x86_64-apple-darwin
-            archive: tar.gz
+            suffix: x86_64-mac
             pkgs: -p zing -p zing-daemon
+            ext: dmg
           - os: macos-14
             target: aarch64-apple-darwin
-            archive: tar.gz
+            suffix: aarch64-mac
             pkgs: -p zing -p zing-daemon
+            ext: dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -79,50 +94,72 @@ jobs:
         run: cargo build --release ${{ matrix.pkgs }}
 
       - name: Build .deb (Linux x86_64)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.suffix == 'x86_64-linux'
         run: |
           cargo install cargo-deb
           cargo deb -p zing
 
-      - name: Prepare archive (Unix)
-        if: matrix.archive == 'tar.gz'
+      - name: Build .rpm (Linux x86_64)
+        if: matrix.suffix == 'x86_64-linux'
         run: |
-          mkdir -p staging/zing
-          cp target/release/zing staging/zing/
-          test -f target/release/zing-daemon && cp target/release/zing-daemon staging/zing/ || true
-          cp README.md LICENSE staging/zing/ 2>/dev/null || true
-          tar czf zing-${{ matrix.target }}.tar.gz -C staging zing
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm-build
+          TAG=${{ github.ref_name }}
+          VER=${TAG#v}
+          mkdir -p ~/rpmbuild/SOURCES ~/rpmbuild/SPECS
+          git archive --format=tar.gz --prefix=zing-$VER/ -o ~/rpmbuild/SOURCES/zing-$VER.tar.gz HEAD
+          cp packaging/rpm/zing.spec ~/rpmbuild/SPECS/
+          rpmbuild --define "version $VER" -bb ~/rpmbuild/SPECS/zing.spec
 
-      - name: Prepare archive (Windows)
-        if: matrix.archive == 'zip'
+      - name: Prepare archive (Unix tar.gz)
+        if: matrix.ext == 'tar.gz'
+        run: |
+          TAG=${{ github.ref_name }}
+          mkdir -p staging
+          cp target/release/zing "staging/zing-$TAG-${{ matrix.suffix }}"
+          test -f target/release/zing-daemon && \
+            cp target/release/zing-daemon "staging/zing-daemon-$TAG-${{ matrix.suffix }}" || true
+          tar czf "zing-$TAG-${{ matrix.suffix }}.tar.gz" -C staging .
+
+      - name: Prepare .dmg (macOS)
+        if: matrix.ext == 'dmg'
+        run: |
+          TAG=${{ github.ref_name }}
+          mkdir -p staging
+          cp target/release/zing "staging/zing"
+          test -f target/release/zing-daemon && \
+            cp target/release/zing-daemon "staging/zing-daemon" || true
+          hdiutil create -volname "zing $TAG" -srcfolder staging -ov -format UDZO \
+            "zing-$TAG-${{ matrix.suffix }}.dmg"
+
+      - name: Prepare .exe (Windows)
+        if: matrix.ext == 'exe'
         shell: bash
         run: |
-          mkdir -p staging/zing
-          cp target/release/zing.exe staging/zing/
-          cp README.md LICENSE staging/zing/ 2>/dev/null || true
-          7z a zing-${{ matrix.target }}.zip ./staging/zing/*
+          TAG=${{ github.ref_name }}
+          cp target/release/zing.exe "zing-$TAG-${{ matrix.suffix }}.exe"
 
-      - name: Upload artifacts (archive)
+      - name: Rename .deb
+        if: matrix.suffix == 'x86_64-linux'
+        run: |
+          TAG=${{ github.ref_name }}
+          cp target/debian/*.deb "zing-$TAG-amd64.deb"
+
+      - name: Rename .rpm
+        if: matrix.suffix == 'x86_64-linux'
+        run: |
+          TAG=${{ github.ref_name }}
+          cp ~/rpmbuild/RPMS/x86_64/zing-*.rpm "zing-$TAG-x86_64.rpm"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: zing-${{ matrix.target }}
-          path: zing-${{ matrix.target }}.*
+          name: zing-${{ matrix.suffix }}
+          path: |
+            zing-${{ github.ref_name }}-*
 
-      - name: Upload .deb artifact
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: actions/upload-artifact@v4
-        with:
-          name: zing-${{ matrix.target }}-deb
-          path: target/debian/*.deb
-
-      - name: Upload .deb to release
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+      - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/debian/*.deb
-
-      - name: Upload archive to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: zing-${{ matrix.target }}.*
-          generate_release_notes: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+          files: zing-${{ github.ref_name }}-*
+          generate_release_notes: ${{ matrix.suffix == 'x86_64-linux' }}
