@@ -235,3 +235,213 @@ impl SegmentManager {
             .count()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_manager_empty() {
+        let mgr = SegmentManager::new(4);
+        assert_eq!(mgr.max_connections, 4);
+        assert!(mgr.segments.is_empty());
+        assert!(mgr.connections.is_empty());
+        assert_eq!(mgr.total_size, None);
+        assert!(!mgr.is_all_complete());
+    }
+
+    #[test]
+    fn test_set_total_size() {
+        let mut mgr = SegmentManager::new(4);
+        assert!(!mgr.has_known_size());
+        mgr.set_total_size(1024);
+        assert!(mgr.has_known_size());
+        assert_eq!(mgr.total_size, Some(1024));
+    }
+
+    #[test]
+    fn test_add_connection() {
+        let mut mgr = SegmentManager::new(4);
+        let id = mgr.add_connection();
+        assert_eq!(id, 0);
+        assert_eq!(mgr.connections.len(), 1);
+        assert_eq!(mgr.connections[0].id, 0);
+        let id2 = mgr.add_connection();
+        assert_eq!(id2, 1);
+        assert_eq!(mgr.connections.len(), 2);
+    }
+
+    #[test]
+    fn test_allocate_segment() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        let id = mgr.allocate_segment(0, 1024, 0);
+        assert!(id.is_some());
+        assert_eq!(mgr.segments.len(), 1);
+        let seg = &mgr.segments[0];
+        assert_eq!(seg.offset, 0);
+        assert_eq!(seg.length, 1024);
+        assert_eq!(seg.state, SegmentState::Active { conn_id: 0 });
+    }
+
+    #[test]
+    fn test_allocate_zero_length_returns_none() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        assert!(mgr.allocate_segment(0, 0, 0).is_none());
+        assert!(mgr.segments.is_empty());
+    }
+
+    #[test]
+    fn test_update_progress_completes_segment() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        mgr.allocate_segment(0, 100, 0);
+        mgr.update_progress(0, 60);
+        let seg = mgr.active_segment_for(0).unwrap();
+        assert_eq!(seg.downloaded, 60);
+        assert_eq!(seg.state, SegmentState::Active { conn_id: 0 });
+
+        mgr.update_progress(0, 40);
+        let seg = mgr.active_segment_for(0);
+        assert!(seg.is_none());
+        let completed = mgr.segments.iter().find(|s| s.id == 0).unwrap();
+        assert_eq!(completed.state, SegmentState::Complete);
+    }
+
+    #[test]
+    fn test_active_segment_for() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        mgr.add_connection();
+        mgr.allocate_segment(0, 100, 0);
+        mgr.allocate_segment(100, 100, 1);
+
+        assert!(mgr.active_segment_for(0).is_some());
+        assert!(mgr.active_segment_for(1).is_some());
+        assert!(mgr.active_segment_for(2).is_none()); // no such connection
+    }
+
+    #[test]
+    fn test_is_all_complete() {
+        let mut mgr = SegmentManager::new(4);
+        assert!(!mgr.is_all_complete()); // empty
+
+        mgr.add_connection();
+        mgr.allocate_segment(0, 100, 0);
+        assert!(!mgr.is_all_complete());
+
+        mgr.update_progress(0, 100);
+        assert!(mgr.is_all_complete());
+    }
+
+    #[test]
+    fn test_total_downloaded() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        mgr.add_connection();
+        mgr.allocate_segment(0, 200, 0);
+        mgr.allocate_segment(200, 200, 1);
+        mgr.update_progress(0, 50);
+        mgr.update_progress(1, 30);
+        assert_eq!(mgr.total_downloaded(), 80);
+    }
+
+    #[test]
+    fn test_active_connection_count() {
+        let mut mgr = SegmentManager::new(4);
+        assert_eq!(mgr.active_connection_count(), 0);
+
+        mgr.add_connection();
+        mgr.add_connection();
+        mgr.allocate_segment(0, 100, 0);
+        assert_eq!(mgr.active_connection_count(), 1);
+
+        mgr.allocate_segment(100, 100, 1);
+        assert_eq!(mgr.active_connection_count(), 2);
+
+        mgr.update_progress(0, 100);
+        assert_eq!(mgr.active_connection_count(), 1);
+    }
+
+    #[test]
+    fn test_slowest_and_fastest_connection() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        mgr.add_connection();
+        mgr.allocate_segment(0, 100, 0);
+        mgr.allocate_segment(100, 100, 1);
+
+        // Both active connections should be found
+        assert!(mgr.slowest_connection().is_some());
+        assert!(mgr.fastest_connection().is_some());
+    }
+
+    #[test]
+    fn test_remove_connection_merges_remaining() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        mgr.allocate_segment(0, 1000, 0);
+        mgr.update_progress(0, 300);
+        mgr.min_segment_size = 100;
+
+        let result = mgr.remove_connection(0);
+        assert!(result.is_some());
+        let (offset, remaining) = result.unwrap();
+        assert_eq!(offset, 300);
+        assert_eq!(remaining, 700);
+        assert_eq!(mgr.pending_segment_count(), 1);
+
+        // Original segment should be marked complete
+        let orig = &mgr.segments[0];
+        assert_eq!(orig.state, SegmentState::Complete);
+        assert_eq!(orig.downloaded, 300);
+        assert_eq!(orig.length, 300);
+    }
+
+    #[test]
+    fn test_remove_connection_too_small_returns_none() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        mgr.allocate_segment(0, 50, 0);
+        mgr.update_progress(0, 10);
+        mgr.min_segment_size = 100;
+
+        assert!(mgr.remove_connection(0).is_none());
+    }
+
+    #[test]
+    fn test_remove_nonexistent_connection() {
+        let mut mgr = SegmentManager::new(4);
+        assert!(mgr.remove_connection(0).is_none());
+    }
+
+    #[test]
+    fn test_pending_segment_count() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        assert_eq!(mgr.pending_segment_count(), 0);
+
+        mgr.allocate_segment(0, 100, 0);
+        assert_eq!(mgr.pending_segment_count(), 0); // active, not pending
+
+        // Create a pending segment directly
+        mgr.segments.push(Segment::new(1, 200, 100));
+        assert_eq!(mgr.pending_segment_count(), 1);
+    }
+
+    #[test]
+    fn test_connection_speed() {
+        let mut mgr = SegmentManager::new(4);
+        mgr.add_connection();
+        mgr.add_connection();
+        assert_eq!(mgr.connection_speed(0), 0.0);
+        assert_eq!(mgr.connection_speed(999), 0.0); // nonexistent
+
+        mgr.allocate_segment(0, 100, 0);
+        mgr.update_progress(0, 50);
+        // Speed should have been updated (EWMA)
+        let speed = mgr.connection_speed(0);
+        assert!(speed > 0.0);
+    }
+}

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-fn default_socket() -> String {
+fn socket_path_from_env() -> String {
     if let Ok(dir) = std::env::var("RUNTIME_DIRECTORY") {
         return PathBuf::from(dir)
             .join("zing.sock")
@@ -20,6 +20,32 @@ fn default_socket() -> String {
             .to_string();
     }
     "/tmp/zing.sock".to_string()
+}
+
+async fn read_auth_token() -> Option<String> {
+    let socket = std::env::var("RXD_SOCKET").unwrap_or_else(|_| socket_path_from_env());
+    let token_path = format!("{}.auth", socket);
+    tokio::fs::read_to_string(&token_path)
+        .await
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+fn default_socket() -> String {
+    socket_path_from_env()
+}
+
+async fn build_request(method: &str, params: Option<Value>) -> serde_json::Value {
+    let token = read_auth_token().await;
+    let mut req = serde_json::json!({
+        "method": method,
+        "params": params,
+        "id": 1,
+    });
+    if let Some(t) = token {
+        req["token"] = serde_json::Value::String(t);
+    }
+    req
 }
 
 pub async fn daemon_is_running() -> bool {
@@ -38,11 +64,7 @@ pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, 
 
     let (reader, mut writer) = stream.into_split();
 
-    let request = serde_json::json!({
-        "method": method,
-        "params": params,
-        "id": 1,
-    });
+    let request = build_request(method, params).await;
 
     let mut req_str = serde_json::to_string(&request).map_err(|e| format!("serialize: {e}"))?;
     req_str.push('\n');
@@ -51,7 +73,6 @@ pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, 
         .await
         .map_err(|e| format!("write: {e}"))?;
 
-    // Drop writer to signal EOF to reader
     drop(writer);
 
     let mut reader = BufReader::new(reader);
@@ -84,10 +105,7 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
 
     let (reader, mut writer) = stream.into_split();
 
-    let request = serde_json::json!({
-        "method": "zing.subscribe",
-        "id": 2,
-    });
+    let request = build_request("zing.subscribe", None).await;
     let mut req_str = match serde_json::to_string(&request) {
         Ok(s) => s,
         Err(_) => return,

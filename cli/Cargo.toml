@@ -42,6 +42,8 @@ path = "src/main.rs"
 zing-core = { path = "../core" }
 zing-ext = { path = "../ext" }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.2"
 dirs = "6"
 indicatif = "0.18"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "process"] }

@@ -646,6 +646,30 @@ impl DownloadTask {
     }
 }
 
+fn is_retryable_error(e: &anyhow::Error) -> bool {
+    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+        return matches!(
+            io_err.kind(),
+            std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::Interrupted
+                | std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::NotConnected
+        );
+    }
+    let msg = format!("{e}");
+    msg.contains("read timeout")
+        || msg.contains("connection closed")
+        || msg.contains("HTTP 408")
+        || msg.contains("HTTP 429")
+        || msg.contains("HTTP 500")
+        || msg.contains("HTTP 502")
+        || msg.contains("HTTP 503")
+        || msg.contains("HTTP 504")
+}
+
 async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
     let mut retry = RetryManager::new(
         5,
@@ -676,6 +700,10 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
             Err(e) => {
+                if !is_retryable_error(&e) {
+                    tracing::error!("Conn {conn_id}: permanent error {e}, giving up");
+                    return;
+                }
                 tracing::warn!("Conn {conn_id}: {e}, retrying...");
                 if let Some(delay) = retry.next_delay() {
                     tokio::time::sleep(delay).await;

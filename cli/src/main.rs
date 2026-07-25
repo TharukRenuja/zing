@@ -4,7 +4,9 @@ mod config;
 mod daemon_client;
 
 use args::{Args, Commands, ConfigAction, DaemonAction, ScheduleAction};
+use clap::CommandFactory;
 use clap::Parser;
+use clap_complete::generate;
 use color_eyre::Result;
 use config::Config;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -73,6 +75,17 @@ async fn run(args: Args) -> Result<()> {
         }
         Some(Commands::List) => {
             return run_list().await;
+        }
+        Some(Commands::Completions { shell }) => {
+            let mut cmd = Args::command();
+            generate(shell, &mut cmd, "zing", &mut std::io::stdout());
+            return Ok(());
+        }
+        Some(Commands::Man) => {
+            let cmd = Args::command();
+            let man = clap_mangen::Man::new(cmd);
+            man.render(&mut std::io::stdout())?;
+            return Ok(());
         }
         None => {
             if args.urls.is_empty() {

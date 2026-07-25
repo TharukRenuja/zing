@@ -9,6 +9,13 @@ pub struct RpcRequest {
     pub id: Option<Value>,
     pub method: String,
     pub params: Option<Value>,
+    pub token: Option<String>,
+}
+
+impl RpcRequest {
+    pub fn is_authorized(&self, expected: &str) -> bool {
+        self.token.as_deref() == Some(expected)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -26,7 +33,21 @@ pub struct RpcError {
     pub message: String,
 }
 
-pub async fn handle_request(req: RpcRequest, manager: &TaskManager) -> RpcResponse {
+pub async fn handle_request(
+    req: RpcRequest,
+    expected_token: &str,
+    manager: &TaskManager,
+) -> RpcResponse {
+    if !req.is_authorized(expected_token) {
+        return RpcResponse {
+            id: req.id,
+            result: None,
+            error: Some(RpcError {
+                code: -32001,
+                message: "Unauthorized: invalid or missing auth token".to_string(),
+            }),
+        };
+    }
     match req.method.as_str() {
         "zing.addUri" => handle_add_uri(req.params, manager).await,
         "zing.list" => handle_list(req.params, manager).await,
@@ -357,12 +378,43 @@ mod tests {
     use crate::task_manager::TaskManager;
     use serde_json::json;
 
+    const TEST_TOKEN: &str = "test-token";
+
     fn make_req(method: &str, params: Option<Value>) -> RpcRequest {
         RpcRequest {
             id: Some(Value::Number(serde_json::Number::from(1))),
             method: method.to_string(),
             params,
+            token: Some(TEST_TOKEN.to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn test_auth_fails_without_token() {
+        let mgr = TaskManager::new();
+        let req = RpcRequest {
+            id: Some(Value::Number(serde_json::Number::from(1))),
+            method: "zing.list".to_string(),
+            params: None,
+            token: None,
+        };
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32001);
+    }
+
+    #[tokio::test]
+    async fn test_auth_fails_with_wrong_token() {
+        let mgr = TaskManager::new();
+        let req = RpcRequest {
+            id: Some(Value::Number(serde_json::Number::from(1))),
+            method: "zing.list".to_string(),
+            params: None,
+            token: Some("wrong-token".to_string()),
+        };
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32001);
     }
 
     #[tokio::test]
@@ -373,7 +425,7 @@ mod tests {
             "filename": "/tmp/test",
         });
         let req = make_req("zing.addUri", Some(params));
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
         let result = resp.result.unwrap();
         assert_eq!(result["status"], "pending");
@@ -385,7 +437,7 @@ mod tests {
         let mgr = TaskManager::new();
         let params = json!({ "filename": "/tmp/test" });
         let req = make_req("zing.addUri", Some(params));
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         assert!(resp.error.is_some(), "expected error for missing url");
     }
 
@@ -393,7 +445,7 @@ mod tests {
     async fn test_handle_list_empty() {
         let mgr = TaskManager::new();
         let req = make_req("zing.list", None);
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         let tasks = result["tasks"].as_array().unwrap();
@@ -419,7 +471,7 @@ mod tests {
         .await;
 
         let req = make_req("zing.list", None);
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         let result = resp.result.unwrap();
         let tasks = result["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
@@ -446,7 +498,7 @@ mod tests {
 
         let params = json!({ "id": id });
         let req = make_req("zing.tellStatus", Some(params));
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
         let result = resp.result.unwrap();
         assert_eq!(result["url"], "http://example.com/file");
@@ -457,7 +509,7 @@ mod tests {
         let mgr = TaskManager::new();
         let params = json!({ "id": 999 });
         let req = make_req("zing.tellStatus", Some(params));
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32000);
     }
@@ -483,7 +535,7 @@ mod tests {
 
         let params = json!({ "id": id });
         let req = make_req("zing.pause", Some(params));
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         let result = resp.result.unwrap();
         assert_eq!(result["status"], "paused");
     }
@@ -509,7 +561,7 @@ mod tests {
 
         let params = json!({ "id": id });
         let req = make_req("zing.remove", Some(params));
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["status"], "removed");
@@ -522,7 +574,7 @@ mod tests {
     async fn test_handle_unknown_method() {
         let mgr = TaskManager::new();
         let req = make_req("zing.unknown", None);
-        let resp = handle_request(req, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
     }

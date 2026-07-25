@@ -5,7 +5,11 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::net::UnixListener;
 
-pub async fn run(socket_path: &Path, manager: TaskManager) -> std::io::Result<()> {
+pub async fn run(
+    socket_path: &Path,
+    auth_token: String,
+    manager: TaskManager,
+) -> std::io::Result<()> {
     if let Some(parent) = socket_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
@@ -26,6 +30,7 @@ pub async fn run(socket_path: &Path, manager: TaskManager) -> std::io::Result<()
         tracing::debug!("Connection from {addr:?}");
 
         let mgr = Arc::clone(&manager);
+        let token = auth_token.clone();
         tokio::spawn(async move {
             use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -80,6 +85,20 @@ pub async fn run(socket_path: &Path, manager: TaskManager) -> std::io::Result<()
                     }
                 };
 
+                if !request.is_authorized(&token) {
+                    let err_resp = RpcResponse {
+                        id: request.id,
+                        result: None,
+                        error: Some(crate::rpc::RpcError {
+                            code: -32001,
+                            message: "Unauthorized: invalid or missing auth token".to_string(),
+                        }),
+                    };
+                    let resp_json = serde_json::to_string(&err_resp).unwrap_or_default();
+                    write_resp(&mut writer, &resp_json).await;
+                    continue;
+                }
+
                 if crate::rpc::is_subscribe(&request.method) {
                     if let Some(w) = writer.take() {
                         crate::rpc::handle_subscribe_and_stream(&mgr, w).await;
@@ -87,7 +106,7 @@ pub async fn run(socket_path: &Path, manager: TaskManager) -> std::io::Result<()
                     break;
                 }
 
-                let response = crate::rpc::handle_request(request, &mgr).await;
+                let response = crate::rpc::handle_request(request, &token, &mgr).await;
                 let resp_json = serde_json::to_string(&response).unwrap_or_default();
                 write_resp(&mut writer, &resp_json).await;
             }

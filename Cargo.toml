@@ -3,5 +3,11 @@ resolver = "2"
 members = ["core", "cli", "daemon", "ext"]
 default-members = ["cli"]
 
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
+opt-level = 3
+
 [workspace.metadata.deb]
 copyright = "© 2026 Tharuk Renuja"

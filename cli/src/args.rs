@@ -125,6 +125,15 @@ pub enum Commands {
         alias = "tasks"
     )]
     List,
+
+    #[command(name = "completions", about = "Generate shell completions")]
+    Completions {
+        #[arg(value_enum, help = "Shell to generate completions for")]
+        shell: clap_complete::Shell,
+    },
+
+    #[command(name = "man", about = "Generate man page")]
+    Man,
 }
 
 #[derive(Parser, Debug)]
