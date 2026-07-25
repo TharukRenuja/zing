@@ -29,6 +29,22 @@ cargo build --release
 ./target/release/zing --help
 ```
 
+## Uninstall
+
+```bash
+# Remove binaries
+sudo rm /usr/local/bin/zing /usr/local/bin/zing-daemon
+
+# Remove config and schedule files
+rm -rf ~/.config/zing
+
+# Remove daemon service (if installed)
+zing daemon uninstall
+
+# Remove socket and auth token
+rm -f /tmp/zing.sock /tmp/zing.sock.auth
+```
+
 ## How it works
 
 ```
