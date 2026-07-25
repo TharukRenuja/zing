@@ -1,6 +1,6 @@
 use crate::engine::event::{EngineEvent, EventBus, TaskId};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,7 +102,7 @@ impl ConnectionPool {
 
     fn emit_connection(&self, task_id: TaskId, protocol: &Protocol) {
         if let Some(ref bus) = self.event_bus {
-            let _ = bus.emit(EngineEvent::ConnectionCreated {
+            bus.emit(EngineEvent::ConnectionCreated {
                 task_id,
                 protocol: protocol.to_string(),
             });
@@ -110,7 +110,11 @@ impl ConnectionPool {
     }
 
     /// Perform a GET request with protocol detection.
-    pub async fn get(&self, url: &str, task_id: TaskId) -> Result<ConnectionResponse, reqwest::Error> {
+    pub async fn get(
+        &self,
+        url: &str,
+        task_id: TaskId,
+    ) -> Result<ConnectionResponse, reqwest::Error> {
         self.metrics.requests_total.fetch_add(1, Ordering::Relaxed);
 
         let mut req = self.client.get(url);
@@ -121,7 +125,9 @@ impl ConnectionPool {
 
         let protocol = Self::detect_protocol(&resp);
         if protocol == Protocol::Http2 {
-            self.metrics.h2_streams_created.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .h2_streams_created
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         self.emit_connection(task_id, &protocol);
@@ -152,7 +158,9 @@ impl ConnectionPool {
 
         let protocol = Self::detect_protocol(&resp);
         if protocol == Protocol::Http2 {
-            self.metrics.h2_streams_created.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .h2_streams_created
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         self.emit_connection(task_id, &protocol);

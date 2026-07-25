@@ -8,10 +8,16 @@ use tokio::net::UnixStream;
 
 fn default_socket() -> String {
     if let Ok(dir) = std::env::var("RUNTIME_DIRECTORY") {
-        return PathBuf::from(dir).join("zing.sock").to_string_lossy().to_string();
+        return PathBuf::from(dir)
+            .join("zing.sock")
+            .to_string_lossy()
+            .to_string();
     }
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir).join("zing.sock").to_string_lossy().to_string();
+        return PathBuf::from(dir)
+            .join("zing.sock")
+            .to_string_lossy()
+            .to_string();
     }
     "/tmp/zing.sock".to_string()
 }
@@ -126,7 +132,10 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
 
         match event_type {
             "TaskCreated" => {
-                let url = event.get("url").and_then(|v| v.as_str()).unwrap_or("download");
+                let url = event
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("download");
                 let display = zing_ext::filename::from_url(url);
                 let bar = indicatif::ProgressBar::new(0);
                 bar.set_prefix(display);
@@ -139,12 +148,18 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
                 pb = Some(bar);
             }
             "TaskProgress" => {
-                let bytes = event.get("bytes_downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
+                let bytes = event
+                    .get("bytes_downloaded")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let total = event.get("total_bytes").and_then(|v| v.as_u64());
-                let speed = event.get("speed_bytes_per_sec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let speed = event
+                    .get("speed_bytes_per_sec")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
                 if let Some(ref bar) = pb {
                     bar.set_position(bytes);
-                    if total.is_some_and(|t| t > 0) && bar.length().map_or(true, |l| l == 0) {
+                    if total.is_some_and(|t| t > 0) && bar.length().is_none_or(|l| l == 0) {
                         let t = total.unwrap();
                         bar.set_length(t);
                     }
@@ -177,7 +192,9 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
                     } else {
                         bar.set_style(
                             indicatif::ProgressStyle::default_bar()
-                                .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})")
+                                .template(
+                                    "{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})",
+                                )
                                 .unwrap(),
                         );
                     }
@@ -192,7 +209,10 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
                 break;
             }
             "TaskFailed" => {
-                let error = event.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let error = event
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 if let Some(bar) = pb.take() {
                     bar.finish_with_message("Failed");
                 }

@@ -47,10 +47,22 @@ mod tests {
 
     #[test]
     fn test_hash_kind_from_hex() {
-        assert_eq!(HashKind::from_hex("d41d8cd98f00b204e9800998ecf8427e"), Some(HashKind::Md5));
-        assert_eq!(HashKind::from_hex("a9993e364706816aba3e25717850c26c9cd0d89d"), Some(HashKind::Sha1));
-        assert_eq!(HashKind::from_hex("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"), Some(HashKind::Sha256));
-        assert_eq!(HashKind::from_hex(&format!("a{:0>127}", 0)), Some(HashKind::Sha512));
+        assert_eq!(
+            HashKind::from_hex("d41d8cd98f00b204e9800998ecf8427e"),
+            Some(HashKind::Md5)
+        );
+        assert_eq!(
+            HashKind::from_hex("a9993e364706816aba3e25717850c26c9cd0d89d"),
+            Some(HashKind::Sha1)
+        );
+        assert_eq!(
+            HashKind::from_hex("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+            Some(HashKind::Sha256)
+        );
+        assert_eq!(
+            HashKind::from_hex(&format!("a{:0>127}", 0)),
+            Some(HashKind::Sha512)
+        );
         assert_eq!(HashKind::from_hex("invalid"), None);
     }
 
@@ -62,7 +74,10 @@ mod tests {
         std::fs::write(&path, b"").unwrap();
 
         assert!(hash_file(&path, &HashKind::Md5).unwrap() == "d41d8cd98f00b204e9800998ecf8427e");
-        assert!(hash_file(&path, &HashKind::Sha256).unwrap() == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert!(
+            hash_file(&path, &HashKind::Sha256).unwrap()
+                == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -81,7 +96,10 @@ mod tests {
         assert_eq!(sha1, "0a0a9f2a6772942557ab5355d76af442f8f65e01");
 
         let sha256 = hash_file(&path, &HashKind::Sha256).unwrap();
-        assert_eq!(sha256, "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f");
+        assert_eq!(
+            sha256,
+            "dffd6021bb2bd5b0af676290809ec3a53191dd81c7f70a4b28688a362182986f"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -109,16 +127,20 @@ pub fn verify_file(path: &Path, expected_hex: &str) -> Result<bool, String> {
 }
 
 pub fn hash_file(path: &Path, kind: &HashKind) -> Result<String, String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
 
     let mut buf = [0u8; 65536];
     let computed: String = match kind {
         HashKind::Md5 => {
             let mut hasher = md5::Md5::new();
             loop {
-                let n = file.read(&mut buf).map_err(|e| format!("read error: {e}"))?;
-                if n == 0 { break; }
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| format!("read error: {e}"))?;
+                if n == 0 {
+                    break;
+                }
                 hasher.update(&buf[..n]);
             }
             hex_encode(&hasher.finalize())
@@ -126,8 +148,12 @@ pub fn hash_file(path: &Path, kind: &HashKind) -> Result<String, String> {
         HashKind::Sha1 => {
             let mut hasher = sha1::Sha1::new();
             loop {
-                let n = file.read(&mut buf).map_err(|e| format!("read error: {e}"))?;
-                if n == 0 { break; }
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| format!("read error: {e}"))?;
+                if n == 0 {
+                    break;
+                }
                 hasher.update(&buf[..n]);
             }
             hex_encode(&hasher.finalize())
@@ -135,8 +161,12 @@ pub fn hash_file(path: &Path, kind: &HashKind) -> Result<String, String> {
         HashKind::Sha256 => {
             let mut hasher = sha2::Sha256::new();
             loop {
-                let n = file.read(&mut buf).map_err(|e| format!("read error: {e}"))?;
-                if n == 0 { break; }
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| format!("read error: {e}"))?;
+                if n == 0 {
+                    break;
+                }
                 hasher.update(&buf[..n]);
             }
             hex_encode(&hasher.finalize())
@@ -144,8 +174,12 @@ pub fn hash_file(path: &Path, kind: &HashKind) -> Result<String, String> {
         HashKind::Sha512 => {
             let mut hasher = sha2::Sha512::new();
             loop {
-                let n = file.read(&mut buf).map_err(|e| format!("read error: {e}"))?;
-                if n == 0 { break; }
+                let n = file
+                    .read(&mut buf)
+                    .map_err(|e| format!("read error: {e}"))?;
+                if n == 0 {
+                    break;
+                }
                 hasher.update(&buf[..n]);
             }
             hex_encode(&hasher.finalize())

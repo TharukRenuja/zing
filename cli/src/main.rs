@@ -1,41 +1,44 @@
 mod args;
-#[cfg(unix)] mod daemon_client;
 mod config;
+#[cfg(unix)]
+mod daemon_client;
 
-use args::{Args, Commands, ConfigAction, ScheduleAction, DaemonAction};
-use config::Config;
+use args::{Args, Commands, ConfigAction, DaemonAction, ScheduleAction};
 use clap::Parser;
 use color_eyre::Result;
+use config::Config;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::broadcast;
 use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::{EngineEvent, EventBus};
 use zing_ext::checksum;
 use zing_ext::filename;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::broadcast;
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
 fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
-    raw.iter().filter_map(|s| {
-        let mut parts = s.splitn(2, ':');
-        let key = parts.next()?.trim().to_string();
-        let val = parts.next()?.trim().to_string();
-        if key.is_empty() || val.is_empty() {
-            tracing::warn!("ignoring invalid header: {s:?}");
-            return None;
-        }
-        Some((key, val))
-    }).collect()
+    raw.iter()
+        .filter_map(|s| {
+            let mut parts = s.splitn(2, ':');
+            let key = parts.next()?.trim().to_string();
+            let val = parts.next()?.trim().to_string();
+            if key.is_empty() || val.is_empty() {
+                tracing::warn!("ignoring invalid header: {s:?}");
+                return None;
+            }
+            Some((key, val))
+        })
+        .collect()
 }
 
 fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let _ = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -142,9 +145,9 @@ async fn run(args: Args) -> Result<()> {
         let tx = shutdown_tx.clone();
         let quit = Arc::clone(&quit_requested);
         tokio::spawn(async move {
-            let mut sigterm = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::terminate(),
-            ).expect("sigterm handler");
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("sigterm handler");
             sigterm.recv().await;
             quit.store(true, Ordering::Release);
             tracing::info!("SIGTERM received, shutting down...");
@@ -158,7 +161,8 @@ async fn run(args: Args) -> Result<()> {
         tokio::spawn(async move {
             let mut sigcont = tokio::signal::unix::signal(
                 tokio::signal::unix::SignalKind::from_raw(libc::SIGCONT),
-            ).expect("sigcont handler");
+            )
+            .expect("sigcont handler");
             loop {
                 sigcont.recv().await;
                 resume.store(true, Ordering::Release);
@@ -180,12 +184,11 @@ async fn run(args: Args) -> Result<()> {
     }
 
     let metalink_override = if let Some(ref path) = args.metalink {
-        let content = tokio::fs::read_to_string(path).await.map_err(|e| {
-            color_eyre::eyre::eyre!("Cannot read metalink '{}': {e}", path)
-        })?;
-        let files = zing_ext::metalink::parse_metalink_str(&content).map_err(|e| {
-            color_eyre::eyre::eyre!("Failed to parse metalink '{}': {e}", path)
-        })?;
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("Cannot read metalink '{}': {e}", path))?;
+        let files = zing_ext::metalink::parse_metalink_str(&content)
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to parse metalink '{}': {e}", path))?;
         if let Some(entry) = files.into_iter().next() {
             let url = entry.urls.first().cloned().unwrap_or_default();
             let mirrors: Vec<String> = entry.urls.into_iter().skip(1).collect();
@@ -195,13 +198,22 @@ async fn run(args: Args) -> Result<()> {
                 Some(name) => name.to_string_lossy().to_string(),
                 None => {
                     if fname.is_empty() {
-                        download_dir.join(filename::from_url(&url)).to_string_lossy().to_string()
+                        download_dir
+                            .join(filename::from_url(&url))
+                            .to_string_lossy()
+                            .to_string()
                     } else {
                         download_dir.join(&fname).to_string_lossy().to_string()
                     }
                 }
             };
-            Some(MetalinkOverride { url, mirrors, checksum, is_auto_name: args.output.is_none(), filename })
+            Some(MetalinkOverride {
+                url,
+                mirrors,
+                checksum,
+                is_auto_name: args.output.is_none(),
+                filename,
+            })
         } else {
             None
         }
@@ -225,14 +237,17 @@ async fn run(args: Args) -> Result<()> {
     let mut join_set = tokio::task::JoinSet::new();
 
     for (i, url) in urls.into_iter().enumerate() {
-        let is_auto_name = args.output.is_none()
-            && metalink.map_or(true, |m| i == 0 && m.is_auto_name);
+        let is_auto_name =
+            args.output.is_none() && metalink.is_none_or(|m| i == 0 && m.is_auto_name);
 
         let filename = match &args.output {
             Some(name) => name.to_string_lossy().to_string(),
             None => {
-                let base = if i == 0 && metalink.is_some() {
-                    metalink.as_ref().unwrap().filename.clone()
+                let base = if i == 0 {
+                    metalink.map_or_else(
+                        || zing_ext::filename::from_url(&url),
+                        |m| m.filename.clone(),
+                    )
                 } else {
                     zing_ext::filename::from_url(&url)
                 };
@@ -245,7 +260,9 @@ async fn run(args: Args) -> Result<()> {
         };
 
         let effective_mirrors = metalink.map_or_else(|| args.mirror.clone(), |m| m.mirrors.clone());
-        let effective_checksum = metalink.and_then(|m| m.checksum.clone()).or_else(|| args.checksum.clone());
+        let effective_checksum = metalink
+            .and_then(|m| m.checksum.clone())
+            .or_else(|| args.checksum.clone());
         let headers = parse_headers(&args.header);
         let proxy = args.proxy.clone();
         let bwlimit = args.bwlimit.clone();
@@ -261,14 +278,19 @@ async fn run(args: Args) -> Result<()> {
                 let _permit = s.acquire().await.expect("semaphore");
             }
 
-            tokio::fs::create_dir_all(&download_dir).await.map_err(|e| {
-                color_eyre::eyre::eyre!("Cannot create download directory '{}': {e}", download_dir.display())
-            })?;
+            tokio::fs::create_dir_all(&download_dir)
+                .await
+                .map_err(|e| {
+                    color_eyre::eyre::eyre!(
+                        "Cannot create download directory '{}': {e}",
+                        download_dir.display()
+                    )
+                })?;
 
             let task_id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
 
             loop {
-                let _ = bus.emit(EngineEvent::TaskCreated {
+                bus.emit(EngineEvent::TaskCreated {
                     id: task_id,
                     url: url.clone(),
                 });
@@ -299,16 +321,21 @@ async fn run(args: Args) -> Result<()> {
                 }
 
                 if quit_requested.load(Ordering::Acquire) {
-                    let control_path = zing_core::storage::control::ControlFile::control_path(Path::new(&filename));
+                    let control_path = zing_core::storage::control::ControlFile::control_path(
+                        Path::new(&filename),
+                    );
                     let _ = tokio::fs::remove_file(&control_path).await;
                     tracing::info!("Quit requested, cleaning up...");
                     break;
                 }
 
-                let control_path = zing_core::storage::control::ControlFile::control_path(Path::new(&filename));
+                let control_path =
+                    zing_core::storage::control::ControlFile::control_path(Path::new(&filename));
                 if control_path.exists() {
-                    tracing::info!("Download paused. Send SIGCONT (fg) to resume, or Ctrl+C to quit.");
-                    let _ = bus.emit(EngineEvent::Paused {
+                    tracing::info!(
+                        "Download paused. Send SIGCONT (fg) to resume, or Ctrl+C to quit."
+                    );
+                    bus.emit(EngineEvent::Paused {
                         id: task_id,
                         bytes_downloaded: 0,
                         total_bytes: 0,
@@ -442,7 +469,10 @@ async fn run_daemon_install() -> Result<()> {
             tracing::info!("systemd daemon-reload: OK");
         }
         Ok(out) => {
-            tracing::warn!("systemctl daemon-reload: {}", String::from_utf8_lossy(&out.stderr));
+            tracing::warn!(
+                "systemctl daemon-reload: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
         Err(e) => {
             tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user daemon-reload && systemctl --user enable --now zing-daemon.service");
@@ -484,7 +514,10 @@ async fn run_daemon_uninstall() -> Result<()> {
             tracing::info!("systemd service disabled and stopped");
         }
         Ok(out) => {
-            tracing::warn!("systemctl disable: {}", String::from_utf8_lossy(&out.stderr));
+            tracing::warn!(
+                "systemctl disable: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
         Err(e) => {
             tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user disable --now zing-daemon.service");
@@ -557,7 +590,10 @@ async fn run_schedule(_args: &Args, sched: &args::ScheduleArgs) -> Result<()> {
                 return Ok(());
             }
             println!("Scheduled downloads:");
-            println!("{:<20} {:<14} {:<25} {:<10} {}", "ID", "WINDOW", "DAYS", "ENABLED", "URL");
+            println!(
+                "{:<20} {:<14} {:<25} {:<10} URL",
+                "ID", "WINDOW", "DAYS", "ENABLED"
+            );
             println!("{}", "-".repeat(95));
             let mut ids: Vec<&String> = entries.keys().collect();
             ids.sort();
@@ -569,16 +605,36 @@ async fn run_schedule(_args: &Args, sched: &args::ScheduleArgs) -> Result<()> {
                     Some(e) => format!("{}-{}", at, e),
                     None => at.to_string(),
                 };
-                let days = e.get("days")
+                let days = e
+                    .get("days")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|d| d.as_str()).collect::<Vec<_>>().join(","))
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|d| d.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
                     .unwrap_or_else(|| "*".to_string());
                 let enabled = e.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
                 let url = e.get("url").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("{:<20} {:<14} {:<25} {:<10} {}", id, window, days, if enabled { "yes" } else { "no" }, url);
+                println!(
+                    "{:<20} {:<14} {:<25} {:<10} {}",
+                    id,
+                    window,
+                    days,
+                    if enabled { "yes" } else { "no" },
+                    url
+                );
             }
         }
-        ScheduleAction::Add { url, at, end, days, output, connections } => {
+        ScheduleAction::Add {
+            url,
+            at,
+            end,
+            days,
+            output,
+            connections,
+        } => {
             if !at.contains(':') || at.len() != 5 {
                 eprintln!("Error: --at must be in HH:MM format (e.g. 02:00)");
                 return Ok(());
@@ -604,7 +660,11 @@ async fn run_schedule(_args: &Args, sched: &args::ScheduleArgs) -> Result<()> {
                 "connections": connections.unwrap_or(4),
             });
 
-            let display_id = if id.is_empty() { "schedule-1".to_string() } else { id };
+            let display_id = if id.is_empty() {
+                "schedule-1".to_string()
+            } else {
+                id
+            };
             entries.insert(display_id.clone(), entry);
             let json = serde_json::to_string_pretty(&entries)?;
             tokio::fs::write(&config_path, json).await?;
@@ -646,30 +706,45 @@ async fn run_config(conf: &args::ConfigArgs) -> Result<()> {
     match &conf.action {
         ConfigAction::List => {
             let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-            let cfg: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+            let cfg: serde_json::Value =
+                serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
             println!("{}", serde_json::to_string_pretty(&cfg)?);
         }
         ConfigAction::Set { key, value } => {
-            let content = tokio::fs::read_to_string(&path).await.unwrap_or_else(|_| "{}".to_string());
-            let mut cfg: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .unwrap_or_else(|_| "{}".to_string());
+            let mut cfg: serde_json::Value =
+                serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
             // Try parsing value as JSON (number, bool, null) else treat as string
-            let parsed: serde_json::Value = serde_json::from_str(value).unwrap_or(serde_json::Value::String(value.clone()));
+            let parsed: serde_json::Value =
+                serde_json::from_str(value).unwrap_or(serde_json::Value::String(value.clone()));
             cfg[key] = parsed;
             tokio::fs::write(&path, serde_json::to_string_pretty(&cfg)?).await?;
             println!("Set config: {} = {} (in {})", key, value, path.display());
         }
         ConfigAction::Get { key } => {
-            let content = tokio::fs::read_to_string(&path).await.unwrap_or_else(|_| "{}".to_string());
-            let cfg: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .unwrap_or_else(|_| "{}".to_string());
+            let cfg: serde_json::Value =
+                serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
             match cfg.get(key) {
                 Some(v) => println!("{} = {}", key, v),
                 None => eprintln!("Config key '{}' not found", key),
             }
         }
         ConfigAction::Delete { key } => {
-            let content = tokio::fs::read_to_string(&path).await.unwrap_or_else(|_| "{}".to_string());
-            let mut cfg: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
-            if cfg.as_object_mut().map(|o| o.remove(key).is_some()).unwrap_or(false) {
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .unwrap_or_else(|_| "{}".to_string());
+            let mut cfg: serde_json::Value =
+                serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+            if cfg
+                .as_object_mut()
+                .map(|o| o.remove(key).is_some())
+                .unwrap_or(false)
+            {
                 tokio::fs::write(&path, serde_json::to_string_pretty(&cfg)?).await?;
                 println!("Removed config key: {}", key);
             } else {
@@ -689,7 +764,9 @@ async fn run_config(conf: &args::ConfigArgs) -> Result<()> {
             let status = std::process::Command::new(&editor)
                 .arg(&path)
                 .status()
-                .map_err(|e| color_eyre::eyre::eyre!("Failed to launch editor '{}': {}", editor, e))?;
+                .map_err(|e| {
+                    color_eyre::eyre::eyre!("Failed to launch editor '{}': {}", editor, e)
+                })?;
 
             if !status.success() {
                 eprintln!("Editor exited with error");
@@ -704,23 +781,37 @@ async fn run_list() -> Result<()> {
     if daemon_client::daemon_is_running().await {
         match daemon_client::send_request("zing.list", None).await {
             Ok(resp) => {
-                let tasks = resp.get("tasks").and_then(|v| v.as_array()).map(|a| a.clone()).unwrap_or_default();
+                let tasks = resp
+                    .get("tasks")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 if tasks.is_empty() {
                     println!("No downloads.");
                     return Ok(());
                 }
-                println!("{:<6} {:<12} {:<30} {:<25} {}", "ID", "STATUS", "PROGRESS", "SPEED", "FILE");
+                println!(
+                    "{:<6} {:<12} {:<30} {:<25} FILE",
+                    "ID", "STATUS", "PROGRESS", "SPEED"
+                );
                 println!("{}", "-".repeat(100));
                 for task in &tasks {
                     let id = task.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
                     let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                     let filename = task.get("filename").and_then(|v| v.as_str()).unwrap_or("?");
-                    let total = task.get("total_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let total = task
+                        .get("total_bytes")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     let downloaded = task.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
                     let speed = task.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let status_short = status.trim_end_matches(')').trim_start_matches("Failed(");
                     let progress = if total > 0 {
-                        let pct = if total > 0 { downloaded as f64 / total as f64 * 100.0 } else { 0.0 };
+                        let pct = if total > 0 {
+                            downloaded as f64 / total as f64 * 100.0
+                        } else {
+                            0.0
+                        };
                         format!("{:.1}% ({}/{})", pct, downloaded, total)
                     } else {
                         format!("{} bytes", downloaded)
@@ -730,7 +821,10 @@ async fn run_list() -> Result<()> {
                     } else {
                         "-".to_string()
                     };
-                    println!("{:<6} {:<12} {:<30} {:<25} {}", id, status_short, progress, speed_str, filename);
+                    println!(
+                        "{:<6} {:<12} {:<30} {:<25} {}",
+                        id, status_short, progress, speed_str, filename
+                    );
                 }
             }
             Err(e) => eprintln!("Failed to list downloads: {e}"),
@@ -746,8 +840,8 @@ async fn run_list() -> Result<()> {
 
 async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Result<()> {
     use indicatif::MultiProgress;
-    use tokio::sync::broadcast::error::RecvError;
     use std::collections::HashMap;
+    use tokio::sync::broadcast::error::RecvError;
 
     let mp = MultiProgress::new();
     let mut bars: HashMap<u64, ProgressBar> = HashMap::new();

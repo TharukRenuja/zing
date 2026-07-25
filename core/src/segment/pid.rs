@@ -123,7 +123,10 @@ impl PidController {
                     self.kd *= 0.85;
                     tracing::trace!(
                         "gain flatten: improvement={:.3} margin={:.3} kp={:.5}->{:.5}",
-                        improvement, margin, prev_kp, self.kp,
+                        improvement,
+                        margin,
+                        prev_kp,
+                        self.kp,
                     );
                     if self.kp < self.kp_base * 0.01 {
                         self.is_flattened = true;

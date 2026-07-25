@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::{broadcast, Mutex};
 use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::{EngineEvent, EventBus, TaskId};
-use std::sync::Arc;
-use tokio::sync::{Mutex, broadcast};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -53,6 +53,7 @@ impl TaskManager {
         &self.bus
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_task(
         &self,
         url: &str,
@@ -84,7 +85,7 @@ impl TaskManager {
             tasks.insert(id, info);
         }
 
-        let _ = self.bus.emit(EngineEvent::TaskCreated {
+        self.bus.emit(EngineEvent::TaskCreated {
             id,
             url: url.to_string(),
         });
@@ -126,10 +127,19 @@ impl TaskManager {
 
         tokio::spawn(async move {
             let task = DownloadTask::new(
-                id, &url, &filename, is_auto_name, max_connections,
-                bus.clone(), insecure, max_download_rate,
-                proxy_url.clone(), mirrors.clone(), bw_schedule.clone(),
-                headers.clone(), max_filesize,
+                id,
+                &url,
+                &filename,
+                is_auto_name,
+                max_connections,
+                bus.clone(),
+                insecure,
+                max_download_rate,
+                proxy_url.clone(),
+                mirrors.clone(),
+                bw_schedule.clone(),
+                headers.clone(),
+                max_filesize,
             );
 
             {
@@ -148,7 +158,7 @@ impl TaskManager {
                         if let Some(t) = tasks.get_mut(&id) {
                             if t.status != TaskStatus::Paused {
                                 t.status = TaskStatus::Completed;
-                                let _ = bus.emit(EngineEvent::TaskCompleted {
+                                bus.emit(EngineEvent::TaskCompleted {
                                     id,
                                     total_bytes: t.total_bytes.unwrap_or(0),
                                     duration: std::time::Duration::ZERO,
@@ -163,7 +173,7 @@ impl TaskManager {
                             }
                         }
                         tracing::error!("Task {id} failed: {e}");
-                        let _ = bus.emit(EngineEvent::TaskFailed {
+                        bus.emit(EngineEvent::TaskFailed {
                             id,
                             error: format!("{e}"),
                         });
@@ -182,14 +192,17 @@ impl TaskManager {
 
     pub async fn pause_task(&self, id: TaskId) -> Result<(), String> {
         let cancel_map = self.cancel_txs.lock().await;
-        let tx = cancel_map.get(&id).ok_or_else(|| format!("Task {id} not found"))?;
-        tx.send(()).map_err(|_| format!("Task {id} already finished"))?;
+        let tx = cancel_map
+            .get(&id)
+            .ok_or_else(|| format!("Task {id} not found"))?;
+        tx.send(())
+            .map_err(|_| format!("Task {id} already finished"))?;
         drop(cancel_map);
 
         let mut tasks = self.tasks.lock().await;
         if let Some(t) = tasks.get_mut(&id) {
             t.status = TaskStatus::Paused;
-            let _ = self.bus.emit(EngineEvent::Paused {
+            self.bus.emit(EngineEvent::Paused {
                 id,
                 bytes_downloaded: t.downloaded,
                 total_bytes: t.total_bytes.unwrap_or(0),
@@ -240,7 +253,21 @@ mod tests {
     #[tokio::test]
     async fn test_add_and_list_task() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id = mgr
+            .add_task(
+                "http://example.com/file",
+                "/tmp/test",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
 
         let tasks = mgr.list_tasks().await;
         assert_eq!(tasks.len(), 1);
@@ -252,7 +279,21 @@ mod tests {
     #[tokio::test]
     async fn test_pause_task() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id = mgr
+            .add_task(
+                "http://example.com/file",
+                "/tmp/test",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
 
         // Small sleep to let the spawned task start
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -273,7 +314,21 @@ mod tests {
     #[tokio::test]
     async fn test_remove_task() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id = mgr
+            .add_task(
+                "http://example.com/file",
+                "/tmp/test",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
 
         mgr.remove_task(id).await.unwrap();
 
@@ -284,8 +339,36 @@ mod tests {
     #[tokio::test]
     async fn test_add_multiple_tasks() {
         let mgr = TaskManager::new();
-        let id1 = mgr.add_task("http://a.com/f1", "/tmp/f1", false, 2, false, 0, None, vec![], None, vec![], 0).await;
-        let id2 = mgr.add_task("http://b.com/f2", "/tmp/f2", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id1 = mgr
+            .add_task(
+                "http://a.com/f1",
+                "/tmp/f1",
+                false,
+                2,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
+        let id2 = mgr
+            .add_task(
+                "http://b.com/f2",
+                "/tmp/f2",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
 
         let tasks = mgr.list_tasks().await;
         assert_eq!(tasks.len(), 2);
@@ -296,8 +379,36 @@ mod tests {
     #[tokio::test]
     async fn test_task_ids_increment() {
         let mgr = TaskManager::new();
-        let id1 = mgr.add_task("http://a.com/f1", "/tmp/f1", false, 2, false, 0, None, vec![], None, vec![], 0).await;
-        let id2 = mgr.add_task("http://b.com/f2", "/tmp/f2", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id1 = mgr
+            .add_task(
+                "http://a.com/f1",
+                "/tmp/f1",
+                false,
+                2,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
+        let id2 = mgr
+            .add_task(
+                "http://b.com/f2",
+                "/tmp/f2",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
         assert!(id2 > id1, "task IDs should increment");
     }
 
@@ -311,7 +422,21 @@ mod tests {
     #[tokio::test]
     async fn test_get_task() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id = mgr
+            .add_task(
+                "http://example.com/file",
+                "/tmp/test",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
 
         let task = mgr.get_task(id).await.unwrap();
         assert_eq!(task.id, id);

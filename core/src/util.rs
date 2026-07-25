@@ -7,7 +7,7 @@ pub fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileExt;
-        return file.write_all_at(buf, offset);
+        file.write_all_at(buf, offset)
     }
 
     #[cfg(windows)]

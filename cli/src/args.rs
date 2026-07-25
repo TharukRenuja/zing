@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 fn parse_bandwidth(s: &str) -> Result<u64, String> {
     if s.trim() == "0" {
@@ -23,7 +23,12 @@ pub struct Args {
     #[arg(long = "dir", short = 'd', help = "Output directory")]
     pub dir: Option<PathBuf>,
 
-    #[arg(long = "connections", short = 'n', default_value = "4", help = "Max parallel connections")]
+    #[arg(
+        long = "connections",
+        short = 'n',
+        default_value = "4",
+        help = "Max parallel connections"
+    )]
     pub connections: usize,
 
     #[arg(long = "quiet", short = 'q', help = "Quiet mode")]
@@ -57,7 +62,11 @@ pub struct Args {
     )]
     pub max_filesize: u64,
 
-    #[arg(long = "checksum", short = 'c', help = "Verify checksum (auto-detect type by length)")]
+    #[arg(
+        long = "checksum",
+        short = 'c',
+        help = "Verify checksum (auto-detect type by length)"
+    )]
     pub checksum: Option<String>,
 
     #[arg(long = "proxy", short = 'x', help = "HTTP/HTTPS proxy")]
@@ -86,7 +95,6 @@ pub struct Args {
         help = "Metalink (.meta4) file — extracts mirrors, checksums, and filename"
     )]
     pub metalink: Option<String>,
-
 }
 
 #[derive(Subcommand, Debug)]
@@ -94,13 +102,28 @@ pub enum Commands {
     #[command(name = "daemon", about = "Manage the download daemon", alias = "d")]
     Daemon(DaemonArgs),
 
-    #[command(name = "schedule", about = "Manage scheduled downloads", alias = "sched", alias = "s")]
+    #[command(
+        name = "schedule",
+        about = "Manage scheduled downloads",
+        alias = "sched",
+        alias = "s"
+    )]
     Schedule(ScheduleArgs),
 
-    #[command(name = "config", about = "Manage configuration", alias = "cfg", alias = "c")]
+    #[command(
+        name = "config",
+        about = "Manage configuration",
+        alias = "cfg",
+        alias = "c"
+    )]
     Config(ConfigArgs),
 
-    #[command(name = "list", about = "List all downloads (daemon)", alias = "ls", alias = "tasks")]
+    #[command(
+        name = "list",
+        about = "List all downloads (daemon)",
+        alias = "ls",
+        alias = "tasks"
+    )]
     List,
 }
 
@@ -144,7 +167,11 @@ pub enum ScheduleAction {
         #[arg(short = 't', long, help = "Start time in HH:MM format (e.g. 02:00)")]
         at: String,
 
-        #[arg(short = 'e', long, help = "End time in HH:MM (e.g. 07:00). When set, triggers anytime within [at, end) window")]
+        #[arg(
+            short = 'e',
+            long,
+            help = "End time in HH:MM (e.g. 07:00). When set, triggers anytime within [at, end) window"
+        )]
         end: Option<String>,
 
         #[arg(long, help = "Days of week (comma-separated, e.g. Mon,Wed,Fri)")]

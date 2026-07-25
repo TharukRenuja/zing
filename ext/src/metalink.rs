@@ -81,8 +81,7 @@ pub fn parse_metalink_str(input: &str) -> Result<Vec<MetalinkFile>, String> {
                     Some("hash") => {
                         if let Some(ref mut file) = current_file {
                             if let Some(ref htype) = current_hash_type {
-                                file.checksums
-                                    .push((htype.clone(), trimmed.to_string()));
+                                file.checksums.push((htype.clone(), trimmed.to_string()));
                             }
                         }
                     }
@@ -133,7 +132,8 @@ fn repair_xml(input: &str) -> String {
             }
             continue;
         }
-        if ch == '&' && chars.peek().map(|(_, c)| *c) != Some('a')
+        if ch == '&'
+            && chars.peek().map(|(_, c)| *c) != Some('a')
             && chars.peek().map(|(_, c)| *c) != Some('l')
             && chars.peek().map(|(_, c)| *c) != Some('g')
             && chars.peek().map(|(_, c)| *c) != Some('q')

@@ -28,11 +28,7 @@ impl Segment {
     }
 
     pub fn remaining(&self) -> u64 {
-        if self.length > self.downloaded {
-            self.length - self.downloaded
-        } else {
-            0
-        }
+        self.length.saturating_sub(self.downloaded)
     }
 
     pub fn is_complete(&self) -> bool {
@@ -99,12 +95,7 @@ impl SegmentManager {
         id
     }
 
-    pub fn allocate_segment(
-        &mut self,
-        offset: u64,
-        length: u64,
-        conn_id: usize,
-    ) -> Option<usize> {
+    pub fn allocate_segment(&mut self, offset: u64, length: u64, conn_id: usize) -> Option<usize> {
         if length == 0 {
             return None;
         }
@@ -156,7 +147,9 @@ impl SegmentManager {
         if self.segments.is_empty() {
             return false;
         }
-        self.segments.iter().all(|s| s.state == SegmentState::Complete)
+        self.segments
+            .iter()
+            .all(|s| s.state == SegmentState::Complete)
     }
 
     pub fn total_downloaded(&self) -> u64 {
@@ -218,7 +211,8 @@ impl SegmentManager {
         let offset = self.segments[seg_idx].offset + self.segments[seg_idx].length - remaining;
 
         // Push back remaining work as a new unowned segment
-        self.segments.push(Segment::new(self.segment_counter, offset, remaining));
+        self.segments
+            .push(Segment::new(self.segment_counter, offset, remaining));
         self.segment_counter += 1;
 
         // Shorten the current segment to what's already been downloaded

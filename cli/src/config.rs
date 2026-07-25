@@ -1,20 +1,11 @@
 use std::path::PathBuf;
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
     #[serde(default)]
     pub prompt_location: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            download_dir: None,
-            prompt_location: false,
-        }
-    }
 }
 
 impl Config {
@@ -29,12 +20,10 @@ impl Config {
         }
 
         match std::fs::read_to_string(&config_path) {
-            Ok(content) => {
-                serde_json::from_str(&content).unwrap_or_else(|e| {
-                    tracing::warn!("Failed to parse config at {}: {e}", config_path.display());
-                    Config::default()
-                })
-            }
+            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
+                tracing::warn!("Failed to parse config at {}: {e}", config_path.display());
+                Config::default()
+            }),
             Err(e) => {
                 tracing::warn!("Failed to read config at {}: {e}", config_path.display());
                 Config::default()

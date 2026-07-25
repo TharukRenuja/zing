@@ -55,7 +55,7 @@ pub async fn probe(pool: &ConnectionPool, url: &str, max_connections: usize) -> 
     let total_size = probe_content_size(pool, url).await;
 
     // Check Range support via small range probe (first 4KB)
-    let supports_ranges = if total_size.map_or(false, |s| s > 0) {
+    let supports_ranges = if total_size.is_some_and(|s| s > 0) {
         check_range_support(pool, url).await
     } else {
         false
@@ -64,7 +64,7 @@ pub async fn probe(pool: &ConnectionPool, url: &str, max_connections: usize) -> 
     // Bandwidth estimate: download first 64KB
     let bandwidth_estimate = if supports_ranges {
         estimate_bandwidth(pool, url, rtt).await
-    } else if total_size.map_or(false, |s| s > 0) {
+    } else if total_size.is_some_and(|s| s > 0) {
         // Without ranges, can only estimate with a small GET
         estimate_bandwidth(pool, url, rtt).await
     } else {
@@ -73,12 +73,22 @@ pub async fn probe(pool: &ConnectionPool, url: &str, max_connections: usize) -> 
 
     // Decide strategy
     let (recommended_connections, recommended_mode) = decide_strategy(
-        &protocol, total_size, supports_ranges, rtt, bandwidth_estimate, max_connections,
+        &protocol,
+        total_size,
+        supports_ranges,
+        rtt,
+        bandwidth_estimate,
+        max_connections,
     );
 
     tracing::debug!(
         "Probe result: protocol={} size={:?} ranges={} rtt={:?}bw={:?} conns={}",
-        protocol, total_size, supports_ranges, rtt, bandwidth_estimate, recommended_connections,
+        protocol,
+        total_size,
+        supports_ranges,
+        rtt,
+        bandwidth_estimate,
+        recommended_connections,
     );
 
     ServerProfile {
@@ -104,7 +114,7 @@ async fn probe_content_size(pool: &ConnectionPool, url: &str) -> Option<u64> {
     if resp.status() == 206 {
         let cr = resp.headers().get("content-range")?;
         let s = cr.to_str().ok()?;
-        let after = s.split('/').last()?;
+        let after = s.split('/').next_back()?;
         after.parse::<u64>().ok()
     } else {
         None
@@ -124,11 +134,7 @@ async fn check_range_support(pool: &ConnectionPool, url: &str) -> bool {
     }
 }
 
-async fn estimate_bandwidth(
-    pool: &ConnectionPool,
-    url: &str,
-    rtt: Duration,
-) -> Option<f64> {
+async fn estimate_bandwidth(pool: &ConnectionPool, url: &str, rtt: Duration) -> Option<f64> {
     let start = Instant::now();
     let resp = pool
         .client()
@@ -171,13 +177,27 @@ fn decide_strategy(
     // Protocol + RTT heuristics
     let mut target = match protocol {
         Protocol::Http3 => {
-            if rtt_ms > 100.0 { 6 } else { 4 }
+            if rtt_ms > 100.0 {
+                6
+            } else {
+                4
+            }
         }
         Protocol::Http2 => {
-            if rtt_ms > 200.0 { 4 } else { 3 }
+            if rtt_ms > 200.0 {
+                4
+            } else {
+                3
+            }
         }
         Protocol::Http1 => {
-            if rtt_ms > 200.0 { 8 } else if rtt_ms > 100.0 { 6 } else { 4 }
+            if rtt_ms > 200.0 {
+                8
+            } else if rtt_ms > 100.0 {
+                6
+            } else {
+                4
+            }
         }
     };
 

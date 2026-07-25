@@ -1,8 +1,8 @@
-pub mod manager;
 pub mod allocator;
-pub mod stealer;
+pub mod manager;
 pub mod pid;
+pub mod stealer;
 
-pub use manager::{Segment, SegmentState, SegmentManager};
 pub use allocator::SlowStartAllocator;
+pub use manager::{Segment, SegmentManager, SegmentState};
 pub use stealer::WorkStealer;

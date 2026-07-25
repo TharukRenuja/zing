@@ -1,11 +1,11 @@
 mod common;
 
 use common::{test_payload, TestServer};
+use tokio::sync::broadcast;
 use zing_core::connection::ConnectionPool;
 use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::EventBus;
 use zing_core::storage::{ControlFile, SegmentEntry};
-use tokio::sync::broadcast;
 
 /// test that the mock server serves the full file on a plain GET
 #[tokio::test]
@@ -157,5 +157,8 @@ async fn test_resume_download() {
     assert_eq!(downloaded, payload, "file content mismatch");
 
     // control file should be removed on completion
-    assert!(!control_path.exists(), "control file should be removed after resume");
+    assert!(
+        !control_path.exists(),
+        "control file should be removed after resume"
+    );
 }

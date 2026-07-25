@@ -59,14 +59,26 @@ mod tests {
     fn test_retry_basic_backoff() {
         let mut rm = RetryManager::new(3, Duration::from_millis(100), Duration::from_secs(10));
         let d1 = rm.next_delay().unwrap();
-        assert!(d1 >= Duration::from_millis(90), "first delay too short: {d1:?}");
-        assert!(d1 <= Duration::from_millis(110), "first delay too long: {d1:?}");
+        assert!(
+            d1 >= Duration::from_millis(90),
+            "first delay too short: {d1:?}"
+        );
+        assert!(
+            d1 <= Duration::from_millis(110),
+            "first delay too long: {d1:?}"
+        );
 
         let d2 = rm.next_delay().unwrap();
-        assert!(d2 >= Duration::from_millis(180), "second delay too short: {d2:?}");
+        assert!(
+            d2 >= Duration::from_millis(180),
+            "second delay too short: {d2:?}"
+        );
 
         let d3 = rm.next_delay().unwrap();
-        assert!(d3 >= Duration::from_millis(360), "third delay too short: {d3:?}");
+        assert!(
+            d3 >= Duration::from_millis(360),
+            "third delay too short: {d3:?}"
+        );
     }
 
     #[test]
@@ -79,10 +91,14 @@ mod tests {
 
     #[test]
     fn test_retry_max_delay_cap() {
-        let mut rm = RetryManager::new(10, Duration::from_millis(1000), Duration::from_millis(3000));
+        let mut rm =
+            RetryManager::new(10, Duration::from_millis(1000), Duration::from_millis(3000));
         for _ in 0..10 {
             let d = rm.next_delay().unwrap();
-            assert!(d <= Duration::from_millis(3300), "delay exceeded max: {d:?}");
+            assert!(
+                d <= Duration::from_millis(3300),
+                "delay exceeded max: {d:?}"
+            );
         }
     }
 
@@ -109,4 +125,3 @@ mod tests {
         assert!(!all_same, "jitter should produce variation: {delays:?}");
     }
 }
-

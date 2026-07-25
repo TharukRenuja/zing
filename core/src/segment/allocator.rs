@@ -52,10 +52,7 @@ impl SlowStartAllocator {
     /// Given the total file size, split into chunks for the initial batch.
     /// Returns the total number of connections for the first batch (always 1),
     /// and the segment info for that batch.
-    pub fn initial_split(
-        mgr: &mut SegmentManager,
-        total_size: u64,
-    ) -> (usize, Option<usize>) {
+    pub fn initial_split(mgr: &mut SegmentManager, total_size: u64) -> (usize, Option<usize>) {
         // First connection gets the entire file as one segment
         let conn_id = mgr.add_connection();
         let seg_id = mgr.allocate_segment(0, total_size, conn_id);
@@ -70,7 +67,9 @@ impl SlowStartAllocator {
         steal_threshold_bytes: u64,
     ) -> Option<(usize, Option<usize>)> {
         let seg_id = mgr.active_segment_for(existing_conn_id).map(|s| s.id)?;
-        let remaining = mgr.active_segment_for(existing_conn_id).map(|s| s.remaining())?;
+        let remaining = mgr
+            .active_segment_for(existing_conn_id)
+            .map(|s| s.remaining())?;
         if remaining < steal_threshold_bytes {
             return None;
         }
@@ -86,11 +85,7 @@ impl SlowStartAllocator {
         };
 
         // Shrink the existing segment
-        if let Some(seg) = mgr
-            .segments
-            .iter_mut()
-            .find(|s| s.id == seg_id)
-        {
+        if let Some(seg) = mgr.segments.iter_mut().find(|s| s.id == seg_id) {
             seg.length = offset - seg.offset;
             if seg.downloaded > seg.length {
                 seg.downloaded = seg.length;

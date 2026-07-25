@@ -1,5 +1,5 @@
-use anyhow::{bail, Result};
 use crate::connection::ConnectionPool;
+use crate::constants;
 use crate::engine::event::{EngineEvent, EventBus, TaskId, TaskProgress};
 use crate::probe;
 use crate::ratelimit::{SharedRateLimiter, TokenBucket};
@@ -9,8 +9,8 @@ use crate::segment::manager::SegmentManager;
 use crate::segment::pid::PidController;
 use crate::segment::stealer::WorkStealer;
 use crate::storage::{ControlFile, SegmentEntry};
-use crate::constants;
 use crate::util;
+use anyhow::{bail, Result};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -71,6 +71,7 @@ pub struct DownloadTask {
 }
 
 impl DownloadTask {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: TaskId,
         url: &str,
@@ -131,8 +132,10 @@ impl DownloadTask {
 
     /// Run the download. If `shutdown` is provided, it will be checked periodically
     /// and the download will gracefully stop, saving state for resume.
-    #[must_use]
-    pub async fn run_with_shutdown(&self, mut shutdown: tokio::sync::broadcast::Receiver<()>) -> Result<()> {
+    pub async fn run_with_shutdown(
+        &self,
+        mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    ) -> Result<()> {
         let state_clone = Arc::clone(&self.state);
         let handle = tokio::spawn(async move {
             match shutdown.recv().await {
@@ -189,7 +192,8 @@ impl DownloadTask {
                 if size > self.state.max_filesize {
                     bail!(
                         "File size {} exceeds max-filesize limit of {}",
-                        size, self.state.max_filesize
+                        size,
+                        self.state.max_filesize
                     );
                 }
             }
@@ -233,7 +237,7 @@ impl DownloadTask {
             tracing::info!("Resuming: {:.1}% complete", cf.progress_pct());
         }
 
-        if profile.total_size.map_or(true, |s| s == 0) && !resume.is_some() {
+        if profile.total_size.is_none_or(|s| s == 0) && !resume.is_some() {
             let resp = self.state.pool.client().get(&current_url).send().await?;
             if !resp.status().is_success() {
                 bail!("HTTP {} from {}", resp.status(), current_url);
@@ -254,7 +258,7 @@ impl DownloadTask {
 
         if let Some(ref cf) = resume {
             if let Some(cf_size) = cf.total_size {
-                if total_size.map_or(false, |s| s != cf_size) {
+                if total_size.is_some_and(|s| s != cf_size) {
                     tracing::warn!("Server file size changed, starting fresh");
                     let _ = tokio::fs::remove_file(&control_path).await;
                     return self.run_fresh(total_size).await;
@@ -305,7 +309,9 @@ impl DownloadTask {
         if let Some(ref resume_cf) = resume {
             let base_downloaded = resume_cf.total_downloaded();
             cf.base_downloaded = base_downloaded;
-            self.state.total_downloaded.store(base_downloaded, Ordering::Relaxed);
+            self.state
+                .total_downloaded
+                .store(base_downloaded, Ordering::Relaxed);
             {
                 let mut mgr = self.state.segment_mgr.lock().await;
                 mgr.set_total_size(total_size);
@@ -339,10 +345,8 @@ impl DownloadTask {
             }
         }
 
-        let batches = SlowStartAllocator::new(
-            self.state.segment_mgr.lock().await.max_connections,
-        )
-        .batches();
+        let batches =
+            SlowStartAllocator::new(self.state.segment_mgr.lock().await.max_connections).batches();
         let mut handles = Vec::new();
 
         let state = Arc::clone(&self.state);
@@ -350,9 +354,12 @@ impl DownloadTask {
             run_connection(state, 0).await;
         }));
 
-        for batch_idx in 1..batches.len() {
-            tokio::time::sleep(std::time::Duration::from_millis(constants::SLOW_START_BATCH_DELAY_MS)).await;
-            for _ in 0..batches[batch_idx] {
+        for &batch_count in &batches[1..] {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                constants::SLOW_START_BATCH_DELAY_MS,
+            ))
+            .await;
+            for _ in 0..batch_count {
                 let target = {
                     let mgr = self.state.segment_mgr.lock().await;
                     mgr.slowest_connection()
@@ -360,8 +367,12 @@ impl DownloadTask {
                 let conn_id = {
                     let mut mgr = self.state.segment_mgr.lock().await;
                     if let Some(slow) = target {
-                        SlowStartAllocator::split_segment(&mut mgr, slow, constants::SEGMENT_INITIAL_SPLIT_SIZE)
-                            .map(|(id, _)| id)
+                        SlowStartAllocator::split_segment(
+                            &mut mgr,
+                            slow,
+                            constants::SEGMENT_INITIAL_SPLIT_SIZE,
+                        )
+                        .map(|(id, _)| id)
                     } else {
                         None
                     }
@@ -415,7 +426,11 @@ impl DownloadTask {
                 let now = Instant::now();
                 let dt = now.duration_since(prev_time).as_secs_f64();
                 let delta_bytes = downloaded.saturating_sub(prev_downloaded);
-                let speed = if dt > 0.0 { delta_bytes as f64 / dt } else { 0.0 };
+                let speed = if dt > 0.0 {
+                    delta_bytes as f64 / dt
+                } else {
+                    0.0
+                };
                 prev_downloaded = downloaded;
                 prev_time = now;
 
@@ -459,7 +474,7 @@ impl DownloadTask {
                 }
 
                 // Emit progress event
-                let _ = state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+                state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                     id: state_mon.id,
                     bytes_downloaded: downloaded,
                     total_bytes: total,
@@ -484,7 +499,13 @@ impl DownloadTask {
 
                     let pid_id = if adjustment >= 1 {
                         mgr.slowest_connection()
-                            .and_then(|slow| SlowStartAllocator::split_segment(&mut mgr, slow, constants::SEGMENT_MIN_SIZE))
+                            .and_then(|slow| {
+                                SlowStartAllocator::split_segment(
+                                    &mut mgr,
+                                    slow,
+                                    constants::SEGMENT_MIN_SIZE,
+                                )
+                            })
                             .map(|(id, _)| id)
                     } else {
                         None
@@ -492,15 +513,23 @@ impl DownloadTask {
 
                     if adjustment <= -1 {
                         if let Some(fast_id) = mgr.fastest_connection() {
-                            mgr.remove_connection(fast_id).map(|(off, rem)| {
-                                tracing::debug!("Removed conn {fast_id}, freed {rem}B at offset {off}")
-                            });
+                            if let Some((off, rem)) = mgr.remove_connection(fast_id) {
+                                tracing::debug!(
+                                    "Removed conn {fast_id}, freed {rem}B at offset {off}"
+                                );
+                            }
                         }
                     }
 
                     let steal_id = stealer
                         .find_steal_targets(&mgr)
-                        .and_then(|(slow_id, _)| SlowStartAllocator::split_segment(&mut mgr, slow_id, constants::SEGMENT_MIN_SIZE))
+                        .and_then(|(slow_id, _)| {
+                            SlowStartAllocator::split_segment(
+                                &mut mgr,
+                                slow_id,
+                                constants::SEGMENT_MIN_SIZE,
+                            )
+                        })
                         .map(|(id, _)| id);
 
                     (pid_id, steal_id)
@@ -518,14 +547,17 @@ impl DownloadTask {
 
                 {
                     let mut last_save = state_mon.save_interval.lock().await;
-                    if last_save.elapsed() > std::time::Duration::from_secs(constants::SAVE_INTERVAL_SECS) {
+                    if last_save.elapsed()
+                        > std::time::Duration::from_secs(constants::SAVE_INTERVAL_SECS)
+                    {
                         sync_cf(&state_mon, &cf_mon).await;
                         let _ = cf_mon.lock().await.save(&control_path_mon).await;
                         *last_save = Instant::now();
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(constants::MONITOR_TICK_MS)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(constants::MONITOR_TICK_MS))
+                    .await;
             }
         });
 
@@ -546,14 +578,14 @@ impl DownloadTask {
         let completed = total >= total_size;
         if completed {
             self.state.reprobe.store(false, Ordering::Release);
-            let _ = self.state.bus.emit(EngineEvent::TaskCompleted {
+            self.state.bus.emit(EngineEvent::TaskCompleted {
                 id: self.state.id,
                 total_bytes: total,
                 duration: self.state.start_time.lock().await.elapsed(),
             });
             let _ = tokio::fs::remove_file(&control_path).await;
         } else {
-            let _ = self.state.bus.emit(EngineEvent::Paused {
+            self.state.bus.emit(EngineEvent::Paused {
                 id: self.state.id,
                 bytes_downloaded: total,
                 total_bytes: total_size,
@@ -590,9 +622,13 @@ impl DownloadTask {
             downloaded += chunk.len() as u64;
 
             let elapsed = start.elapsed().as_secs_f64();
-            let speed = if elapsed > 0.0 { downloaded as f64 / elapsed } else { 0.0 };
+            let speed = if elapsed > 0.0 {
+                downloaded as f64 / elapsed
+            } else {
+                0.0
+            };
 
-            let _ = self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+            self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                 id: self.state.id,
                 bytes_downloaded: downloaded,
                 total_bytes: None,
@@ -601,7 +637,7 @@ impl DownloadTask {
         }
 
         file.flush().await?;
-        let _ = self.state.bus.emit(EngineEvent::TaskCompleted {
+        self.state.bus.emit(EngineEvent::TaskCompleted {
             id: self.state.id,
             total_bytes: downloaded,
             duration: start.elapsed(),
@@ -611,7 +647,11 @@ impl DownloadTask {
 }
 
 async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
-    let mut retry = RetryManager::new(5, std::time::Duration::from_millis(500), std::time::Duration::from_secs(10));
+    let mut retry = RetryManager::new(
+        5,
+        std::time::Duration::from_millis(500),
+        std::time::Duration::from_secs(10),
+    );
 
     loop {
         if state.done.load(Ordering::Acquire) {
@@ -650,12 +690,20 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
     }
 }
 
-async fn download_range(state: &Arc<SharedState>, conn_id: usize, offset: u64, length: u64) -> Result<u64> {
+async fn download_range(
+    state: &Arc<SharedState>,
+    conn_id: usize,
+    offset: u64,
+    length: u64,
+) -> Result<u64> {
     let end = offset + length - 1;
     tracing::trace!("Conn {conn_id}: Range bytes {offset}-{end}");
 
     let download_url = state.url.lock().await.clone();
-    let resp = state.pool.get_range(&download_url, offset, length, state.id).await?;
+    let resp = state
+        .pool
+        .get_range(&download_url, offset, length, state.id)
+        .await?;
 
     let status = resp.status();
     if status == 416 {
@@ -671,7 +719,12 @@ async fn download_range(state: &Arc<SharedState>, conn_id: usize, offset: u64, l
     let mut pos = offset;
 
     loop {
-        let data = match tokio::time::timeout(std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS), stream.next()).await {
+        let data = match tokio::time::timeout(
+            std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
+            stream.next(),
+        )
+        .await
+        {
             Ok(Some(Ok(d))) => d,
             Ok(Some(Err(e))) => return Err(e.into()),
             Ok(None) => break,
@@ -694,7 +747,9 @@ async fn download_range(state: &Arc<SharedState>, conn_id: usize, offset: u64, l
             let mut mgr = state.segment_mgr.lock().await;
             mgr.update_progress(conn_id, data.len() as u64);
         }
-        state.total_downloaded.fetch_add(data.len() as u64, Ordering::Relaxed);
+        state
+            .total_downloaded
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
     }
 
     Ok(written)
@@ -731,7 +786,8 @@ mod tests {
             segment_mgr: Mutex::new(SegmentManager::new(4)),
             file: std::sync::Mutex::new(None),
             bus: crate::engine::event::EventBus::new(),
-            pool: ConnectionPool::new(false, None).with_event_bus(crate::engine::event::EventBus::new()),
+            pool: ConnectionPool::new(false, None)
+                .with_event_bus(crate::engine::event::EventBus::new()),
             rate_limiter: None,
             start_time: tokio::sync::Mutex::new(Instant::now()),
             total_downloaded: AtomicU64::new(0),

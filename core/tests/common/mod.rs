@@ -59,7 +59,10 @@ impl TestServer {
         }
     }
 
-    async fn handle(stream: &mut tokio::net::TcpStream, content: &[u8]) -> Result<(), std::io::Error> {
+    async fn handle(
+        stream: &mut tokio::net::TcpStream,
+        content: &[u8],
+    ) -> Result<(), std::io::Error> {
         let (reader, mut writer) = stream.split();
         let mut buf_reader = BufReader::new(reader);
         let mut request_line = String::new();
@@ -96,29 +99,46 @@ impl TestServer {
 
                 if start >= total_len || start > end {
                     let body = b"Range Not Satisfiable\r\n";
-                    writer.write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\n").await?;
+                    writer
+                        .write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\n")
+                        .await?;
                     writer.write_all(b"Content-Type: text/plain\r\n").await?;
-                    writer.write_all(format!("Content-Length: {}\r\n", body.len()).as_bytes()).await?;
+                    writer
+                        .write_all(format!("Content-Length: {}\r\n", body.len()).as_bytes())
+                        .await?;
                     writer.write_all(b"\r\n").await?;
                     writer.write_all(body).await?;
                 } else {
                     let end = end.min(total_len - 1);
                     let chunk = &content[start..=end];
-                    writer.write_all(b"HTTP/1.1 206 Partial Content\r\n").await?;
-                    writer.write_all(b"Content-Type: application/octet-stream\r\n").await?;
-                    writer.write_all(
-                        format!("Content-Range: bytes {}-{}/{}\r\n", start, end, total_len).as_bytes(),
-                    ).await?;
-                    writer.write_all(format!("Content-Length: {}\r\n", chunk.len()).as_bytes()).await?;
+                    writer
+                        .write_all(b"HTTP/1.1 206 Partial Content\r\n")
+                        .await?;
+                    writer
+                        .write_all(b"Content-Type: application/octet-stream\r\n")
+                        .await?;
+                    writer
+                        .write_all(
+                            format!("Content-Range: bytes {}-{}/{}\r\n", start, end, total_len)
+                                .as_bytes(),
+                        )
+                        .await?;
+                    writer
+                        .write_all(format!("Content-Length: {}\r\n", chunk.len()).as_bytes())
+                        .await?;
                     writer.write_all(b"\r\n").await?;
                     writer.write_all(chunk).await?;
                 }
             }
         } else {
             writer.write_all(b"HTTP/1.1 200 OK\r\n").await?;
-            writer.write_all(b"Content-Type: application/octet-stream\r\n").await?;
+            writer
+                .write_all(b"Content-Type: application/octet-stream\r\n")
+                .await?;
             writer.write_all(b"Accept-Ranges: bytes\r\n").await?;
-            writer.write_all(format!("Content-Length: {}\r\n", total_len).as_bytes()).await?;
+            writer
+                .write_all(format!("Content-Length: {}\r\n", total_len).as_bytes())
+                .await?;
             writer.write_all(b"\r\n").await?;
             writer.write_all(content).await?;
         }

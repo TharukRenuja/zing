@@ -1,11 +1,11 @@
 use crate::task_manager::TaskManager;
 use chrono::{Datelike, Timelike};
-use zing_ext::filename;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use zing_ext::filename;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScheduleEntry {
@@ -29,13 +29,22 @@ pub struct ScheduleEntry {
 
 fn default_days() -> Vec<String> {
     vec![
-        "Mon".to_string(), "Tue".to_string(), "Wed".to_string(),
-        "Thu".to_string(), "Fri".to_string(), "Sat".to_string(), "Sun".to_string(),
+        "Mon".to_string(),
+        "Tue".to_string(),
+        "Wed".to_string(),
+        "Thu".to_string(),
+        "Fri".to_string(),
+        "Sat".to_string(),
+        "Sun".to_string(),
     ]
 }
 
-fn default_enabled() -> bool { true }
-fn default_connections() -> usize { 4 }
+fn default_enabled() -> bool {
+    true
+}
+fn default_connections() -> usize {
+    4
+}
 
 pub struct Scheduler {
     config_path: PathBuf,
@@ -49,7 +58,10 @@ impl Scheduler {
             .join("zing")
             .join("schedule.json");
 
-        Self { config_path, manager }
+        Self {
+            config_path,
+            manager,
+        }
     }
 
     #[allow(dead_code)]
@@ -134,19 +146,27 @@ impl Scheduler {
 
                     // Parse at time into minutes since midnight
                     let at_parts: Vec<&str> = entry.at.split(':').collect();
-                    if at_parts.len() != 2 { continue; }
+                    if at_parts.len() != 2 {
+                        continue;
+                    }
                     let at_h: u16 = at_parts[0].parse().unwrap_or(99);
                     let at_m: u16 = at_parts[1].parse().unwrap_or(99);
-                    if at_h > 23 || at_m > 59 { continue; }
+                    if at_h > 23 || at_m > 59 {
+                        continue;
+                    }
                     let at_minutes = at_h * 60 + at_m;
 
                     let in_window = match entry.end {
                         Some(ref end_str) => {
                             let end_parts: Vec<&str> = end_str.split(':').collect();
-                            if end_parts.len() != 2 { continue; }
+                            if end_parts.len() != 2 {
+                                continue;
+                            }
                             let end_h: u16 = end_parts[0].parse().unwrap_or(99);
                             let end_m: u16 = end_parts[1].parse().unwrap_or(99);
-                            if end_h > 23 || end_m > 59 { continue; }
+                            if end_h > 23 || end_m > 59 {
+                                continue;
+                            }
                             let end_minutes = end_h * 60 + end_m;
 
                             if at_minutes < end_minutes {
@@ -170,11 +190,14 @@ impl Scheduler {
                     triggered_today.insert(id.clone(), today_date.clone());
                     tracing::info!("Scheduled task triggered: {id}");
 
-                    let output_path = entry.output.clone().unwrap_or_else(|| {
-                        filename::from_url(&entry.url)
-                    });
+                    let output_path = entry
+                        .output
+                        .clone()
+                        .unwrap_or_else(|| filename::from_url(&entry.url));
 
-                    let download_dir = entry.output_dir.clone()
+                    let download_dir = entry
+                        .output_dir
+                        .clone()
                         .map(PathBuf::from)
                         .or_else(dirs::download_dir)
                         .unwrap_or_else(|| PathBuf::from("."));
@@ -189,19 +212,21 @@ impl Scheduler {
                         let _ = tokio::fs::create_dir_all(parent).await;
                     }
 
-                    manager.add_task(
-                        &entry.url,
-                        &full_path.to_string_lossy(),
-                        entry.output.is_none(),
-                        entry.connections,
-                        entry.insecure,
-                        entry.max_download_rate,
-                        entry.proxy.clone(),
-                        Vec::new(),
-                        None,
-                        Vec::new(),
-                        0,
-                    ).await;
+                    manager
+                        .add_task(
+                            &entry.url,
+                            &full_path.to_string_lossy(),
+                            entry.output.is_none(),
+                            entry.connections,
+                            entry.insecure,
+                            entry.max_download_rate,
+                            entry.proxy.clone(),
+                            Vec::new(),
+                            None,
+                            Vec::new(),
+                            0,
+                        )
+                        .await;
                 }
             }
         });

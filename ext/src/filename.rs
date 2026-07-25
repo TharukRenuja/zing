@@ -12,15 +12,17 @@ fn sanitize_filename(name: &str) -> String {
 pub fn from_url(url: &str) -> String {
     let after_host = if let Some(pos) = url.find("://") {
         let after_scheme = &url[pos + 3..];
-        after_scheme.find('/').map(|p| &after_scheme[p + 1..]).unwrap_or("")
+        after_scheme
+            .find('/')
+            .map(|p| &after_scheme[p + 1..])
+            .unwrap_or("")
     } else {
         url
     };
 
     let segment = after_host
         .split('/')
-        .filter(|s| !s.is_empty())
-        .last()
+        .rfind(|s| !s.is_empty())
         .map(|s| s.split('?').next().unwrap_or(s))
         .unwrap_or("download");
 
@@ -87,7 +89,10 @@ mod tests {
 
     #[test]
     fn test_from_url_with_query() {
-        assert_eq!(from_url("https://example.com/file.zip?download=1"), "file.zip");
+        assert_eq!(
+            from_url("https://example.com/file.zip?download=1"),
+            "file.zip"
+        );
     }
 
     #[test]
@@ -119,8 +124,14 @@ mod tests {
 
     #[test]
     fn test_sanitize_path_traversal() {
-        assert_eq!(from_content_disposition(r#"filename="../../etc/passwd""#), Some(".._.._etc_passwd".to_string()));
-        assert_eq!(from_content_disposition(r#"filename="..\..\windows\system32""#), Some(".._.._windows_system32".to_string()));
+        assert_eq!(
+            from_content_disposition(r#"filename="../../etc/passwd""#),
+            Some(".._.._etc_passwd".to_string())
+        );
+        assert_eq!(
+            from_content_disposition(r#"filename="..\..\windows\system32""#),
+            Some(".._.._windows_system32".to_string())
+        );
     }
 
     #[test]

@@ -32,7 +32,11 @@ fn parse_schedule(input: &str) -> Vec<BwEntry> {
         };
         let rate_bytes = zing_ext::bandwidth::parse_rate(rate_str).unwrap_or(0);
         if rate_bytes > 0 {
-            entries.push(BwEntry { hour, minute, rate_bytes });
+            entries.push(BwEntry {
+                hour,
+                minute,
+                rate_bytes,
+            });
         }
     }
     entries.sort_by_key(|e| (e.hour, e.minute));
@@ -86,10 +90,7 @@ pub fn spawn_scheduler(limiter: Arc<TokenBucket>, schedule: &str) {
                 let entry_secs = entry.hour as u64 * 3600 + entry.minute as u64 * 60;
                 if entry_secs == now2 {
                     limiter.set_rate(entry.rate_bytes);
-                    tracing::info!(
-                        "Bandwidth schedule: rate set to {}",
-                        entry.rate_bytes,
-                    );
+                    tracing::info!("Bandwidth schedule: rate set to {}", entry.rate_bytes,);
                 }
             }
         }
@@ -100,7 +101,7 @@ fn chrono_now() -> u64 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    (now.as_secs() % 86400) as u64
+    now.as_secs() % 86400
 }
 
 #[cfg(test)]
@@ -110,13 +111,22 @@ mod tests {
     #[test]
     fn test_parse_rate() {
         assert_eq!(zing_ext::bandwidth::parse_rate("500KB"), Some(500 * 1024));
-        assert_eq!(zing_ext::bandwidth::parse_rate("5MB"), Some(5 * 1024 * 1024));
-        assert_eq!(zing_ext::bandwidth::parse_rate("2GB"), Some(2 * 1024u64.pow(3)));
+        assert_eq!(
+            zing_ext::bandwidth::parse_rate("5MB"),
+            Some(5 * 1024 * 1024)
+        );
+        assert_eq!(
+            zing_ext::bandwidth::parse_rate("2GB"),
+            Some(2 * 1024u64.pow(3))
+        );
         assert_eq!(zing_ext::bandwidth::parse_rate("1TB"), Some(1024u64.pow(4)));
         assert_eq!(zing_ext::bandwidth::parse_rate("512B"), Some(512));
         assert_eq!(zing_ext::bandwidth::parse_rate("0"), None);
         assert_eq!(zing_ext::bandwidth::parse_rate("unlimited"), None);
-        assert_eq!(zing_ext::bandwidth::parse_rate("1.5MB"), Some((1.5 * 1024.0 * 1024.0) as u64));
+        assert_eq!(
+            zing_ext::bandwidth::parse_rate("1.5MB"),
+            Some((1.5 * 1024.0 * 1024.0) as u64)
+        );
     }
 
     #[test]

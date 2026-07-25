@@ -41,17 +41,20 @@ impl WorkStealer {
         })?;
 
         // Find a connection that's almost done (candidate to steal)
-        let fastest = active.iter().filter(|&&c| c != *slowest).min_by(|&&a, &&b| {
-            let remaining_a = mgr
-                .active_segment_for(a)
-                .map(|s| s.remaining())
-                .unwrap_or(0);
-            let remaining_b = mgr
-                .active_segment_for(b)
-                .map(|s| s.remaining())
-                .unwrap_or(0);
-            remaining_a.cmp(&remaining_b)
-        })?;
+        let fastest = active
+            .iter()
+            .filter(|&&c| c != *slowest)
+            .min_by(|&&a, &&b| {
+                let remaining_a = mgr
+                    .active_segment_for(a)
+                    .map(|s| s.remaining())
+                    .unwrap_or(0);
+                let remaining_b = mgr
+                    .active_segment_for(b)
+                    .map(|s| s.remaining())
+                    .unwrap_or(0);
+                remaining_a.cmp(&remaining_b)
+            })?;
 
         let slow_seg = mgr.active_segment_for(*slowest)?;
         let fast_seg = mgr.active_segment_for(*fastest)?;

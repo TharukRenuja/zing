@@ -46,10 +46,9 @@ impl ControlFile {
         p
     }
 
-    #[must_use]
     pub async fn save(&self, path: &Path) -> std::io::Result<()> {
-        let json =
-            serde_json::to_string(self).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let json = serde_json::to_string(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         // Atomic write: write to temp file then rename
         let tmp_path = path.with_extension("zing.tmp");
         tokio::fs::write(&tmp_path, &json).await?;
@@ -58,8 +57,8 @@ impl ControlFile {
 
     pub async fn load(path: &Path) -> std::io::Result<Self> {
         let json = tokio::fs::read_to_string(path).await?;
-        let cf: ControlFile =
-            serde_json::from_str(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let cf: ControlFile = serde_json::from_str(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         Ok(cf)
     }
 
@@ -79,9 +78,7 @@ impl ControlFile {
 
     pub fn progress_pct(&self) -> f64 {
         match self.total_size {
-            Some(total) if total > 0 => {
-                self.total_downloaded() as f64 / total as f64 * 100.0
-            }
+            Some(total) if total > 0 => self.total_downloaded() as f64 / total as f64 * 100.0,
             _ => {
                 let total_len: u64 = self.segments.iter().map(|s| s.length).sum();
                 if total_len > 0 {

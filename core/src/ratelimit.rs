@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct TokenBucket {
@@ -24,7 +24,8 @@ impl TokenBucket {
 
     pub fn set_rate(&self, bytes_per_sec: u64) {
         self.refill_rate.store(bytes_per_sec, Ordering::Relaxed);
-        self.capacity.store(capacity_for(bytes_per_sec), Ordering::Relaxed);
+        self.capacity
+            .store(capacity_for(bytes_per_sec), Ordering::Relaxed);
     }
 
     fn refill(&self) {
@@ -74,14 +75,18 @@ impl TokenBucket {
         loop {
             self.refill();
             let current = self.tokens.load(Ordering::Relaxed);
-            if current >= amount {
-                if self
+            if current >= amount
+                && self
                     .tokens
-                    .compare_exchange(current, current - amount, Ordering::Release, Ordering::Relaxed)
+                    .compare_exchange(
+                        current,
+                        current - amount,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    )
                     .is_ok()
-                {
-                    return;
-                }
+            {
+                return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

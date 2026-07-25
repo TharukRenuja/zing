@@ -95,10 +95,7 @@ impl fmt::Display for EngineEvent {
                     pct,
                 )
             }
-            EngineEvent::SegmentAllocated {
-                task_id,
-                segment,
-            } => write!(
+            EngineEvent::SegmentAllocated { task_id, segment } => write!(
                 f,
                 "Task({task_id}) segment {}: {}-{} ({})",
                 segment.id,
@@ -118,18 +115,15 @@ impl fmt::Display for EngineEvent {
                 f,
                 "Task({task_id}) stole {bytes}B from conn {from} to conn {to}"
             ),
-            EngineEvent::ConnectionCreated {
-                task_id,
-                protocol,
-            } => write!(f, "Task({task_id}) {protocol} connection created"),
-            EngineEvent::ConnectionReused {
-                task_id,
-                protocol,
-            } => write!(f, "Task({task_id}) {protocol} connection reused"),
-            EngineEvent::ConnectionClosed {
-                task_id,
-                reason,
-            } => write!(f, "Task({task_id}) connection closed: {reason}"),
+            EngineEvent::ConnectionCreated { task_id, protocol } => {
+                write!(f, "Task({task_id}) {protocol} connection created")
+            }
+            EngineEvent::ConnectionReused { task_id, protocol } => {
+                write!(f, "Task({task_id}) {protocol} connection reused")
+            }
+            EngineEvent::ConnectionClosed { task_id, reason } => {
+                write!(f, "Task({task_id}) connection closed: {reason}")
+            }
             EngineEvent::TaskCompleted {
                 id,
                 total_bytes,
@@ -152,15 +146,9 @@ impl fmt::Display for EngineEvent {
                 bytesize(*bytes_downloaded),
                 bytesize(*total_bytes),
             ),
-            EngineEvent::DnsResolved {
-                host,
-                ips,
-                latency,
-            } => write!(
-                f,
-                "DNS {host} -> [{}] ({latency:.2?})",
-                ips.join(", "),
-            ),
+            EngineEvent::DnsResolved { host, ips, latency } => {
+                write!(f, "DNS {host} -> [{}] ({latency:.2?})", ips.join(", "),)
+            }
         }
     }
 }
@@ -214,7 +202,6 @@ impl EventBus {
         self.tx.subscribe()
     }
 
-    #[must_use]
     pub fn emit(&self, event: EngineEvent) {
         let _ = self.tx.send(event);
     }

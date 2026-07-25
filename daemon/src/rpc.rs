@@ -1,8 +1,8 @@
 use crate::task_manager::TaskManager;
-use zing_core::engine::event::EngineEvent;
-use zing_ext::filename;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use zing_core::engine::event::EngineEvent;
+use zing_ext::filename;
 
 #[derive(Debug, Deserialize)]
 pub struct RpcRequest {
@@ -26,10 +26,7 @@ pub struct RpcError {
     pub message: String,
 }
 
-pub async fn handle_request(
-    req: RpcRequest,
-    manager: &TaskManager,
-) -> RpcResponse {
+pub async fn handle_request(req: RpcRequest, manager: &TaskManager) -> RpcResponse {
     match req.method.as_str() {
         "zing.addUri" => handle_add_uri(req.params, manager).await,
         "zing.list" => handle_list(req.params, manager).await,
@@ -99,7 +96,11 @@ fn event_to_json(event: &EngineEvent) -> Value {
             "total_bytes": p.total_bytes,
             "speed_bytes_per_sec": p.speed_bytes_per_sec,
         }),
-        TaskCompleted { id, total_bytes, duration } => serde_json::json!({
+        TaskCompleted {
+            id,
+            total_bytes,
+            duration,
+        } => serde_json::json!({
             "event": "TaskCompleted",
             "id": id,
             "total_bytes": total_bytes,
@@ -110,7 +111,11 @@ fn event_to_json(event: &EngineEvent) -> Value {
             "id": id,
             "error": error,
         }),
-        Paused { id, bytes_downloaded, total_bytes } => serde_json::json!({
+        Paused {
+            id,
+            bytes_downloaded,
+            total_bytes,
+        } => serde_json::json!({
             "event": "Paused",
             "id": id,
             "bytes_downloaded": bytes_downloaded,
@@ -153,7 +158,8 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         }
     };
 
-    let user_filename = map.remove("filename")
+    let user_filename = map
+        .remove("filename")
         .and_then(|v| v.as_str().map(String::from))
         .filter(|s| !s.is_empty());
     let is_auto_name = user_filename.is_none();
@@ -180,7 +186,13 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
 
     let mirrors = map
         .remove("mirror")
-        .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|e| e.as_str().map(String::from)).collect()))
+        .and_then(|v| {
+            v.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(String::from))
+                    .collect()
+            })
+        })
         .unwrap_or_default();
 
     let bw_schedule = map
@@ -189,15 +201,23 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
 
     let headers = map
         .remove("headers")
-        .and_then(|v| v.as_array().map(|a| {
-            a.iter().filter_map(|e| {
-                let s = e.as_str()?;
-                let mut parts = s.splitn(2, ':');
-                let key = parts.next()?.trim().to_string();
-                let val = parts.next()?.trim().to_string();
-                if key.is_empty() || val.is_empty() { None } else { Some((key, val)) }
-            }).collect::<Vec<_>>()
-        }))
+        .and_then(|v| {
+            v.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|e| {
+                        let s = e.as_str()?;
+                        let mut parts = s.splitn(2, ':');
+                        let key = parts.next()?.trim().to_string();
+                        let val = parts.next()?.trim().to_string();
+                        if key.is_empty() || val.is_empty() {
+                            None
+                        } else {
+                            Some((key, val))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
         .unwrap_or_default();
 
     let max_filesize = map
@@ -205,7 +225,21 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
 
-    let id = manager.add_task(&url, &filename, is_auto_name, connections, insecure, max_download_rate, proxy_url, mirrors, bw_schedule, headers, max_filesize).await;
+    let id = manager
+        .add_task(
+            &url,
+            &filename,
+            is_auto_name,
+            connections,
+            insecure,
+            max_download_rate,
+            proxy_url,
+            mirrors,
+            bw_schedule,
+            headers,
+            max_filesize,
+        )
+        .await;
 
     RpcResponse {
         id: None,
@@ -257,7 +291,10 @@ async fn handle_pause(params: Option<Value>, manager: &TaskManager) -> RpcRespon
         Err(e) => RpcResponse {
             id: None,
             result: None,
-            error: Some(RpcError { code: -32000, message: e }),
+            error: Some(RpcError {
+                code: -32000,
+                message: e,
+            }),
         },
     }
 }
@@ -276,7 +313,10 @@ async fn handle_remove(params: Option<Value>, manager: &TaskManager) -> RpcRespo
         Err(e) => RpcResponse {
             id: None,
             result: None,
-            error: Some(RpcError { code: -32000, message: e }),
+            error: Some(RpcError {
+                code: -32000,
+                message: e,
+            }),
         },
     }
 }
@@ -363,7 +403,20 @@ mod tests {
     #[tokio::test]
     async fn test_handle_list_with_tasks() {
         let mgr = TaskManager::new();
-        mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        mgr.add_task(
+            "http://example.com/file",
+            "/tmp/test",
+            false,
+            4,
+            false,
+            0,
+            None,
+            vec![],
+            None,
+            vec![],
+            0,
+        )
+        .await;
 
         let req = make_req("zing.list", None);
         let resp = handle_request(req, &mgr).await;
@@ -375,7 +428,21 @@ mod tests {
     #[tokio::test]
     async fn test_handle_tell_status() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id = mgr
+            .add_task(
+                "http://example.com/file",
+                "/tmp/test",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
 
         let params = json!({ "id": id });
         let req = make_req("zing.tellStatus", Some(params));
@@ -398,7 +465,21 @@ mod tests {
     #[tokio::test]
     async fn test_handle_pause() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id = mgr
+            .add_task(
+                "http://example.com/file",
+                "/tmp/test",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
 
         let params = json!({ "id": id });
         let req = make_req("zing.pause", Some(params));
@@ -410,7 +491,21 @@ mod tests {
     #[tokio::test]
     async fn test_handle_remove() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![], 0).await;
+        let id = mgr
+            .add_task(
+                "http://example.com/file",
+                "/tmp/test",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+            )
+            .await;
 
         let params = json!({ "id": id });
         let req = make_req("zing.remove", Some(params));

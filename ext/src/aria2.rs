@@ -12,8 +12,7 @@ pub struct Aria2Task {
 /// Format: one line per task, tab-separated fields.
 /// gid\tstat\tpath\turi
 pub fn parse_session(path: &Path) -> Result<Vec<Aria2Task>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("read session: {e}"))?;
+    let content = std::fs::read_to_string(path).map_err(|e| format!("read session: {e}"))?;
 
     let mut tasks = Vec::new();
     for line in content.lines() {
