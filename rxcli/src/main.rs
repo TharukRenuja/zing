@@ -745,16 +745,19 @@ async fn run_list() -> Result<()> {
 }
 
 async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Result<()> {
+    use indicatif::MultiProgress;
     use tokio::sync::broadcast::error::RecvError;
+    use std::collections::HashMap;
 
-    let mut pb: Option<ProgressBar> = None;
-    let mut known_total: Option<u64> = None;
+    let mp = MultiProgress::new();
+    let mut bars: HashMap<u64, ProgressBar> = HashMap::new();
+    let mut known_totals: HashMap<u64, u64> = HashMap::new();
 
     loop {
         match rx.recv().await {
-            Ok(EngineEvent::TaskCreated { url, .. }) => {
+            Ok(EngineEvent::TaskCreated { id, url }) => {
                 let display_name = filename::from_url(&url);
-                let bar = ProgressBar::new(0);
+                let bar = mp.add(ProgressBar::new(0));
                 bar.set_prefix(display_name);
                 bar.set_style(
                     ProgressStyle::default_bar()
@@ -762,15 +765,15 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                         .unwrap(),
                 );
                 bar.enable_steady_tick(std::time::Duration::from_millis(100));
-                pb = Some(bar);
-                known_total = None;
+                bars.insert(id, bar);
+                known_totals.remove(&id);
             }
             Ok(EngineEvent::TaskProgress(p)) => {
-                if let Some(ref bar) = pb {
+                if let Some(bar) = bars.get(&p.id) {
                     bar.set_position(p.bytes_downloaded);
-                    if known_total.is_none() && p.total_bytes.is_some_and(|t| t > 0) {
-                        known_total = p.total_bytes;
-                        bar.set_length(known_total.unwrap());
+                    if !known_totals.contains_key(&p.id) && p.total_bytes.is_some_and(|t| t > 0) {
+                        known_totals.insert(p.id, p.total_bytes.unwrap());
+                        bar.set_length(p.total_bytes.unwrap());
                         bar.set_style(
                             ProgressStyle::default_bar()
                                 .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
@@ -778,7 +781,7 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                                 .progress_chars("=>-"),
                         );
                     }
-                    if known_total.is_some() {
+                    if known_totals.contains_key(&p.id) {
                         if p.speed_bytes_per_sec < 1.0 {
                             bar.set_style(
                                 ProgressStyle::default_bar()
@@ -797,26 +800,33 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                     }
                 }
             }
-            Ok(EngineEvent::TaskCompleted { .. }) => {
-                if let Some(bar) = pb.take() {
+            Ok(EngineEvent::TaskCompleted { id, .. }) => {
+                if let Some(bar) = bars.remove(&id) {
                     bar.finish();
                 }
+                known_totals.remove(&id);
             }
-            Ok(EngineEvent::Paused { .. }) => {
-                if let Some(bar) = pb.take() {
+            Ok(EngineEvent::Paused { id, .. }) => {
+                if let Some(bar) = bars.remove(&id) {
                     bar.finish_with_message("PAUSED");
                 }
+                known_totals.remove(&id);
             }
-            Ok(EngineEvent::TaskFailed { error, .. }) => {
-                if let Some(bar) = pb.take() {
+            Ok(EngineEvent::TaskFailed { id, error, .. }) => {
+                if let Some(bar) = bars.remove(&id) {
                     bar.finish_with_message("Failed");
                 }
+                known_totals.remove(&id);
                 tracing::error!("{error}");
             }
             Ok(_) => {}
             Err(RecvError::Closed) => break,
             Err(RecvError::Lagged(n)) => tracing::warn!("Bus lagged by {n}"),
         }
+    }
+    // Clear remaining bars
+    for (_, bar) in bars.drain() {
+        bar.finish_and_clear();
     }
     Ok(())
 }
