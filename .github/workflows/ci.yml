@@ -88,24 +88,6 @@ jobs:
       - name: Build release
         run: cargo build --release ${{ matrix.pkgs }}
 
-      - name: Build .deb (Linux x86_64)
-        if: matrix.suffix == 'x86_64-linux'
-        run: |
-          cargo install cargo-deb
-          cargo deb -p zing
-
-      - name: Build .rpm (Linux x86_64)
-        if: matrix.suffix == 'x86_64-linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq rpm
-          TAG=${{ github.ref_name }}
-          VER=${TAG#v}
-          mkdir -p ~/rpmbuild/SOURCES ~/rpmbuild/SPECS
-          git archive --format=tar.gz --prefix=zing-$VER/ -o ~/rpmbuild/SOURCES/zing-$VER.tar.gz HEAD
-          cp packaging/rpm/zing.spec ~/rpmbuild/SPECS/
-          rpmbuild --define "version $VER" --nodeps -bb ~/rpmbuild/SPECS/zing.spec
-
       - name: Prepare archive (Unix tar.gz)
         if: matrix.ext == 'tar.gz'
         run: |
@@ -134,24 +116,11 @@ jobs:
           TAG=${{ github.ref_name }}
           cp target/release/zing.exe "zing-$TAG-${{ matrix.suffix }}.exe"
 
-      - name: Rename .deb
-        if: matrix.suffix == 'x86_64-linux'
-        run: |
-          TAG=${{ github.ref_name }}
-          cp target/debian/*.deb "zing-$TAG-amd64.deb"
-
-      - name: Rename .rpm
-        if: matrix.suffix == 'x86_64-linux'
-        run: |
-          TAG=${{ github.ref_name }}
-          cp ~/rpmbuild/RPMS/x86_64/zing-*.rpm "zing-$TAG-x86_64.rpm"
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: zing-${{ matrix.suffix }}
-          path: |
-            zing-${{ github.ref_name }}-*
+          path: zing-${{ github.ref_name }}-*
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
