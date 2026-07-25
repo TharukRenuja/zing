@@ -31,6 +31,9 @@ cargo build --release
 
 ## Uninstall
 
+<details>
+<summary>Uninstall Instructions</summary>
+
 ```bash
 # Remove binaries
 sudo rm /usr/local/bin/zing /usr/local/bin/zing-daemon
@@ -44,6 +47,8 @@ zing daemon uninstall
 # Remove socket and auth token
 rm -f /tmp/zing.sock /tmp/zing.sock.auth
 ```
+
+</details>
 
 ## How it works
 
@@ -97,6 +102,9 @@ zing -M file.meta4
 
 ## Pause / Resume
 
+<details>
+<summary>Control file-based resume</summary>
+
 In standalone mode, zing saves its state to a `.zing` control file on exit. Re-running the same URL resumes from where it left off.
 
 ```
@@ -105,7 +113,12 @@ zing https://example.com/large-file.zip
   zing https://example.com/large-file.zip  → resumes
 ```
 
+</details>
+
 ## Daemon mode
+
+<details>
+<summary>Background daemon with systemd integration</summary>
 
 Start a background daemon so downloads continue even after you close the terminal.
 
@@ -123,7 +136,12 @@ zing daemon status
 zing https://example.com/file.zip
 ```
 
+</details>
+
 ## Scheduled downloads
+
+<details>
+<summary>Cron-like time/day triggers</summary>
 
 Schedule downloads with an optional time window. The daemon must be running.
 
@@ -144,7 +162,12 @@ zing schedule list
 zing schedule remove <id>
 ```
 
+</details>
+
 ## Configuration
+
+<details>
+<summary>Config file, keys, and commands</summary>
 
 ```bash
 # List current config
@@ -172,7 +195,11 @@ Config file: `~/.config/zing/config.json`
 }
 ```
 
-## Features
+</details>
+
+## Features & Comparison
+
+### Features
 
 - **Smart downloads** with automatic speed adjustment
 - **Fast disk writing** for better performance
@@ -191,7 +218,7 @@ Config file: `~/.config/zing/config.json`
 - **Concurrent multi-URL downloads** with `--max-concurrent`
 - **Metalink (.meta4)** support for mirrors + checksums
 
-## Comparison
+### Comparison
 
 | Capability | zing | aria2 | curl | wget2 | gopeed |
 | --- | --- | --- | --- | --- | --- |
@@ -213,6 +240,8 @@ Config file: `~/.config/zing/config.json`
 | Checksum verify | Post-download auto-detect | Metalink | No | No | No |
 | Concurrent multi-URL | Yes (--max-concurrent) | Yes | No | No | No |
 
+</details>
+
 ## Architecture
 
 4 crates in a workspace:
@@ -228,3 +257,4 @@ Config file: `~/.config/zing/config.json`
 - **reqwest over hyper**: reqwest provides HTTP/2 ALPN negotiation, HTTP/3 via quinn, connection pooling, and proxy support out of the box.
 - **Unix socket over TCP**: No port conflicts, filesystem permissions control access, no network exposure.
 - **No BitTorrent / browser impersonation**: zing focuses on clean HTTP download intelligence.
+
