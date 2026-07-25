@@ -782,9 +782,20 @@ async fn run_config_edit() -> Result<()> {
 
     println!("=== Configuration Editor ===");
     println!("Current Settings:");
-    println!("  download_dir:              {}", cfg.download_dir.as_deref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "default".to_string()));
+    println!(
+        "  download_dir:              {}",
+        cfg.download_dir
+            .as_deref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "default".to_string())
+    );
     println!("  prompt_location:           {}", cfg.prompt_location);
-    println!("  update_check_interval_days: {}", cfg.update_check_interval_days.map(|d| d.to_string()).unwrap_or_else(|| "disabled".to_string()));
+    println!(
+        "  update_check_interval_days: {}",
+        cfg.update_check_interval_days
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "disabled".to_string())
+    );
 
     use dialoguer::{theme::ColorfulTheme, Input, Select};
 
@@ -799,9 +810,18 @@ async fn run_config_edit() -> Result<()> {
     let dir: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("Download directory (leave empty for default)")
         .allow_empty(true)
-        .with_initial_text(cfg.download_dir.clone().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
+        .with_initial_text(
+            cfg.download_dir
+                .clone()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        )
         .interact_text()?;
-    cfg.download_dir = if dir.is_empty() { None } else { Some(dir.into()) };
+    cfg.download_dir = if dir.is_empty() {
+        None
+    } else {
+        Some(dir.into())
+    };
 
     let prompt_idx = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Prompt before download location?")
@@ -810,9 +830,18 @@ async fn run_config_edit() -> Result<()> {
         .interact()?;
     cfg.prompt_location = prompt_idx == 0;
 
-    let update_options = &["Every 3 days", "Every 7 days", "Every 14 days", "Every 30 days", "Never"];
+    let update_options = &[
+        "Every 3 days",
+        "Every 7 days",
+        "Every 14 days",
+        "Every 30 days",
+        "Never",
+    ];
     let update_values: [Option<u64>; 5] = [Some(3), Some(7), Some(14), Some(30), None];
-    let default_update_idx = update_values.iter().position(|&v| v == cfg.update_check_interval_days).unwrap_or(1);
+    let default_update_idx = update_values
+        .iter()
+        .position(|&v| v == cfg.update_check_interval_days)
+        .unwrap_or(1);
     let update_idx = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Check for updates?")
         .default(default_update_idx)
@@ -846,7 +875,10 @@ async fn run_list() -> Result<()> {
                 }
                 let cfg = Config::load(None);
                 if let Some(version) = update::check_for_update(&cfg).await {
-                    println!("Update available: {version} (you have v{}) — run 'zing update'", env!("CARGO_PKG_VERSION"));
+                    println!(
+                        "Update available: {version} (you have v{}) — run 'zing update'",
+                        env!("CARGO_PKG_VERSION")
+                    );
                 }
                 println!(
                     "{:<6} {:<12} {:<30} {:<25} FILE",

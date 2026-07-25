@@ -126,13 +126,20 @@ pub enum Commands {
     )]
     List,
 
-    #[command(name = "completions", about = "Generate shell completions", hide = true)]
+    #[command(
+        name = "completions",
+        about = "Generate shell completions",
+        hide = true
+    )]
     Completions {
         #[arg(value_enum, help = "Shell to generate completions for", hide = true)]
         shell: clap_complete::Shell,
     },
 
-    #[command(name = "update", about = "Update zing to the latest version")]
+    #[command(
+        name = "update",
+        about = "Update zing to the latest version"
+    )]
     Update,
 }
 

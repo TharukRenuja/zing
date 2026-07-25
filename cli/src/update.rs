@@ -40,13 +40,15 @@ pub async fn check_for_update(cfg: &Config) -> Option<String> {
 
     let latest = match fetch_latest_tag().await {
         Some(tag) => tag,
-        None => return cache.and_then(|c| {
-            if version_cmp(&c.latest_version, &current_version()) == Ordering::Greater {
-                Some(c.latest_version)
-            } else {
-                None
-            }
-        }),
+        None => {
+            return cache.and_then(|c| {
+                if version_cmp(&c.latest_version, &current_version()) == Ordering::Greater {
+                    Some(c.latest_version)
+                } else {
+                    None
+                }
+            })
+        }
     };
 
     save_cache(&cache_path, &latest);
@@ -59,7 +61,9 @@ pub async fn check_for_update(cfg: &Config) -> Option<String> {
 }
 
 pub async fn run_update() -> Result<()> {
-    let tag = fetch_latest_tag().await.ok_or_else(|| color_eyre::eyre::eyre!("Failed to fetch latest release"))?;
+    let tag = fetch_latest_tag()
+        .await
+        .ok_or_else(|| color_eyre::eyre::eyre!("Failed to fetch latest release"))?;
     let current = current_version();
 
     if version_cmp(&tag, &current) != Ordering::Greater {
@@ -245,11 +249,13 @@ fn cache_path() -> PathBuf {
     config_dir.join("zing").join(CACHE_FILE)
 }
 
+#[allow(dead_code)]
 fn load_cache(path: &PathBuf) -> Option<UpdateCache> {
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
 }
 
+#[allow(dead_code)]
 fn save_cache(path: &PathBuf, version: &str) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
