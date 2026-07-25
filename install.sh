@@ -104,36 +104,4 @@ fi
 rm -rf "$tmp"
 
 echo "zing ${VERSION} installed to $dst"
-
-case "$os" in
-  linux)
-    if command -v systemctl >/dev/null 2>&1; then
-      echo
-      printf "Set up systemd user service for zing-daemon? [Y/n] "
-      read -r ans
-      case "$ans" in
-        n*|N*) ;;
-        *)
-          svc="zing-daemon.service"
-          svc_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-          svc_url="https://raw.githubusercontent.com/${REPO}/main/daemon/${svc}"
-          mkdir -p "$svc_dir"
-          if curl -fsSL "$svc_url" -o "$svc_dir/$svc"; then
-            systemctl --user daemon-reload
-            printf "Enable and start zing-daemon now? [Y/n] "
-            read -r ans2
-            case "$ans2" in
-              n*|N*) echo "  Run later: systemctl --user enable --now zing-daemon" ;;
-              *)
-                systemctl --user enable --now zing-daemon
-                echo "  zing-daemon enabled and started"
-                ;;
-            esac
-          else
-            echo "  warning: failed to download service file from $svc_url"
-          fi
-          ;;
-      esac
-    fi
-    ;;
-esac
+echo "Restart your terminal or run: hash -r"
