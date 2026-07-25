@@ -9,13 +9,9 @@ License:        GPL-3.0-only
 URL:            https://github.com/TharukRenuja/rxdl
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  systemd
-BuildRequires:  systemd-rpm-macros
-BuildRequires:  openssl-devel
+BuildRequires:  cargo
 
 Requires:       libc.so.6()(64bit)
-Requires:       libssl.so.3()(64bit)
-Requires:       libcrypto.so.3()(64bit)
 
 %description
 A modern HTTP downloader with support for HTTP/1.1, HTTP/2, and HTTP/3.
