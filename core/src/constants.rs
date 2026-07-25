@@ -20,8 +20,8 @@ pub const READ_TIMEOUT_SECS: u64 = 30;
 /// Slow-start batch delay in milliseconds between spawning connection batches.
 pub const SLOW_START_BATCH_DELAY_MS: u64 = 300;
 
-/// Default refill interval for the token bucket rate limiter (250ms).
-pub const RATE_LIMITER_REFILL_INTERVAL_NS: u64 = 250_000_000;
+/// Default refill interval for the token bucket rate limiter (10ms).
+pub const RATE_LIMITER_REFILL_INTERVAL_NS: u64 = 10_000_000;
 
 /// Number of retries before rotating mirrors.
 pub const RETRY_COUNT: u32 = 5;

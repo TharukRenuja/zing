@@ -101,7 +101,7 @@ fn now_ns() -> u64 {
 }
 
 fn capacity_for(bytes_per_sec: u64) -> u64 {
-    (bytes_per_sec.max(1024) / 4).max(65536)
+    bytes_per_sec.max(65536)
 }
 
 pub type SharedRateLimiter = Option<Arc<TokenBucket>>;
@@ -159,7 +159,7 @@ mod tests {
     fn test_capacity_for() {
         assert_eq!(super::capacity_for(0), 65536);
         assert_eq!(super::capacity_for(65536), 65536);
-        assert_eq!(super::capacity_for(4_000_000), 1_000_000);
+        assert_eq!(super::capacity_for(4_000_000), 4_000_000);
         assert_eq!(super::capacity_for(1024), 65536);
     }
 }

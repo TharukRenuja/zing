@@ -147,8 +147,14 @@ impl DownloadTask {
             }
         });
 
-        loop {
-            self.run().await?;
+        let result = loop {
+            match self.run().await {
+                Ok(()) => {}
+                Err(e) => {
+                    handle.abort();
+                    break Err(e);
+                }
+            }
 
             if self.state.reprobe.load(Ordering::Acquire) {
                 let rotated = self.state.rotate_url().await;
@@ -164,11 +170,11 @@ impl DownloadTask {
                 *self.state.start_time.lock().await = Instant::now();
                 continue;
             }
-            break;
-        }
+            break Ok(());
+        };
 
         handle.abort();
-        Ok(())
+        result
     }
 
     pub async fn run(&self) -> Result<()> {

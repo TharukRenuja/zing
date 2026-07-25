@@ -89,7 +89,7 @@ impl Default for WorkStealer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn mgr_with_two_connections(slow_remaining: u64, fast_remaining: u64) -> SegmentManager {
         let mut mgr = SegmentManager::new(4);
