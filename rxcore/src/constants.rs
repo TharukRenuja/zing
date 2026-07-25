@@ -1,0 +1,33 @@
+/// Minimum segment size: 512 KiB. Segments smaller than this won't be split further.
+pub const SEGMENT_MIN_SIZE: u64 = 512 * 1024;
+
+/// Initial split size for slow-start segment allocation: 1 MiB.
+pub const SEGMENT_INITIAL_SPLIT_SIZE: u64 = 1024 * 1024;
+
+/// Minimum speed threshold (10 KiB/s) below which throttling detection is disabled.
+pub const MIN_THROTTLE_SPEED: u64 = 10 * 1024;
+
+/// Monitor tick interval in milliseconds.
+pub const MONITOR_TICK_MS: u64 = 250;
+
+/// Control file save interval in seconds.
+pub const SAVE_INTERVAL_SECS: u64 = 2;
+
+/// Per-chunk read timeout in seconds. If no data is received within this window,
+/// the connection bails and retries.
+pub const READ_TIMEOUT_SECS: u64 = 30;
+
+/// Slow-start batch delay in milliseconds between spawning connection batches.
+pub const SLOW_START_BATCH_DELAY_MS: u64 = 300;
+
+/// Default refill interval for the token bucket rate limiter (250ms).
+pub const RATE_LIMITER_REFILL_INTERVAL_NS: u64 = 250_000_000;
+
+/// Number of retries before rotating mirrors.
+pub const RETRY_COUNT: u32 = 5;
+
+/// Minimum retry backoff delay.
+pub const RETRY_BACKOFF_MIN_MS: u64 = 500;
+
+/// Maximum retry backoff delay.
+pub const RETRY_BACKOFF_MAX_MS: u64 = 10_000;

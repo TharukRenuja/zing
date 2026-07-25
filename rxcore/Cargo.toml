@@ -8,12 +8,15 @@ license = "GPL-3.0-only"
 
 [dependencies]
 rxext = { path = "../rxext" }
-tokio = { version = "1", features = ["sync", "time", "signal", "rt", "fs", "io-util"] }
+tokio = { version = "1", features = ["sync", "time", "signal", "rt", "fs", "io-util", "net", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
 tracing = "0.1"
 url = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http3"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 anyhow = "1"
 rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

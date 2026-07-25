@@ -229,3 +229,93 @@ impl Default for TaskManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_add_and_list_task() {
+        let mgr = TaskManager::new();
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+
+        let tasks = mgr.list_tasks().await;
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, id);
+        assert_eq!(tasks[0].url, "http://example.com/file");
+        assert_eq!(tasks[0].status, TaskStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_pause_task() {
+        let mgr = TaskManager::new();
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+
+        // Small sleep to let the spawned task start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        mgr.pause_task(id).await.unwrap();
+
+        let task = mgr.get_task(id).await.unwrap();
+        assert_eq!(task.status, TaskStatus::Paused);
+    }
+
+    #[tokio::test]
+    async fn test_pause_nonexistent_task() {
+        let mgr = TaskManager::new();
+        let result = mgr.pause_task(999).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_remove_task() {
+        let mgr = TaskManager::new();
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+
+        mgr.remove_task(id).await.unwrap();
+
+        let task = mgr.get_task(id).await;
+        assert!(task.is_none(), "task should be removed");
+    }
+
+    #[tokio::test]
+    async fn test_add_multiple_tasks() {
+        let mgr = TaskManager::new();
+        let id1 = mgr.add_task("http://a.com/f1", "/tmp/f1", false, 2, false, 0, None, vec![], None).await;
+        let id2 = mgr.add_task("http://b.com/f2", "/tmp/f2", false, 4, false, 0, None, vec![], None).await;
+
+        let tasks = mgr.list_tasks().await;
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, id1);
+        assert_eq!(tasks[1].id, id2);
+    }
+
+    #[tokio::test]
+    async fn test_task_ids_increment() {
+        let mgr = TaskManager::new();
+        let id1 = mgr.add_task("http://a.com/f1", "/tmp/f1", false, 2, false, 0, None, vec![], None).await;
+        let id2 = mgr.add_task("http://b.com/f2", "/tmp/f2", false, 4, false, 0, None, vec![], None).await;
+        assert!(id2 > id1, "task IDs should increment");
+    }
+
+    #[tokio::test]
+    async fn test_remove_nonexistent_task() {
+        let mgr = TaskManager::new();
+        let result = mgr.remove_task(999).await;
+        assert!(result.is_ok(), "removing nonexistent task should be ok");
+    }
+
+    #[tokio::test]
+    async fn test_get_task() {
+        let mgr = TaskManager::new();
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+
+        let task = mgr.get_task(id).await.unwrap();
+        assert_eq!(task.id, id);
+        assert_eq!(task.url, "http://example.com/file");
+        assert_eq!(task.filename, "/tmp/test");
+
+        let missing = mgr.get_task(999).await;
+        assert!(missing.is_none());
+    }
+}

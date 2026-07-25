@@ -164,7 +164,7 @@ fn decide_strategy(
         return (1, DownloadMode::Streaming);
     }
 
-    if size < 1024 * 1024 {
+    if size < crate::constants::SEGMENT_INITIAL_SPLIT_SIZE {
         return (1, DownloadMode::Segmented);
     }
 

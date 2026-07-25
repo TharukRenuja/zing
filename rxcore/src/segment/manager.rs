@@ -74,7 +74,7 @@ pub struct SegmentManager {
 
 impl SegmentManager {
     pub fn new(max_connections: usize) -> Self {
-        let min_segment_size = 512 * 1024; // 512KB minimum
+        let min_segment_size = crate::constants::SEGMENT_MIN_SIZE;
         Self {
             total_size: None,
             segments: Vec::new(),

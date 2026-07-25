@@ -9,6 +9,7 @@ use crate::segment::manager::SegmentManager;
 use crate::segment::pid::PidController;
 use crate::segment::stealer::WorkStealer;
 use crate::storage::{ControlFile, SegmentEntry};
+use crate::constants;
 use crate::util;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -278,7 +279,7 @@ impl DownloadTask {
                 .await?;
             f.set_len(total_size).await?;
             let std_file: std::fs::File = f.into_std().await;
-            *self.state.file.lock().unwrap() = Some(Arc::new(std_file));
+            *self.state.file.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(std_file));
         }
 
         let mut cf = ControlFile::new(&self.state.url.lock().await, &filename, Some(total_size));
@@ -332,7 +333,7 @@ impl DownloadTask {
         }));
 
         for batch_idx in 1..batches.len() {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(constants::SLOW_START_BATCH_DELAY_MS)).await;
             for _ in 0..batches[batch_idx] {
                 let target = {
                     let mgr = self.state.segment_mgr.lock().await;
@@ -341,7 +342,7 @@ impl DownloadTask {
                 let conn_id = {
                     let mut mgr = self.state.segment_mgr.lock().await;
                     if let Some(slow) = target {
-                        SlowStartAllocator::split_segment(&mut mgr, slow, 1024 * 1024)
+                        SlowStartAllocator::split_segment(&mut mgr, slow, constants::SEGMENT_INITIAL_SPLIT_SIZE)
                             .map(|(id, _)| id)
                     } else {
                         None
@@ -419,7 +420,7 @@ impl DownloadTask {
                 } else {
                     0
                 };
-                let min_speed = 10240u64;
+                let min_speed = constants::MIN_THROTTLE_SPEED;
 
                 if threshold > min_speed && speed_u64 > 0 && speed_u64 < threshold {
                     let _ = throttle_start.get_or_insert_with(Instant::now);
@@ -465,7 +466,7 @@ impl DownloadTask {
 
                     let pid_id = if adjustment >= 1 {
                         mgr.slowest_connection()
-                            .and_then(|slow| SlowStartAllocator::split_segment(&mut mgr, slow, 512 * 1024))
+                            .and_then(|slow| SlowStartAllocator::split_segment(&mut mgr, slow, constants::SEGMENT_MIN_SIZE))
                             .map(|(id, _)| id)
                     } else {
                         None
@@ -481,7 +482,7 @@ impl DownloadTask {
 
                     let steal_id = stealer
                         .find_steal_targets(&mgr)
-                        .and_then(|(slow_id, _)| SlowStartAllocator::split_segment(&mut mgr, slow_id, 512 * 1024))
+                        .and_then(|(slow_id, _)| SlowStartAllocator::split_segment(&mut mgr, slow_id, constants::SEGMENT_MIN_SIZE))
                         .map(|(id, _)| id);
 
                     (pid_id, steal_id)
@@ -499,14 +500,14 @@ impl DownloadTask {
 
                 {
                     let mut last_save = state_mon.save_interval.lock().await;
-                    if last_save.elapsed() > std::time::Duration::from_secs(2) {
+                    if last_save.elapsed() > std::time::Duration::from_secs(constants::SAVE_INTERVAL_SECS) {
                         sync_cf(&state_mon, &cf_mon).await;
                         let _ = cf_mon.lock().await.save(&control_path_mon).await;
                         *last_save = Instant::now();
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(constants::MONITOR_TICK_MS)).await;
             }
         });
 
@@ -516,8 +517,10 @@ impl DownloadTask {
         self.state.done.store(true, Ordering::Release);
         monitor.await.ok();
 
-        if let Some(ref f) = *self.state.file.lock().unwrap() {
-            let _ = f.sync_all();
+        if let Ok(guard) = self.state.file.lock() {
+            if let Some(ref f) = *guard {
+                let _ = f.sync_all();
+            }
         }
 
         let total = self.state.total_downloaded.load(Ordering::Relaxed);
@@ -650,19 +653,21 @@ async fn download_range(state: &Arc<SharedState>, conn_id: usize, offset: u64, l
     let mut pos = offset;
 
     loop {
-        let data = match tokio::time::timeout(std::time::Duration::from_secs(30), stream.next()).await {
+        let data = match tokio::time::timeout(std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS), stream.next()).await {
             Ok(Some(Ok(d))) => d,
             Ok(Some(Err(e))) => return Err(e.into()),
             Ok(None) => break,
-            Err(_) => bail!("read timeout (30s)"),
+            Err(_) => bail!("read timeout ({}s)", constants::READ_TIMEOUT_SECS),
         };
 
         if let Some(ref limiter) = state.rate_limiter {
             limiter.consume(data.len() as u64).await;
         }
 
-        if let Some(ref file) = *state.file.lock().unwrap() {
-            util::write_at(file, &data, pos)?;
+        if let Ok(guard) = state.file.lock() {
+            if let Some(ref file) = *guard {
+                util::write_at(file, &data, pos)?;
+            }
         }
         written += data.len() as u64;
         pos += data.len() as u64;
@@ -690,4 +695,74 @@ async fn sync_cf(state: &SharedState, cf: &tokio::sync::Mutex<ControlFile>) {
             downloaded: s.downloaded,
         })
         .collect();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::segment::manager::{Segment, SegmentState};
+
+    #[tokio::test]
+    async fn test_sync_cf_copies_segments() {
+        let state = Arc::new(SharedState {
+            id: 0,
+            url: Mutex::new("http://example.com/file".into()),
+            mirrors: vec![],
+            filename: Mutex::new("/tmp/test".into()),
+            is_auto_name: false,
+            segment_mgr: Mutex::new(SegmentManager::new(4)),
+            file: std::sync::Mutex::new(None),
+            bus: crate::engine::event::EventBus::new(),
+            pool: ConnectionPool::new(false, None).with_event_bus(crate::engine::event::EventBus::new()),
+            rate_limiter: None,
+            start_time: tokio::sync::Mutex::new(Instant::now()),
+            total_downloaded: AtomicU64::new(0),
+            done: AtomicBool::new(false),
+            save_interval: tokio::sync::Mutex::new(Instant::now()),
+            reprobe: AtomicBool::new(false),
+            peak_speed: AtomicU64::new(0),
+            bandwidth_estimate: AtomicU64::new(0),
+        });
+
+        // Manually insert segments into the manager
+        {
+            let mut mgr = state.segment_mgr.lock().await;
+            mgr.segments.push(Segment {
+                id: 0,
+                offset: 0,
+                length: 100,
+                downloaded: 50,
+                state: SegmentState::Pending,
+            });
+            mgr.segments.push(Segment {
+                id: 1,
+                offset: 100,
+                length: 200,
+                downloaded: 200,
+                state: SegmentState::Complete,
+            });
+        }
+
+        let cf = Arc::new(tokio::sync::Mutex::new(ControlFile {
+            version: 1,
+            url: "http://example.com/file".into(),
+            total_size: Some(300),
+            filename: "/tmp/test".into(),
+            segments: vec![],
+            metadata: std::collections::HashMap::new(),
+            base_downloaded: 0,
+        }));
+
+        sync_cf(&state, &cf).await;
+
+        let cf_guard = cf.lock().await;
+        assert_eq!(cf_guard.segments.len(), 2);
+        assert_eq!(cf_guard.segments[0].id, 0);
+        assert_eq!(cf_guard.segments[0].offset, 0);
+        assert_eq!(cf_guard.segments[0].length, 100);
+        assert_eq!(cf_guard.segments[0].downloaded, 50);
+        assert_eq!(cf_guard.segments[1].id, 1);
+        assert_eq!(cf_guard.segments[1].offset, 100);
+        assert_eq!(cf_guard.segments[1].downloaded, 200);
+    }
 }

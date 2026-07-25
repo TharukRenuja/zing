@@ -292,3 +292,132 @@ async fn handle_tell_status(params: Option<Value>, manager: &TaskManager) -> Rpc
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task_manager::TaskManager;
+    use serde_json::json;
+
+    fn make_req(method: &str, params: Option<Value>) -> RpcRequest {
+        RpcRequest {
+            id: Some(Value::Number(serde_json::Number::from(1))),
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_add_uri() {
+        let mgr = TaskManager::new();
+        let params = json!({
+            "url": "http://example.com/file",
+            "filename": "/tmp/test",
+        });
+        let req = make_req("rxdl.addUri", Some(params));
+        let resp = handle_request(req, &mgr).await;
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let result = resp.result.unwrap();
+        assert_eq!(result["status"], "pending");
+        assert_eq!(result["url"], "http://example.com/file");
+    }
+
+    #[tokio::test]
+    async fn test_handle_add_uri_missing_url() {
+        let mgr = TaskManager::new();
+        let params = json!({ "filename": "/tmp/test" });
+        let req = make_req("rxdl.addUri", Some(params));
+        let resp = handle_request(req, &mgr).await;
+        assert!(resp.error.is_some(), "expected error for missing url");
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_empty() {
+        let mgr = TaskManager::new();
+        let req = make_req("rxdl.list", None);
+        let resp = handle_request(req, &mgr).await;
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        let tasks = result["tasks"].as_array().unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_list_with_tasks() {
+        let mgr = TaskManager::new();
+        mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+
+        let req = make_req("rxdl.list", None);
+        let resp = handle_request(req, &mgr).await;
+        let result = resp.result.unwrap();
+        let tasks = result["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_tell_status() {
+        let mgr = TaskManager::new();
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+
+        let params = json!({ "id": id });
+        let req = make_req("rxdl.tellStatus", Some(params));
+        let resp = handle_request(req, &mgr).await;
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let result = resp.result.unwrap();
+        assert_eq!(result["url"], "http://example.com/file");
+    }
+
+    #[tokio::test]
+    async fn test_handle_tell_status_not_found() {
+        let mgr = TaskManager::new();
+        let params = json!({ "id": 999 });
+        let req = make_req("rxdl.tellStatus", Some(params));
+        let resp = handle_request(req, &mgr).await;
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32000);
+    }
+
+    #[tokio::test]
+    async fn test_handle_pause() {
+        let mgr = TaskManager::new();
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+
+        let params = json!({ "id": id });
+        let req = make_req("rxdl.pause", Some(params));
+        let resp = handle_request(req, &mgr).await;
+        let result = resp.result.unwrap();
+        assert_eq!(result["status"], "paused");
+    }
+
+    #[tokio::test]
+    async fn test_handle_remove() {
+        let mgr = TaskManager::new();
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+
+        let params = json!({ "id": id });
+        let req = make_req("rxdl.remove", Some(params));
+        let resp = handle_request(req, &mgr).await;
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["status"], "removed");
+
+        let task = mgr.get_task(id).await;
+        assert!(task.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_unknown_method() {
+        let mgr = TaskManager::new();
+        let req = make_req("rxdl.unknown", None);
+        let resp = handle_request(req, &mgr).await;
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    #[tokio::test]
+    async fn test_is_subscribe() {
+        assert!(is_subscribe("rxdl.subscribe"));
+        assert!(!is_subscribe("rxdl.addUri"));
+        assert!(!is_subscribe(""));
+    }
+}

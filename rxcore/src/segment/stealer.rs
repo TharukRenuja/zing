@@ -9,7 +9,7 @@ impl WorkStealer {
     pub fn new() -> Self {
         Self {
             steal_threshold_seconds: 3.0,
-            steal_min_bytes: 512 * 1024,
+            steal_min_bytes: crate::constants::SEGMENT_MIN_SIZE,
         }
     }
 

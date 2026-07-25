@@ -118,6 +118,21 @@ async fn run(args: Args) -> Result<()> {
         });
     }
 
+    // SIGTERM: graceful shutdown (save control file before exit)
+    {
+        let tx = shutdown_tx.clone();
+        let quit = Arc::clone(&quit_requested);
+        tokio::spawn(async move {
+            let mut sigterm = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::terminate(),
+            ).expect("sigterm handler");
+            sigterm.recv().await;
+            quit.store(true, Ordering::Release);
+            tracing::info!("SIGTERM received, shutting down...");
+            let _ = tx.send(());
+        });
+    }
+
     // SIGTSTP (Ctrl+Z): pause
     let suspend_requested = Arc::new(AtomicBool::new(false));
     {
@@ -514,13 +529,30 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                     bar.set_position(p.bytes_downloaded);
                     if known_total.is_none() && p.total_bytes.is_some_and(|t| t > 0) {
                         known_total = p.total_bytes;
-                        bar.set_length(p.total_bytes.unwrap());
+                        bar.set_length(known_total.unwrap());
                         bar.set_style(
                             ProgressStyle::default_bar()
                                 .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
                                 .unwrap()
                                 .progress_chars("=>-"),
                         );
+                    }
+                    if known_total.is_some() {
+                        if p.speed_bytes_per_sec < 1.0 {
+                            bar.set_style(
+                                ProgressStyle::default_bar()
+                                    .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}")
+                                    .unwrap()
+                                    .progress_chars("=>-"),
+                            );
+                        } else {
+                            bar.set_style(
+                                ProgressStyle::default_bar()
+                                    .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
+                                    .unwrap()
+                                    .progress_chars("=>-"),
+                            );
+                        }
                     }
                 }
             }

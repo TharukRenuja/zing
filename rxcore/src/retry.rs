@@ -18,6 +18,15 @@ impl RetryManager {
         }
     }
 
+    /// Create a RetryManager with sensible defaults (5 retries, 500ms–10s backoff).
+    pub fn with_defaults() -> Self {
+        Self::new(
+            crate::constants::RETRY_COUNT,
+            Duration::from_millis(crate::constants::RETRY_BACKOFF_MIN_MS),
+            Duration::from_millis(crate::constants::RETRY_BACKOFF_MAX_MS),
+        )
+    }
+
     pub fn next_delay(&mut self) -> Option<Duration> {
         if self.attempt >= self.max_retries {
             return None;

@@ -17,7 +17,7 @@ impl TokenBucket {
             capacity: AtomicU64::new(cap),
             tokens: AtomicU64::new(cap),
             refill_rate: AtomicU64::new(bytes_per_sec),
-            refill_interval_ns: 250_000_000,
+            refill_interval_ns: crate::constants::RATE_LIMITER_REFILL_INTERVAL_NS,
             last_refill_ns: AtomicU64::new(now_ns()),
         }
     }
