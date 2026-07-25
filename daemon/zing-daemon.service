@@ -1,0 +1,13 @@
+[Unit]
+Description=zing download daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/zing-daemon
+Restart=on-failure
+RuntimeDirectory=zing
+
+[Install]
+WantedBy=multi-user.target

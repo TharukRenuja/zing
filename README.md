@@ -10,7 +10,9 @@ zing https://example.com/file.zip
 
 ```bash
 # Download pre-built binary (recommended)
-curl -fsSL https://raw.githubusercontent.com/TharukRenuja/zing/main/install.sh | sh
+
+Download the latest release from [Releases](https://raw.githubusercontent.com/TharukRenuja/zing/releases).
+
 
 # Or install with cargo (requires Rust)
 cargo install zing
