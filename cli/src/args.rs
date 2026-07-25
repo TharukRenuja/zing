@@ -126,14 +126,14 @@ pub enum Commands {
     )]
     List,
 
-    #[command(name = "completions", about = "Generate shell completions")]
+    #[command(name = "completions", about = "Generate shell completions", hide = true)]
     Completions {
-        #[arg(value_enum, help = "Shell to generate completions for")]
+        #[arg(value_enum, help = "Shell to generate completions for", hide = true)]
         shell: clap_complete::Shell,
     },
 
-    #[command(name = "man", about = "Generate man page")]
-    Man,
+    #[command(name = "update", about = "Update zing to the latest version")]
+    Update,
 }
 
 #[derive(Parser, Debug)]
@@ -232,7 +232,7 @@ pub enum ConfigAction {
         key: String,
     },
 
-    #[command(about = "Open configuration in editor", alias = "e")]
+    #[command(about = "Interactive configuration editor", alias = "e")]
     Edit,
 }
 

@@ -412,8 +412,16 @@ impl DownloadTask {
                 let total = {
                     let mgr = state_mon.segment_mgr.lock().await;
                     if mgr.is_all_complete() {
+                        let total_size = mgr.total_size;
                         drop(mgr);
                         state_mon.done.store(true, Ordering::Release);
+                        let final_downloaded = state_mon.total_downloaded.load(Ordering::Relaxed);
+                        state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+                            id: state_mon.id,
+                            bytes_downloaded: final_downloaded,
+                            total_bytes: total_size,
+                            speed_bytes_per_sec: 0.0,
+                        }));
                         sync_cf(&state_mon, &cf_mon).await;
                         let _ = cf_mon.lock().await.save(&control_path_mon).await;
                         return;
@@ -424,6 +432,12 @@ impl DownloadTask {
 
                 if total.is_some() && downloaded >= total.unwrap() {
                     state_mon.done.store(true, Ordering::Release);
+                    state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+                        id: state_mon.id,
+                        bytes_downloaded: downloaded,
+                        total_bytes: total,
+                        speed_bytes_per_sec: 0.0,
+                    }));
                     sync_cf(&state_mon, &cf_mon).await;
                     let _ = cf_mon.lock().await.save(&control_path_mon).await;
                     return;
@@ -580,6 +594,13 @@ impl DownloadTask {
         }
 
         let total = self.state.total_downloaded.load(Ordering::Relaxed);
+
+        self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+            id: self.state.id,
+            bytes_downloaded: total,
+            total_bytes: Some(total_size),
+            speed_bytes_per_sec: 0.0,
+        }));
 
         let completed = total >= total_size;
         if completed {

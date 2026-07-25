@@ -117,7 +117,13 @@ impl TaskManager {
                             t.speed = p.speed_bytes_per_sec;
                         }
                     }
-                    Ok(EngineEvent::TaskCompleted { id: tid, .. }) if tid == id => break,
+                    Ok(EngineEvent::TaskCompleted { id: tid, total_bytes, .. } ) if tid == id => {
+                        let mut tasks = tasks_arc.lock().await;
+                        if let Some(t) = tasks.get_mut(&id) {
+                            t.downloaded = total_bytes;
+                        }
+                        break;
+                    }
                     Ok(EngineEvent::TaskFailed { id: tid, .. }) if tid == id => break,
                     Err(RecvError::Closed) => break,
                     _ => {}
@@ -157,10 +163,11 @@ impl TaskManager {
                     Ok(()) => {
                         if let Some(t) = tasks.get_mut(&id) {
                             if t.status != TaskStatus::Paused {
+                                t.downloaded = t.total_bytes.unwrap_or(t.downloaded);
                                 t.status = TaskStatus::Completed;
                                 bus.emit(EngineEvent::TaskCompleted {
                                     id,
-                                    total_bytes: t.total_bytes.unwrap_or(0),
+                                    total_bytes: t.downloaded,
                                     duration: std::time::Duration::ZERO,
                                 });
                             }

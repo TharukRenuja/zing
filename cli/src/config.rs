@@ -6,6 +6,12 @@ pub struct Config {
     pub download_dir: Option<PathBuf>,
     #[serde(default)]
     pub prompt_location: bool,
+    #[serde(default = "default_update_interval")]
+    pub update_check_interval_days: Option<u64>,
+}
+
+fn default_update_interval() -> Option<u64> {
+    Some(7)
 }
 
 impl Config {
@@ -43,6 +49,16 @@ impl Config {
             Err(_) => raw_str,
         };
         PathBuf::from(expanded)
+    }
+
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = default_config_path().ok_or("cannot determine config directory")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, content)?;
+        Ok(())
     }
 }
 

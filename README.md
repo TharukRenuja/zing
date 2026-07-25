@@ -34,6 +34,12 @@ cargo build --release
 <details>
 <summary>Uninstall Instructions</summary>
 
+#### Using uninstall script
+```bash
+curl -fsSL https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | sh
+```
+
+#### Or manually
 ```bash
 # Remove binaries
 sudo rm /usr/local/bin/zing /usr/local/bin/zing-daemon
@@ -170,6 +176,9 @@ zing schedule remove <id>
 <summary>Config file, keys, and commands</summary>
 
 ```bash
+# Interactive editor (guided prompts)
+zing config edit
+
 # List current config
 zing config list
 
@@ -181,10 +190,9 @@ zing config set download_dir "~/Downloads"
 
 # Delete a config key
 zing config delete download_dir
-
-# Open config in $EDITOR
-zing config edit
 ```
+
+`zing config edit` opens an interactive wizard that shows all settings and lets you change them one by one.
 
 Config file: `~/.config/zing/config.json`
 

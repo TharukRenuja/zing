@@ -101,6 +101,21 @@ if [ -n "$daemon" ] && [ -f "${tmp}/zing-daemon" ]; then
   echo "  $dst/$daemon"
 fi
 
+echo "Installing shell completions..."
+compsh="$dst/zing"
+if [ -d /usr/share/bash-completion/completions ]; then
+  $compsh completions bash | $maybe_sudo tee /usr/share/bash-completion/completions/zing > /dev/null 2>&1 || true
+  echo "  bash completions"
+fi
+if [ -d /usr/share/zsh/site-functions ]; then
+  $compsh completions zsh | $maybe_sudo tee /usr/share/zsh/site-functions/_zing > /dev/null 2>&1 || true
+  echo "  zsh completions"
+fi
+if [ -d /usr/share/fish/vendor_completions.d ]; then
+  $compsh completions fish | $maybe_sudo tee /usr/share/fish/vendor_completions.d/zing.fish > /dev/null 2>&1 || true
+  echo "  fish completions"
+fi
+
 rm -rf "$tmp"
 
 echo "zing ${VERSION} installed to $dst"

@@ -2,6 +2,7 @@ mod args;
 mod config;
 #[cfg(unix)]
 mod daemon_client;
+mod update;
 
 use args::{Args, Commands, ConfigAction, DaemonAction, ScheduleAction};
 use clap::CommandFactory;
@@ -81,11 +82,8 @@ async fn run(args: Args) -> Result<()> {
             generate(shell, &mut cmd, "zing", &mut std::io::stdout());
             return Ok(());
         }
-        Some(Commands::Man) => {
-            let cmd = Args::command();
-            let man = clap_mangen::Man::new(cmd);
-            man.render(&mut std::io::stdout())?;
-            return Ok(());
+        Some(Commands::Update) => {
+            return update::run_update().await;
         }
         None => {
             if args.urls.is_empty() {
@@ -773,27 +771,62 @@ async fn run_config(conf: &args::ConfigArgs) -> Result<()> {
             }
         }
         ConfigAction::Edit => {
-            let editor = std::env::var("EDITOR")
-                .or_else(|_| std::env::var("VISUAL"))
-                .unwrap_or_else(|_| "vim".to_string());
-
-            // ensure file exists
-            if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
-                tokio::fs::write(&path, "{}\n").await?;
-            }
-
-            let status = std::process::Command::new(&editor)
-                .arg(&path)
-                .status()
-                .map_err(|e| {
-                    color_eyre::eyre::eyre!("Failed to launch editor '{}': {}", editor, e)
-                })?;
-
-            if !status.success() {
-                eprintln!("Editor exited with error");
-            }
+            return run_config_edit().await;
         }
     }
+    Ok(())
+}
+
+async fn run_config_edit() -> Result<()> {
+    let mut cfg = Config::load(None);
+
+    println!("=== Configuration Editor ===");
+    println!("Current Settings:");
+    println!("  download_dir:              {}", cfg.download_dir.as_deref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "default".to_string()));
+    println!("  prompt_location:           {}", cfg.prompt_location);
+    println!("  update_check_interval_days: {}", cfg.update_check_interval_days.map(|d| d.to_string()).unwrap_or_else(|| "disabled".to_string()));
+
+    use dialoguer::{theme::ColorfulTheme, Input, Select};
+
+    if !dialoguer::Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Edit settings?")
+        .default(false)
+        .interact()?
+    {
+        return Ok(());
+    }
+
+    let dir: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Download directory (leave empty for default)")
+        .allow_empty(true)
+        .with_initial_text(cfg.download_dir.clone().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
+        .interact_text()?;
+    cfg.download_dir = if dir.is_empty() { None } else { Some(dir.into()) };
+
+    let prompt_idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Prompt before download location?")
+        .default(if cfg.prompt_location { 0 } else { 1 })
+        .items(&["Yes", "No"])
+        .interact()?;
+    cfg.prompt_location = prompt_idx == 0;
+
+    let update_options = &["Every 3 days", "Every 7 days", "Every 14 days", "Every 30 days", "Never"];
+    let update_values: [Option<u64>; 5] = [Some(3), Some(7), Some(14), Some(30), None];
+    let default_update_idx = update_values.iter().position(|&v| v == cfg.update_check_interval_days).unwrap_or(1);
+    let update_idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Check for updates?")
+        .default(default_update_idx)
+        .items(update_options)
+        .interact()?;
+    cfg.update_check_interval_days = update_values[update_idx];
+
+    if let Err(e) = cfg.save() {
+        eprintln!("Failed to save config: {e}");
+    } else {
+        println!("Configuration saved.");
+        println!("File: {}", config_path().display());
+    }
+
     Ok(())
 }
 
@@ -810,6 +843,10 @@ async fn run_list() -> Result<()> {
                 if tasks.is_empty() {
                     println!("No downloads.");
                     return Ok(());
+                }
+                let cfg = Config::load(None);
+                if let Some(version) = update::check_for_update(&cfg).await {
+                    println!("Update available: {version} (you have v{}) — run 'zing update'", env!("CARGO_PKG_VERSION"));
                 }
                 println!(
                     "{:<6} {:<12} {:<30} {:<25} FILE",
