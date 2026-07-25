@@ -48,6 +48,8 @@ jobs:
     name: Build & package (${{ matrix.target }})
     needs: [test, lint]
     if: github.ref_type == 'tag'
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
