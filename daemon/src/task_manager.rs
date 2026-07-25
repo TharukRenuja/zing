@@ -117,7 +117,11 @@ impl TaskManager {
                             t.speed = p.speed_bytes_per_sec;
                         }
                     }
-                    Ok(EngineEvent::TaskCompleted { id: tid, total_bytes, .. } ) if tid == id => {
+                    Ok(EngineEvent::TaskCompleted {
+                        id: tid,
+                        total_bytes,
+                        ..
+                    }) if tid == id => {
                         let mut tasks = tasks_arc.lock().await;
                         if let Some(t) = tasks.get_mut(&id) {
                             t.downloaded = total_bytes;

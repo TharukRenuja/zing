@@ -136,10 +136,7 @@ pub enum Commands {
         shell: clap_complete::Shell,
     },
 
-    #[command(
-        name = "update",
-        about = "Update zing to the latest version"
-    )]
+    #[command(name = "update", about = "Update zing to the latest version")]
     Update,
 }
 

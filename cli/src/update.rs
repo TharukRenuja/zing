@@ -74,7 +74,9 @@ pub async fn run_update() -> Result<()> {
     println!("Updating zing from v{current} to {tag}...");
 
     let exe_path = std::env::current_exe()?;
-    let exe_dir = exe_path.parent().ok_or_else(|| color_eyre::eyre::eyre!("Cannot determine executable directory"))?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| color_eyre::eyre::eyre!("Cannot determine executable directory"))?;
 
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -92,9 +94,7 @@ pub async fn run_update() -> Result<()> {
         }
     };
 
-    let url = format!(
-        "https://github.com/{REPO}/releases/download/{tag}/zing-{tag}-{suffix}.{ext}"
-    );
+    let url = format!("https://github.com/{REPO}/releases/download/{tag}/zing-{tag}-{suffix}.{ext}");
     let tmp = std::env::temp_dir().join(format!("zing-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp)?;
 
@@ -223,7 +223,11 @@ fn version_cmp(a: &str, b: &str) -> Ordering {
         let av = a_parts.get(i).copied().unwrap_or(0);
         let bv = b_parts.get(i).copied().unwrap_or(0);
         if av != bv {
-            return if av > bv { Ordering::Greater } else { Ordering::Less };
+            return if av > bv {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            };
         }
     }
     Ordering::Equal
