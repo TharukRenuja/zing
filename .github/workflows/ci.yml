@@ -104,7 +104,7 @@ jobs:
           mkdir -p ~/rpmbuild/SOURCES ~/rpmbuild/SPECS
           git archive --format=tar.gz --prefix=zing-$VER/ -o ~/rpmbuild/SOURCES/zing-$VER.tar.gz HEAD
           cp packaging/rpm/zing.spec ~/rpmbuild/SPECS/
-          rpmbuild --define "version $VER" -bb ~/rpmbuild/SPECS/zing.spec
+          rpmbuild --define "version $VER" --nodeps -bb ~/rpmbuild/SPECS/zing.spec
 
       - name: Prepare archive (Unix tar.gz)
         if: matrix.ext == 'tar.gz'
