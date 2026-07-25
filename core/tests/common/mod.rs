@@ -5,12 +5,14 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 /// A minimal HTTP test server that serves a fixed byte pattern with Range support.
+#[allow(dead_code)]
 pub struct TestServer {
     pub addr: SocketAddr,
     pub content: Vec<u8>,
     shutdown_tx: Option<oneshot::Sender<()>>,
 }
 
+#[allow(dead_code)]
 impl TestServer {
     /// Create a server that serves `content` on any available localhost port.
     pub async fn new(content: Vec<u8>) -> Self {
