@@ -74,12 +74,7 @@ jobs:
             suffix: aarch64-windows
             pkgs: -p zing
             ext: exe
-          - os: macos-13
-            target: x86_64-apple-darwin
-            suffix: x86_64-mac
-            pkgs: -p zing -p zing-daemon
-            ext: dmg
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
             suffix: aarch64-mac
             pkgs: -p zing -p zing-daemon
@@ -103,7 +98,7 @@ jobs:
         if: matrix.suffix == 'x86_64-linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq rpm-build
+          sudo apt-get install -y -qq rpm
           TAG=${{ github.ref_name }}
           VER=${TAG#v}
           mkdir -p ~/rpmbuild/SOURCES ~/rpmbuild/SPECS
