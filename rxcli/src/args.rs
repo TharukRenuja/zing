@@ -82,8 +82,8 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    #[command(name = "daemon", about = "Start the download daemon", alias = "d")]
-    Daemon,
+    #[command(name = "daemon", about = "Manage the download daemon", alias = "d")]
+    Daemon(DaemonArgs),
 
     #[command(name = "schedule", about = "Manage scheduled downloads", alias = "sched", alias = "s")]
     Schedule(ScheduleArgs),
@@ -93,6 +93,27 @@ pub enum Commands {
 
     #[command(name = "list", about = "List all downloads (daemon)", alias = "ls", alias = "tasks")]
     List,
+}
+
+#[derive(Parser, Debug)]
+pub struct DaemonArgs {
+    #[command(subcommand)]
+    pub action: DaemonAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DaemonAction {
+    #[command(about = "Start the download daemon in the foreground")]
+    Start,
+
+    #[command(about = "Install daemon as a systemd user service (auto-start on login)")]
+    Install,
+
+    #[command(about = "Remove the systemd user service")]
+    Uninstall,
+
+    #[command(about = "Show daemon status")]
+    Status,
 }
 
 #[derive(Parser, Debug)]

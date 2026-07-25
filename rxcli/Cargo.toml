@@ -44,7 +44,7 @@ rxext = { path = "../rxext" }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 indicatif = "0.18"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "process"] }
 url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

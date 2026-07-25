@@ -2,7 +2,7 @@ mod args;
 #[cfg(unix)] mod daemon_client;
 mod config;
 
-use args::{Args, Commands, ConfigAction, ScheduleAction};
+use args::{Args, Commands, ConfigAction, ScheduleAction, DaemonAction};
 use config::Config;
 use clap::Parser;
 use color_eyre::Result;
@@ -54,8 +54,13 @@ fn main() -> Result<()> {
 
 async fn run(args: Args) -> Result<()> {
     match args.command {
-        Some(Commands::Daemon) => {
-            return run_daemon().await;
+        Some(Commands::Daemon(ref daemon_args)) => {
+            return match daemon_args.action {
+                DaemonAction::Start => run_daemon_start().await,
+                DaemonAction::Install => run_daemon_install().await,
+                DaemonAction::Uninstall => run_daemon_uninstall().await,
+                DaemonAction::Status => run_daemon_status().await,
+            };
         }
         Some(Commands::Schedule(ref sched)) => {
             return run_schedule(&args, sched).await;
@@ -363,7 +368,7 @@ fn schedule_config_path() -> std::path::PathBuf {
         .join("schedule.json")
 }
 
-async fn run_daemon() -> Result<()> {
+async fn run_daemon_start() -> Result<()> {
     let daemon_path = std::env::current_exe()
         .map(|p| p.parent().unwrap_or(&p).join("rxdaemon"))
         .unwrap_or_else(|_| PathBuf::from("rxdaemon"));
@@ -373,6 +378,159 @@ async fn run_daemon() -> Result<()> {
         .spawn()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to start daemon: {e}"))?;
     tracing::info!("Daemon started with PID {}", child.id());
+    Ok(())
+}
+
+fn daemon_service_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("systemd")
+        .join("user")
+        .join("rxdaemon.service")
+}
+
+fn daemon_service_content() -> String {
+    let daemon_path = std::env::current_exe()
+        .map(|p| p.parent().unwrap_or(&p).join("rxdaemon"))
+        .unwrap_or_else(|_| PathBuf::from("rxdaemon"))
+        .to_string_lossy()
+        .to_string();
+
+    format!(
+        r#"[Unit]
+Description=rxdl download daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={daemon_path}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"#
+    )
+}
+
+async fn run_daemon_install() -> Result<()> {
+    let svc_path = daemon_service_path();
+    if let Some(parent) = svc_path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            color_eyre::eyre::eyre!("Cannot create directory '{}': {e}", parent.display())
+        })?;
+    }
+
+    let content = daemon_service_content();
+    tokio::fs::write(&svc_path, &content).await.map_err(|e| {
+        color_eyre::eyre::eyre!("Cannot write service file '{}': {e}", svc_path.display())
+    })?;
+
+    tracing::info!("Wrote systemd user service: {}", svc_path.display());
+
+    // Try to enable/start the service
+    let output = tokio::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            tracing::info!("systemd daemon-reload: OK");
+        }
+        Ok(out) => {
+            tracing::warn!("systemctl daemon-reload: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Err(e) => {
+            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user daemon-reload && systemctl --user enable --now rxdaemon.service");
+        }
+    }
+
+    let enable_output = tokio::process::Command::new("systemctl")
+        .args(["--user", "enable", "--now", "rxdaemon.service"])
+        .output()
+        .await;
+
+    match enable_output {
+        Ok(out) if out.status.success() => {
+            tracing::info!("systemd service enabled and started");
+        }
+        Ok(out) => {
+            tracing::warn!("systemctl enable: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Err(e) => {
+            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user enable --now rxdaemon.service");
+        }
+    }
+
+    tracing::info!("Daemon installed. Use 'rxdl daemon start' to run manually, or 'rxdl daemon uninstall' to remove.");
+    Ok(())
+}
+
+async fn run_daemon_uninstall() -> Result<()> {
+    let svc_path = daemon_service_path();
+
+    // Try to stop/disable
+    let disable = tokio::process::Command::new("systemctl")
+        .args(["--user", "disable", "--now", "rxdaemon.service"])
+        .output()
+        .await;
+
+    match disable {
+        Ok(out) if out.status.success() => {
+            tracing::info!("systemd service disabled and stopped");
+        }
+        Ok(out) => {
+            tracing::warn!("systemctl disable: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Err(e) => {
+            tracing::warn!("systemctl not found: {e}. Run manually: systemctl --user disable --now rxdaemon.service");
+        }
+    }
+
+    if svc_path.exists() {
+        tokio::fs::remove_file(&svc_path).await.map_err(|e| {
+            color_eyre::eyre::eyre!("Cannot remove service file '{}': {e}", svc_path.display())
+        })?;
+        tracing::info!("Removed service file: {}", svc_path.display());
+    }
+
+    // daemon-reload
+    let _ = tokio::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .output()
+        .await;
+
+    tracing::info!("Daemon uninstalled.");
+    Ok(())
+}
+
+async fn run_daemon_status() -> Result<()> {
+    let output = tokio::process::Command::new("systemctl")
+        .args(["--user", "status", "rxdaemon.service"])
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if out.status.success() {
+                println!("{}", stdout.trim());
+            } else {
+                println!("Daemon service not active or not installed.");
+                if !stderr.trim().is_empty() {
+                    println!("{}", stderr.trim());
+                }
+            }
+        }
+        Err(e) => {
+            println!("systemctl not found: {e}");
+            println!("Check manually: systemctl --user status rxdaemon.service");
+        }
+    }
+
     Ok(())
 }
 
