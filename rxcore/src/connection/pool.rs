@@ -30,6 +30,7 @@ pub struct ConnectionPool {
     metrics: Arc<PoolMetrics>,
     event_bus: Option<EventBus>,
     created_at: Instant,
+    headers: Vec<(String, String)>,
 }
 
 impl ConnectionPool {
@@ -71,11 +72,17 @@ impl ConnectionPool {
             }),
             event_bus: None,
             created_at: Instant::now(),
+            headers: Vec::new(),
         }
     }
 
     pub fn with_event_bus(mut self, bus: EventBus) -> Self {
         self.event_bus = Some(bus);
+        self
+    }
+
+    pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.headers = headers;
         self
     }
 
@@ -106,7 +113,11 @@ impl ConnectionPool {
     pub async fn get(&self, url: &str, task_id: TaskId) -> Result<ConnectionResponse, reqwest::Error> {
         self.metrics.requests_total.fetch_add(1, Ordering::Relaxed);
 
-        let resp = self.client.get(url).send().await?;
+        let mut req = self.client.get(url);
+        for (k, v) in &self.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let resp = req.send().await?;
 
         let protocol = Self::detect_protocol(&resp);
         if protocol == Protocol::Http2 {
@@ -129,12 +140,15 @@ impl ConnectionPool {
         self.metrics.requests_total.fetch_add(1, Ordering::Relaxed);
 
         let end = offset + length - 1;
-        let resp = self
+
+        let mut req = self
             .client
             .get(url)
-            .header("Range", format!("bytes={}-{}", offset, end))
-            .send()
-            .await?;
+            .header("Range", format!("bytes={}-{}", offset, end));
+        for (k, v) in &self.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let resp = req.send().await?;
 
         let protocol = Self::detect_protocol(&resp);
         if protocol == Protocol::Http2 {

@@ -197,6 +197,7 @@ impl Scheduler {
                         entry.proxy.clone(),
                         Vec::new(),
                         None,
+                        Vec::new(),
                     ).await;
                 }
             }

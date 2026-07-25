@@ -57,6 +57,13 @@ pub struct Args {
     )]
     pub bwlimit: Option<String>,
 
+    #[arg(
+        long = "header",
+        short = 'H',
+        help = "Custom HTTP header (e.g. 'User-Agent: MyApp/1.0'). Can be repeated."
+    )]
+    pub header: Vec<String>,
+
 }
 
 #[derive(Subcommand, Debug)]

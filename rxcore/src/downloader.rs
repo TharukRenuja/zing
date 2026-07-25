@@ -82,8 +82,11 @@ impl DownloadTask {
         proxy_url: Option<String>,
         mirrors: Vec<String>,
         bw_schedule: Option<String>,
+        headers: Vec<(String, String)>,
     ) -> Self {
-        let pool = ConnectionPool::new(insecure, proxy_url.as_deref()).with_event_bus(bus.clone());
+        let pool = ConnectionPool::new(insecure, proxy_url.as_deref())
+            .with_event_bus(bus.clone())
+            .with_headers(headers);
         let rate_limiter = if max_download_rate > 0 {
             Some(Arc::new(TokenBucket::new(max_download_rate)))
         } else {

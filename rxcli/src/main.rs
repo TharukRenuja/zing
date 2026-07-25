@@ -19,6 +19,19 @@ use tokio::sync::broadcast;
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
+fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
+    raw.iter().filter_map(|s| {
+        let mut parts = s.splitn(2, ':');
+        let key = parts.next()?.trim().to_string();
+        let val = parts.next()?.trim().to_string();
+        if key.is_empty() || val.is_empty() {
+            tracing::warn!("ignoring invalid header: {s:?}");
+            return None;
+        }
+        Some((key, val))
+    }).collect()
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
 
@@ -188,6 +201,7 @@ async fn run(args: Args) -> Result<()> {
                 url: url_str.clone(),
             });
 
+            let headers = parse_headers(&args.header);
             let task = DownloadTask::new(
                 NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
                 url_str,
@@ -200,6 +214,7 @@ async fn run(args: Args) -> Result<()> {
                 args.proxy.clone(),
                 args.mirror.clone(),
                 args.bwlimit.clone(),
+                headers,
             );
 
             let task_shutdown = shutdown_tx.subscribe();

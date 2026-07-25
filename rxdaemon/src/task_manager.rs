@@ -64,6 +64,7 @@ impl TaskManager {
         proxy_url: Option<String>,
         mirrors: Vec<String>,
         bw_schedule: Option<String>,
+        headers: Vec<(String, String)>,
     ) -> TaskId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -127,6 +128,7 @@ impl TaskManager {
                 id, &url, &filename, is_auto_name, max_connections,
                 bus.clone(), insecure, max_download_rate,
                 proxy_url.clone(), mirrors.clone(), bw_schedule.clone(),
+                headers.clone(),
             );
 
             {
@@ -237,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn test_add_and_list_task() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![]).await;
 
         let tasks = mgr.list_tasks().await;
         assert_eq!(tasks.len(), 1);
@@ -249,7 +251,7 @@ mod tests {
     #[tokio::test]
     async fn test_pause_task() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![]).await;
 
         // Small sleep to let the spawned task start
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -270,7 +272,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove_task() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![]).await;
 
         mgr.remove_task(id).await.unwrap();
 
@@ -281,8 +283,8 @@ mod tests {
     #[tokio::test]
     async fn test_add_multiple_tasks() {
         let mgr = TaskManager::new();
-        let id1 = mgr.add_task("http://a.com/f1", "/tmp/f1", false, 2, false, 0, None, vec![], None).await;
-        let id2 = mgr.add_task("http://b.com/f2", "/tmp/f2", false, 4, false, 0, None, vec![], None).await;
+        let id1 = mgr.add_task("http://a.com/f1", "/tmp/f1", false, 2, false, 0, None, vec![], None, vec![]).await;
+        let id2 = mgr.add_task("http://b.com/f2", "/tmp/f2", false, 4, false, 0, None, vec![], None, vec![]).await;
 
         let tasks = mgr.list_tasks().await;
         assert_eq!(tasks.len(), 2);
@@ -293,8 +295,8 @@ mod tests {
     #[tokio::test]
     async fn test_task_ids_increment() {
         let mgr = TaskManager::new();
-        let id1 = mgr.add_task("http://a.com/f1", "/tmp/f1", false, 2, false, 0, None, vec![], None).await;
-        let id2 = mgr.add_task("http://b.com/f2", "/tmp/f2", false, 4, false, 0, None, vec![], None).await;
+        let id1 = mgr.add_task("http://a.com/f1", "/tmp/f1", false, 2, false, 0, None, vec![], None, vec![]).await;
+        let id2 = mgr.add_task("http://b.com/f2", "/tmp/f2", false, 4, false, 0, None, vec![], None, vec![]).await;
         assert!(id2 > id1, "task IDs should increment");
     }
 
@@ -308,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_task() {
         let mgr = TaskManager::new();
-        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None).await;
+        let id = mgr.add_task("http://example.com/file", "/tmp/test", false, 4, false, 0, None, vec![], None, vec![]).await;
 
         let task = mgr.get_task(id).await.unwrap();
         assert_eq!(task.id, id);
