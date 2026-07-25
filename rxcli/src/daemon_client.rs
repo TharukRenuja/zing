@@ -2,22 +2,30 @@
 
 use serde_json::Value;
 use std::path::Path;
+use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-const DEFAULT_SOCKET: &str = "/tmp/rxdl.sock";
+fn default_socket() -> String {
+    if let Ok(dir) = std::env::var("RUNTIME_DIRECTORY") {
+        return PathBuf::from(dir).join("rxdl.sock").to_string_lossy().to_string();
+    }
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return PathBuf::from(dir).join("rxdl.sock").to_string_lossy().to_string();
+    }
+    "/tmp/rxdl.sock".to_string()
+}
 
 pub async fn daemon_is_running() -> bool {
-    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET.to_string());
+    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| default_socket());
     if !Path::new(&path).exists() {
         return false;
     }
-    // Try connecting
     UnixStream::connect(&path).await.is_ok()
 }
 
 pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, String> {
-    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET.to_string());
+    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| default_socket());
     let stream = UnixStream::connect(&path)
         .await
         .map_err(|e| format!("connect: {e}"))?;
@@ -62,7 +70,7 @@ pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, 
 }
 
 pub async fn subscribe_and_show_progress(task_id: u64) {
-    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| DEFAULT_SOCKET.to_string());
+    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| default_socket());
     let stream = match UnixStream::connect(&path).await {
         Ok(s) => s,
         Err(_) => return,
@@ -117,23 +125,56 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
         }
 
         match event_type {
+            "TaskCreated" => {
+                let url = event.get("url").and_then(|v| v.as_str()).unwrap_or("download");
+                let display = rxext::filename::from_url(url);
+                let bar = indicatif::ProgressBar::new(0);
+                bar.set_prefix(display);
+                bar.set_style(
+                    indicatif::ProgressStyle::default_bar()
+                        .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})")
+                        .unwrap(),
+                );
+                bar.enable_steady_tick(std::time::Duration::from_millis(100));
+                pb = Some(bar);
+            }
             "TaskProgress" => {
                 let bytes = event.get("bytes_downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
+                let total = event.get("total_bytes").and_then(|v| v.as_u64());
                 if let Some(ref bar) = pb {
                     bar.set_position(bytes);
+                    if total.is_some_and(|t| t > 0) && bar.length().map_or(true, |l| l == 0) {
+                        bar.set_length(total.unwrap());
+                        bar.set_style(
+                            indicatif::ProgressStyle::default_bar()
+                                .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
+                                .unwrap()
+                                .progress_chars("=>-"),
+                        );
+                    }
                 } else {
-                    let bar = indicatif::ProgressBar::new(bytes);
-                    bar.set_style(
-                        indicatif::ProgressStyle::default_bar()
-                            .template("{spinner:.green} [{elapsed_precise}] {bytes}/{total_bytes} ({bytes_per_sec})")
-                            .unwrap(),
-                    );
+                    let bar = indicatif::ProgressBar::new(total.unwrap_or(0));
+                    if total.is_some_and(|t| t > 0) {
+                        bar.set_style(
+                            indicatif::ProgressStyle::default_bar()
+                                .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
+                                .unwrap()
+                                .progress_chars("=>-"),
+                        );
+                    } else {
+                        bar.set_style(
+                            indicatif::ProgressStyle::default_bar()
+                                .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})")
+                                .unwrap(),
+                        );
+                    }
+                    bar.enable_steady_tick(std::time::Duration::from_millis(100));
                     pb = Some(bar);
                 }
             }
             "TaskCompleted" => {
                 if let Some(bar) = pb.take() {
-                    bar.finish_with_message("Done");
+                    bar.finish();
                 }
                 break;
             }
@@ -142,7 +183,7 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
                 if let Some(bar) = pb.take() {
                     bar.finish_with_message("Failed");
                 }
-                tracing::error!("Task {task_id} failed: {error}");
+                eprintln!("Error: {error}");
                 break;
             }
             _ => {}

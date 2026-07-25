@@ -11,8 +11,8 @@ use crate::segment::stealer::WorkStealer;
 use crate::storage::{ControlFile, SegmentEntry};
 use crate::util;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -24,7 +24,7 @@ struct SharedState {
     pub filename: Mutex<String>,
     pub is_auto_name: bool,
     pub segment_mgr: Mutex<SegmentManager>,
-    pub file: tokio::sync::Mutex<Option<Arc<std::fs::File>>>,
+    pub file: std::sync::Mutex<Option<Arc<std::fs::File>>>,
     pub bus: EventBus,
     pub pool: ConnectionPool,
     pub rate_limiter: SharedRateLimiter,
@@ -103,7 +103,7 @@ impl DownloadTask {
                 filename: Mutex::new(filename.to_string()),
                 is_auto_name,
                 segment_mgr: Mutex::new(SegmentManager::new(max_connections)),
-                file: tokio::sync::Mutex::new(None),
+                file: std::sync::Mutex::new(None),
                 bus,
                 pool,
                 rate_limiter,
@@ -124,13 +124,14 @@ impl DownloadTask {
 
     /// Run the download. If `shutdown` is provided, it will be checked periodically
     /// and the download will gracefully stop, saving state for resume.
+    #[must_use]
     pub async fn run_with_shutdown(&self, mut shutdown: tokio::sync::broadcast::Receiver<()>) -> Result<()> {
         let state_clone = Arc::clone(&self.state);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             match shutdown.recv().await {
                 Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     tracing::info!("Shutdown received, finishing current segments...");
-                    state_clone.done.store(true, Ordering::Relaxed);
+                    state_clone.done.store(true, Ordering::Release);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
             }
@@ -139,15 +140,15 @@ impl DownloadTask {
         loop {
             self.run().await?;
 
-            if self.state.reprobe.load(Ordering::Relaxed) {
+            if self.state.reprobe.load(Ordering::Acquire) {
                 let rotated = self.state.rotate_url().await;
                 if rotated {
                     tracing::info!("Throttling detected, re-probing mirror...");
                 } else {
                     tracing::info!("Throttling detected, re-probing...");
                 }
-                self.state.done.store(false, Ordering::Relaxed);
-                self.state.reprobe.store(false, Ordering::Relaxed);
+                self.state.done.store(false, Ordering::Release);
+                self.state.reprobe.store(false, Ordering::Release);
                 self.state.total_downloaded.store(0, Ordering::Relaxed);
                 self.state.peak_speed.store(0, Ordering::Relaxed);
                 *self.state.start_time.lock().await = Instant::now();
@@ -156,6 +157,7 @@ impl DownloadTask {
             break;
         }
 
+        handle.abort();
         Ok(())
     }
 
@@ -178,7 +180,17 @@ impl DownloadTask {
             if let Some(ref cd) = profile.content_disposition {
                 if let Some(cd_name) = rxext::filename::from_content_disposition(cd) {
                     tracing::info!("Using server-provided filename: {cd_name}");
-                    *self.state.filename.lock().await = cd_name;
+                    let current = self.state.filename.lock().await.clone();
+                    let new_name = if let Some(parent) = std::path::Path::new(&current).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            parent.join(&cd_name).to_string_lossy().to_string()
+                        } else {
+                            cd_name
+                        }
+                    } else {
+                        cd_name
+                    };
+                    *self.state.filename.lock().await = new_name;
                 }
             }
         }
@@ -188,6 +200,17 @@ impl DownloadTask {
         let resume = ControlFile::load(&control_path).await.ok();
 
         if let Some(ref cf) = resume {
+            // Verify the download file still exists and hasn't been truncated/corrupted
+            let file_ok = match tokio::fs::metadata(&filename).await {
+                Ok(m) => m.len() >= cf.total_downloaded(),
+                Err(_) => false,
+            };
+            if !file_ok {
+                tracing::warn!("Download file missing or truncated, starting fresh");
+                let _ = tokio::fs::remove_file(&control_path).await;
+                let _ = tokio::fs::remove_file(Path::new(&filename)).await;
+                return self.run_fresh(profile.total_size).await;
+            }
             tracing::info!("Resuming: {:.1}% complete", cf.progress_pct());
         }
 
@@ -255,18 +278,20 @@ impl DownloadTask {
                 .await?;
             f.set_len(total_size).await?;
             let std_file: std::fs::File = f.into_std().await;
-            *self.state.file.lock().await = Some(Arc::new(std_file));
+            *self.state.file.lock().unwrap() = Some(Arc::new(std_file));
         }
 
         let mut cf = ControlFile::new(&self.state.url.lock().await, &filename, Some(total_size));
 
         if let Some(ref resume_cf) = resume {
-            cf.segments = resume_cf.segments.clone();
+            let base_downloaded = resume_cf.total_downloaded();
+            cf.base_downloaded = base_downloaded;
+            self.state.total_downloaded.store(base_downloaded, Ordering::Relaxed);
             {
                 let mut mgr = self.state.segment_mgr.lock().await;
                 mgr.set_total_size(total_size);
                 let mut conn_idx = 0usize;
-                for entry in &cf.segments {
+                for entry in &resume_cf.segments {
                     if entry.downloaded >= entry.length {
                         continue;
                     }
@@ -342,17 +367,27 @@ impl DownloadTask {
             let mut prev_time = Instant::now();
             let mut throttle_start: Option<Instant> = None;
             loop {
-                if state_mon.done.load(Ordering::Relaxed) {
+                if state_mon.done.load(Ordering::Acquire) {
+                    sync_cf(&state_mon, &cf_mon).await;
+                    let _ = cf_mon.lock().await.save(&control_path_mon).await;
                     return;
                 }
 
-                let (all_done, total, downloaded) = {
+                let total = {
                     let mgr = state_mon.segment_mgr.lock().await;
-                    (mgr.is_all_complete(), mgr.total_size, mgr.total_downloaded())
+                    if mgr.is_all_complete() {
+                        drop(mgr);
+                        state_mon.done.store(true, Ordering::Release);
+                        sync_cf(&state_mon, &cf_mon).await;
+                        let _ = cf_mon.lock().await.save(&control_path_mon).await;
+                        return;
+                    }
+                    mgr.total_size
                 };
+                let downloaded = state_mon.total_downloaded.load(Ordering::Relaxed);
 
-                if all_done || (total.is_some() && downloaded >= total.unwrap()) {
-                    state_mon.done.store(true, Ordering::Relaxed);
+                if total.is_some() && downloaded >= total.unwrap() {
+                    state_mon.done.store(true, Ordering::Release);
                     sync_cf(&state_mon, &cf_mon).await;
                     let _ = cf_mon.lock().await.save(&control_path_mon).await;
                     return;
@@ -372,29 +407,32 @@ impl DownloadTask {
                     state_mon.peak_speed.store(speed_u64, Ordering::Relaxed);
                 }
 
-                // Throttling detection
+                // Throttling detection — save control file and flag reprobe,
+                // but don't exit the monitor (keep emitting progress events
+                // until connections finish).
                 let bw_est = state_mon.bandwidth_estimate.load(Ordering::Relaxed);
                 let peak = state_mon.peak_speed.load(Ordering::Relaxed);
                 let threshold = if bw_est > 0 {
-                    (bw_est as f64 * 0.3) as u64
+                    (bw_est as f64 * 0.15) as u64
                 } else if peak > 0 {
-                    (peak as f64 * 0.3) as u64
+                    (peak as f64 * 0.15) as u64
                 } else {
                     0
                 };
+                let min_speed = 10240u64;
 
-                if threshold > 0 && speed_u64 > 0 && speed_u64 < threshold {
+                if threshold > min_speed && speed_u64 > 0 && speed_u64 < threshold {
                     let _ = throttle_start.get_or_insert_with(Instant::now);
                     if let Some(t_start) = throttle_start {
-                        if t_start.elapsed() > std::time::Duration::from_secs(3) {
+                        if t_start.elapsed() > std::time::Duration::from_secs(5) {
                             tracing::warn!(
                                 "Throttling detected: speed={}/s peak={}/s threshold={}/s, re-probing...",
                                 speed_u64, peak, threshold,
                             );
-                            state_mon.reprobe.store(true, Ordering::Relaxed);
-                            state_mon.done.store(true, Ordering::Relaxed);
+                            state_mon.reprobe.store(true, Ordering::Release);
                             sync_cf(&state_mon, &cf_mon).await;
-                            return;
+                            let _ = cf_mon.lock().await.save(&control_path_mon).await;
+                            throttle_start = None;
                         }
                     }
                 } else {
@@ -402,35 +440,61 @@ impl DownloadTask {
                 }
 
                 // Emit progress event
-                state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+                let _ = state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                     id: state_mon.id,
                     bytes_downloaded: downloaded,
                     total_bytes: total,
                     speed_bytes_per_sec: speed,
                 }));
 
-                pid.set_target(speed * 1.5);
+                if state_mon.done.load(Ordering::Acquire) {
+                    continue;
+                }
+
+                let peak = state_mon.peak_speed.load(Ordering::Relaxed) as f64;
+                let target = if peak > 0.0 && speed < peak * 0.9 {
+                    (peak * 0.95).max(speed * 1.2)
+                } else {
+                    speed * 1.02
+                };
+                pid.set_target(target);
                 let adjustment = pid.compute(speed, dt);
 
-                if adjustment >= 1 {
-                    let new_id = {
-                        let mut mgr = state_mon.segment_mgr.lock().await;
+                let (pid_new_id, steal_new_id) = {
+                    let mut mgr = state_mon.segment_mgr.lock().await;
+
+                    let pid_id = if adjustment >= 1 {
                         mgr.slowest_connection()
                             .and_then(|slow| SlowStartAllocator::split_segment(&mut mgr, slow, 512 * 1024))
                             .map(|(id, _)| id)
+                    } else {
+                        None
                     };
-                    if let Some(new_id) = new_id {
-                        pid.record_add(speed);
-                        let s = Arc::clone(&state_mon);
-                        tokio::spawn(async move { run_connection(s, new_id).await });
-                    }
-                }
 
-                {
-                    let mut mgr = state_mon.segment_mgr.lock().await;
-                    if let Some((slow_id, _)) = stealer.find_steal_targets(&mgr) {
-                        SlowStartAllocator::split_segment(&mut mgr, slow_id, 512 * 1024);
+                    if adjustment <= -1 {
+                        if let Some(fast_id) = mgr.fastest_connection() {
+                            mgr.remove_connection(fast_id).map(|(off, rem)| {
+                                tracing::debug!("Removed conn {fast_id}, freed {rem}B at offset {off}")
+                            });
+                        }
                     }
+
+                    let steal_id = stealer
+                        .find_steal_targets(&mgr)
+                        .and_then(|(slow_id, _)| SlowStartAllocator::split_segment(&mut mgr, slow_id, 512 * 1024))
+                        .map(|(id, _)| id);
+
+                    (pid_id, steal_id)
+                };
+                if let Some(new_id) = pid_new_id {
+                    pid.record_add(speed);
+                    pid.evaluate_improvement(speed);
+                    let s = Arc::clone(&state_mon);
+                    tokio::spawn(async move { run_connection(s, new_id).await });
+                }
+                if let Some(new_id) = steal_new_id {
+                    let s = Arc::clone(&state_mon);
+                    tokio::spawn(async move { run_connection(s, new_id).await });
                 }
 
                 {
@@ -446,25 +510,33 @@ impl DownloadTask {
             }
         });
 
-        monitor.await.ok();
         for h in handles {
             h.await.ok();
         }
+        self.state.done.store(true, Ordering::Release);
+        monitor.await.ok();
 
-        if let Some(ref f) = *self.state.file.lock().await {
+        if let Some(ref f) = *self.state.file.lock().unwrap() {
             let _ = f.sync_all();
         }
 
         let total = self.state.total_downloaded.load(Ordering::Relaxed);
 
-        // Only emit completion if we're not about to re-probe
-        if !self.state.reprobe.load(Ordering::Relaxed) {
-            self.state.bus.emit(EngineEvent::TaskCompleted {
+        let completed = total >= total_size;
+        if completed {
+            self.state.reprobe.store(false, Ordering::Release);
+            let _ = self.state.bus.emit(EngineEvent::TaskCompleted {
                 id: self.state.id,
                 total_bytes: total,
                 duration: self.state.start_time.lock().await.elapsed(),
             });
             let _ = tokio::fs::remove_file(&control_path).await;
+        } else {
+            let _ = self.state.bus.emit(EngineEvent::Paused {
+                id: self.state.id,
+                bytes_downloaded: total,
+                total_bytes: total_size,
+            });
         }
 
         Ok(())
@@ -499,7 +571,7 @@ impl DownloadTask {
             let elapsed = start.elapsed().as_secs_f64();
             let speed = if elapsed > 0.0 { downloaded as f64 / elapsed } else { 0.0 };
 
-            self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+            let _ = self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                 id: self.state.id,
                 bytes_downloaded: downloaded,
                 total_bytes: None,
@@ -508,7 +580,7 @@ impl DownloadTask {
         }
 
         file.flush().await?;
-        self.state.bus.emit(EngineEvent::TaskCompleted {
+        let _ = self.state.bus.emit(EngineEvent::TaskCompleted {
             id: self.state.id,
             total_bytes: downloaded,
             duration: start.elapsed(),
@@ -521,7 +593,7 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
     let mut retry = RetryManager::new(5, std::time::Duration::from_millis(500), std::time::Duration::from_secs(10));
 
     loop {
-        if state.done.load(Ordering::Relaxed) {
+        if state.done.load(Ordering::Acquire) {
             return;
         }
 
@@ -538,11 +610,8 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
         }
 
         match download_range(&state, conn_id, offset, length).await {
-            Ok(bytes) => {
+            Ok(_) => {
                 retry.reset();
-                if bytes > 0 {
-                    state.total_downloaded.fetch_add(bytes, Ordering::Relaxed);
-                }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
             Err(e) => {
@@ -580,18 +649,21 @@ async fn download_range(state: &Arc<SharedState>, conn_id: usize, offset: u64, l
     let mut written: u64 = 0;
     let mut pos = offset;
 
-    while let Some(chunk) = stream.next().await {
-        let data = chunk?;
+    loop {
+        let data = match tokio::time::timeout(std::time::Duration::from_secs(30), stream.next()).await {
+            Ok(Some(Ok(d))) => d,
+            Ok(Some(Err(e))) => return Err(e.into()),
+            Ok(None) => break,
+            Err(_) => bail!("read timeout (30s)"),
+        };
 
         if let Some(ref limiter) = state.rate_limiter {
             limiter.consume(data.len() as u64).await;
         }
 
-        let file_guard = state.file.lock().await;
-        if let Some(ref file) = *file_guard {
+        if let Some(ref file) = *state.file.lock().unwrap() {
             util::write_at(file, &data, pos)?;
         }
-        drop(file_guard);
         written += data.len() as u64;
         pos += data.len() as u64;
 
@@ -599,6 +671,7 @@ async fn download_range(state: &Arc<SharedState>, conn_id: usize, offset: u64, l
             let mut mgr = state.segment_mgr.lock().await;
             mgr.update_progress(conn_id, data.len() as u64);
         }
+        state.total_downloaded.fetch_add(data.len() as u64, Ordering::Relaxed);
     }
 
     Ok(written)
@@ -607,13 +680,14 @@ async fn download_range(state: &Arc<SharedState>, conn_id: usize, offset: u64, l
 async fn sync_cf(state: &SharedState, cf: &tokio::sync::Mutex<ControlFile>) {
     let mgr = state.segment_mgr.lock().await;
     let mut cf = cf.lock().await;
-    cf.segments.clear();
-    for seg in &mgr.segments {
-        cf.segments.push(SegmentEntry {
-            id: seg.id,
-            offset: seg.offset,
-            length: seg.length,
-            downloaded: seg.downloaded,
-        });
-    }
+    cf.segments = mgr
+        .segments
+        .iter()
+        .map(|s| SegmentEntry {
+            id: s.id,
+            offset: s.offset,
+            length: s.length,
+            downloaded: s.downloaded,
+        })
+        .collect();
 }

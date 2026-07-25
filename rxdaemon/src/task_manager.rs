@@ -22,23 +22,30 @@ pub struct TaskInfo {
 pub enum TaskStatus {
     Pending,
     Downloading,
+    Paused,
     Completed,
     Failed(String),
 }
 
+#[derive(Clone)]
 pub struct TaskManager {
     tasks: Arc<Mutex<HashMap<TaskId, TaskInfo>>>,
+    cancel_txs: Arc<Mutex<HashMap<TaskId, broadcast::Sender<()>>>>,
     bus: EventBus,
-    pub(crate) shutdown_tx: broadcast::Sender<()>,
+}
+
+impl std::fmt::Debug for TaskManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskManager").finish_non_exhaustive()
+    }
 }
 
 impl TaskManager {
     pub fn new() -> Self {
-        let (shutdown_tx, _) = broadcast::channel(16);
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
+            cancel_txs: Arc::new(Mutex::new(HashMap::new())),
             bus: EventBus::new(),
-            shutdown_tx,
         }
     }
 
@@ -75,23 +82,26 @@ impl TaskManager {
             tasks.insert(id, info);
         }
 
-        self.bus.emit(EngineEvent::TaskCreated {
+        let _ = self.bus.emit(EngineEvent::TaskCreated {
             id,
             url: url.to_string(),
         });
 
-        // Subscribe to progress events to update TaskInfo
         let tasks_arc = Arc::clone(&self.tasks);
         let mut event_rx = self.bus.subscribe();
 
-        // Spawn the actual download
         let tasks_arc2 = Arc::clone(&self.tasks);
         let bus = self.bus.clone();
         let url = url.to_string();
         let filename = filename.to_string();
-        let shutdown_rx = self.shutdown_tx.subscribe();
+        let (cancel_tx, shutdown_rx) = broadcast::channel(16);
 
-        // Event listener task to update TaskInfo on progress
+        {
+            let mut cancel_map = self.cancel_txs.lock().await;
+            cancel_map.insert(id, cancel_tx);
+        }
+        let cancel_txs = Arc::clone(&self.cancel_txs);
+
         let evt_listener = tokio::spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
             loop {
@@ -113,9 +123,12 @@ impl TaskManager {
         });
 
         tokio::spawn(async move {
-            let task = DownloadTask::new(id, &url, &filename, is_auto_name, max_connections, bus.clone(), insecure, max_download_rate, proxy_url.clone(), mirrors.clone(), bw_schedule.clone());
+            let task = DownloadTask::new(
+                id, &url, &filename, is_auto_name, max_connections,
+                bus.clone(), insecure, max_download_rate,
+                proxy_url.clone(), mirrors.clone(), bw_schedule.clone(),
+            );
 
-            // Update status to Downloading
             {
                 let mut tasks = tasks_arc2.lock().await;
                 if let Some(t) = tasks.get_mut(&id) {
@@ -125,26 +138,77 @@ impl TaskManager {
 
             let result = task.run_with_shutdown(shutdown_rx).await;
 
-            match result {
-                Ok(()) => {
-                    let mut tasks = tasks_arc2.lock().await;
-                    if let Some(t) = tasks.get_mut(&id) {
-                        t.status = TaskStatus::Completed;
+            {
+                let mut tasks = tasks_arc2.lock().await;
+                match result {
+                    Ok(()) => {
+                        if let Some(t) = tasks.get_mut(&id) {
+                            if t.status != TaskStatus::Paused {
+                                t.status = TaskStatus::Completed;
+                                let _ = bus.emit(EngineEvent::TaskCompleted {
+                                    id,
+                                    total_bytes: t.total_bytes.unwrap_or(0),
+                                    duration: std::time::Duration::ZERO,
+                                });
+                            }
+                        }
                     }
-                }
-                Err(e) => {
-                    let mut tasks = tasks_arc2.lock().await;
-                    if let Some(t) = tasks.get_mut(&id) {
-                        t.status = TaskStatus::Failed(format!("{e}"));
+                    Err(e) => {
+                        if let Some(t) = tasks.get_mut(&id) {
+                            if t.status != TaskStatus::Paused {
+                                t.status = TaskStatus::Failed(format!("{e}"));
+                            }
+                        }
+                        tracing::error!("Task {id} failed: {e}");
+                        let _ = bus.emit(EngineEvent::TaskFailed {
+                            id,
+                            error: format!("{e}"),
+                        });
                     }
-                    tracing::error!("Task {id} failed: {e}");
                 }
             }
+
+            let mut cancel_map = cancel_txs.lock().await;
+            cancel_map.remove(&id);
 
             evt_listener.abort();
         });
 
         id
+    }
+
+    pub async fn pause_task(&self, id: TaskId) -> Result<(), String> {
+        let cancel_map = self.cancel_txs.lock().await;
+        let tx = cancel_map.get(&id).ok_or_else(|| format!("Task {id} not found"))?;
+        tx.send(()).map_err(|_| format!("Task {id} already finished"))?;
+        drop(cancel_map);
+
+        let mut tasks = self.tasks.lock().await;
+        if let Some(t) = tasks.get_mut(&id) {
+            t.status = TaskStatus::Paused;
+            let _ = self.bus.emit(EngineEvent::Paused {
+                id,
+                bytes_downloaded: t.downloaded,
+                total_bytes: t.total_bytes.unwrap_or(0),
+            });
+        }
+        Ok(())
+    }
+
+    pub async fn remove_task(&self, id: TaskId) -> Result<(), String> {
+        {
+            let cancel_map = self.cancel_txs.lock().await;
+            if let Some(tx) = cancel_map.get(&id) {
+                let _ = tx.send(());
+            }
+        }
+        let mut cancel_map = self.cancel_txs.lock().await;
+        cancel_map.remove(&id);
+        drop(cancel_map);
+
+        let mut tasks = self.tasks.lock().await;
+        tasks.remove(&id);
+        Ok(())
     }
 
     pub async fn list_tasks(&self) -> Vec<TaskInfo> {

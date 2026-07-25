@@ -13,7 +13,9 @@ path = "src/main.rs"
 [dependencies]
 rxcore = { path = "../rxcore" }
 rxext = { path = "../rxext" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "time"] }
+chrono = "0.4"
+dirs = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

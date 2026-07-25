@@ -46,6 +46,7 @@ pub struct ConnectionInfo {
     pub segment_id: Option<usize>,
     pub speed_bytes_per_sec: f64,
     pub started_at: Instant,
+    pub last_update: Instant,
     pub addr: String,
 }
 
@@ -56,6 +57,7 @@ impl ConnectionInfo {
             segment_id: None,
             speed_bytes_per_sec: 0.0,
             started_at: Instant::now(),
+            last_update: Instant::now(),
             addr: String::new(),
         }
     }
@@ -130,15 +132,16 @@ impl SegmentManager {
         }
 
         if let Some(conn) = self.connections.get_mut(conn_id) {
-            let elapsed = conn.started_at.elapsed().as_secs_f64();
-            if elapsed > 0.0 {
-                let total = self
-                    .segments
-                    .iter()
-                    .filter(|s| matches!(s.state, SegmentState::Active { conn_id: c } if c == conn_id))
-                    .map(|s| s.downloaded)
-                    .sum::<u64>();
-                conn.speed_bytes_per_sec = total as f64 / elapsed;
+            let now = Instant::now();
+            let dt = now.duration_since(conn.last_update).as_secs_f64();
+            conn.last_update = now;
+            if dt > 0.0 {
+                let instant_speed = bytes as f64 / dt;
+                if conn.speed_bytes_per_sec == 0.0 {
+                    conn.speed_bytes_per_sec = instant_speed;
+                } else {
+                    conn.speed_bytes_per_sec = conn.speed_bytes_per_sec * 0.7 + instant_speed * 0.3;
+                }
             }
         }
     }
@@ -184,5 +187,57 @@ impl SegmentManager {
             .get(conn_id)
             .map(|c| c.speed_bytes_per_sec)
             .unwrap_or(0.0)
+    }
+
+    /// Find the fastest active connection (highest speed).
+    pub fn fastest_connection(&self) -> Option<usize> {
+        self.connections
+            .iter()
+            .filter(|c| self.active_segment_for(c.id).is_some())
+            .max_by(|a, b| {
+                a.speed_bytes_per_sec
+                    .partial_cmp(&b.speed_bytes_per_sec)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|c| c.id)
+    }
+
+    /// Remove a connection by merging its remaining work back as a new unowned
+    /// pending segment. The connection's task will exit on next loop iteration
+    /// since its segment is no longer active. Returns the (offset, length) of
+    /// the freed segment, or None if the connection has too little work left.
+    pub fn remove_connection(&mut self, conn_id: usize) -> Option<(u64, u64)> {
+        let seg_idx = self
+            .segments
+            .iter()
+            .position(|s| matches!(s.state, SegmentState::Active { conn_id: c } if c == conn_id))?;
+        let remaining = self.segments[seg_idx].remaining();
+        if remaining < self.min_segment_size {
+            return None;
+        }
+        let offset = self.segments[seg_idx].offset + self.segments[seg_idx].length - remaining;
+
+        // Push back remaining work as a new unowned segment
+        self.segments.push(Segment::new(self.segment_counter, offset, remaining));
+        self.segment_counter += 1;
+
+        // Shorten the current segment to what's already been downloaded
+        let seg = &mut self.segments[seg_idx];
+        seg.length = seg.offset + seg.length - remaining;
+        seg.downloaded = seg.length;
+        seg.state = SegmentState::Complete;
+        if let Some(conn) = self.connections.get_mut(conn_id) {
+            conn.segment_id = None;
+        }
+
+        Some((offset, remaining))
+    }
+
+    /// Number of pending (unowned) segments.
+    pub fn pending_segment_count(&self) -> usize {
+        self.segments
+            .iter()
+            .filter(|s| s.state == SegmentState::Pending)
+            .count()
     }
 }

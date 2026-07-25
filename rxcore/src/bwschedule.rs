@@ -30,53 +30,13 @@ fn parse_schedule(input: &str) -> Vec<BwEntry> {
             Ok(m) if m < 60 => m,
             _ => continue,
         };
-        let rate_bytes = parse_rate(rate_str);
+        let rate_bytes = rxext::bandwidth::parse_rate(rate_str).unwrap_or(0);
         if rate_bytes > 0 {
             entries.push(BwEntry { hour, minute, rate_bytes });
         }
     }
     entries.sort_by_key(|e| (e.hour, e.minute));
     entries
-}
-
-fn parse_rate(s: &str) -> u64 {
-    let s = s.trim();
-    let upper = s.to_uppercase();
-    let len = upper.len();
-    if len == 0 {
-        return 0;
-    }
-
-    let (num_str, multiplier) = if upper.ends_with("TB") {
-        (&s[..len-2], 1024u64.pow(4))
-    } else if upper.ends_with("GB") {
-        (&s[..len-2], 1024u64.pow(3))
-    } else if upper.ends_with("MB") {
-        (&s[..len-2], 1024u64.pow(2))
-    } else if upper.ends_with("KB") {
-        (&s[..len-2], 1024u64)
-    } else if upper.ends_with('B') && len > 1 && !matches!(upper.as_bytes()[len-2], b'K' | b'M' | b'G' | b'T') {
-        (&s[..len-1], 1u64)
-    } else if upper.ends_with('T') {
-        (&s[..len-1], 1024u64.pow(4))
-    } else if upper.ends_with('G') {
-        (&s[..len-1], 1024u64.pow(3))
-    } else if upper.ends_with('M') {
-        (&s[..len-1], 1024u64.pow(2))
-    } else if upper.ends_with('K') {
-        (&s[..len-1], 1024u64)
-    } else {
-        (s, 1u64)
-    };
-
-    let num_str = num_str.trim();
-    if num_str.is_empty() {
-        return 0;
-    }
-    match num_str.parse::<f64>() {
-        Ok(v) if v > 0.0 => (v * multiplier as f64) as u64,
-        _ => 0,
-    }
 }
 
 /// Spawn a background task that updates the rate limiter according to a timetable.
@@ -149,14 +109,14 @@ mod tests {
 
     #[test]
     fn test_parse_rate() {
-        assert_eq!(parse_rate("500KB"), 500 * 1024);
-        assert_eq!(parse_rate("5MB"), 5 * 1024 * 1024);
-        assert_eq!(parse_rate("2GB"), 2 * 1024u64.pow(3));
-        assert_eq!(parse_rate("1TB"), 1024u64.pow(4));
-        assert_eq!(parse_rate("512B"), 512);
-        assert_eq!(parse_rate("0"), 0);
-        assert_eq!(parse_rate("unlimited"), 0);
-        assert_eq!(parse_rate("1.5MB"), (1.5 * 1024.0 * 1024.0) as u64);
+        assert_eq!(rxext::bandwidth::parse_rate("500KB"), Some(500 * 1024));
+        assert_eq!(rxext::bandwidth::parse_rate("5MB"), Some(5 * 1024 * 1024));
+        assert_eq!(rxext::bandwidth::parse_rate("2GB"), Some(2 * 1024u64.pow(3)));
+        assert_eq!(rxext::bandwidth::parse_rate("1TB"), Some(1024u64.pow(4)));
+        assert_eq!(rxext::bandwidth::parse_rate("512B"), Some(512));
+        assert_eq!(rxext::bandwidth::parse_rate("0"), None);
+        assert_eq!(rxext::bandwidth::parse_rate("unlimited"), None);
+        assert_eq!(rxext::bandwidth::parse_rate("1.5MB"), Some((1.5 * 1024.0 * 1024.0) as u64));
     }
 
     #[test]

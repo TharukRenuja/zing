@@ -18,6 +18,8 @@ pub struct ControlFile {
     pub filename: String,
     pub segments: Vec<SegmentEntry>,
     pub metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub base_downloaded: u64,
 }
 
 impl ControlFile {
@@ -29,6 +31,7 @@ impl ControlFile {
             filename: filename.to_string(),
             segments: Vec::new(),
             metadata: HashMap::new(),
+            base_downloaded: 0,
         }
     }
 
@@ -43,10 +46,14 @@ impl ControlFile {
         p
     }
 
+    #[must_use]
     pub async fn save(&self, path: &Path) -> std::io::Result<()> {
         let json =
-            serde_json::to_string_pretty(self).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        tokio::fs::write(path, json).await
+            serde_json::to_string(self).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        // Atomic write: write to temp file then rename
+        let tmp_path = path.with_extension("rxdl.tmp");
+        tokio::fs::write(&tmp_path, &json).await?;
+        tokio::fs::rename(&tmp_path, path).await
     }
 
     pub async fn load(path: &Path) -> std::io::Result<Self> {
@@ -57,7 +64,7 @@ impl ControlFile {
     }
 
     pub fn total_downloaded(&self) -> u64 {
-        self.segments.iter().map(|s| s.downloaded).sum()
+        self.base_downloaded + self.segments.iter().map(|s| s.downloaded).sum::<u64>()
     }
 
     pub fn is_complete(&self) -> bool {

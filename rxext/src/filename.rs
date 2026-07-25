@@ -1,5 +1,15 @@
+fn sanitize_filename(name: &str) -> String {
+    let mut safe = String::with_capacity(name.len());
+    for c in name.chars() {
+        match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => safe.push('_'),
+            _ => safe.push(c),
+        }
+    }
+    safe
+}
+
 pub fn from_url(url: &str) -> String {
-    // Find the last path segment after the host
     let after_host = if let Some(pos) = url.find("://") {
         let after_scheme = &url[pos + 3..];
         after_scheme.find('/').map(|p| &after_scheme[p + 1..]).unwrap_or("")
@@ -17,7 +27,7 @@ pub fn from_url(url: &str) -> String {
     if segment.is_empty() || segment.contains("://") {
         "download".to_string()
     } else {
-        url_decode(segment)
+        sanitize_filename(&url_decode(segment))
     }
 }
 
@@ -27,13 +37,13 @@ pub fn from_content_disposition(cd: &str) -> Option<String> {
         if let Some(name) = part.strip_prefix("filename=") {
             let name = name.trim_matches('"').trim_matches('\'');
             if !name.is_empty() {
-                return Some(name.to_string());
+                return Some(sanitize_filename(name));
             }
         }
         if let Some(name) = part.strip_prefix("filename*=UTF-8''") {
             let name = url_decode(name.trim_matches('"'));
             if !name.is_empty() {
-                return Some(name);
+                return Some(sanitize_filename(&name));
             }
         }
     }
@@ -105,5 +115,24 @@ mod tests {
     fn test_url_decode() {
         assert_eq!(url_decode("%E4%B8%AD%E6%96%87.txt"), "中文.txt");
         assert_eq!(url_decode("hello%20world"), "hello world");
+    }
+
+    #[test]
+    fn test_sanitize_path_traversal() {
+        assert_eq!(from_content_disposition(r#"filename="../../etc/passwd""#), Some(".._.._etc_passwd".to_string()));
+        assert_eq!(from_content_disposition(r#"filename="..\..\windows\system32""#), Some(".._.._windows_system32".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_url_with_path_traversal() {
+        let name = from_url("http://example.com/../../../malicious.sh");
+        assert!(!name.contains('/'));
+        assert!(!name.contains(".."));
+    }
+
+    #[test]
+    fn test_sanitize_invalid_chars() {
+        let name = from_content_disposition(r#"filename="file:*.txt""#);
+        assert_eq!(name, Some("file__.txt".to_string()));
     }
 }

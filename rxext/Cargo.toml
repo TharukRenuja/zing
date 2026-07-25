@@ -10,3 +10,6 @@ license = "GPL-3.0-only"
 url = "2"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "fs"] }
+sha2 = "0.10"
+sha-1 = "0.10"
+md-5 = "0.10"

@@ -62,6 +62,11 @@ pub enum EngineEvent {
         id: TaskId,
         error: String,
     },
+    Paused {
+        id: TaskId,
+        bytes_downloaded: u64,
+        total_bytes: u64,
+    },
     DnsResolved {
         host: String,
         ips: Vec<String>,
@@ -137,6 +142,16 @@ impl fmt::Display for EngineEvent {
             EngineEvent::TaskFailed { id, error } => {
                 write!(f, "Task({id}) failed: {error}")
             }
+            EngineEvent::Paused {
+                id,
+                bytes_downloaded,
+                total_bytes,
+            } => write!(
+                f,
+                "Task({id}) paused: {} / {}",
+                bytesize(*bytes_downloaded),
+                bytesize(*total_bytes),
+            ),
             EngineEvent::DnsResolved {
                 host,
                 ips,
@@ -199,6 +214,7 @@ impl EventBus {
         self.tx.subscribe()
     }
 
+    #[must_use]
     pub fn emit(&self, event: EngineEvent) {
         let _ = self.tx.send(event);
     }

@@ -34,6 +34,8 @@ pub async fn handle_request(
         "rxdl.addUri" => handle_add_uri(req.params, manager).await,
         "rxdl.list" => handle_list(req.params, manager).await,
         "rxdl.tellStatus" => handle_tell_status(req.params, manager).await,
+        "rxdl.pause" => handle_pause(req.params, manager).await,
+        "rxdl.remove" => handle_remove(req.params, manager).await,
         _ => RpcResponse {
             id: req.id,
             result: None,
@@ -74,7 +76,10 @@ pub async fn handle_subscribe_and_stream(
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!("Event bus lagged by {n} messages");
+                continue;
+            }
         }
     }
 }
@@ -104,6 +109,12 @@ fn event_to_json(event: &EngineEvent) -> Value {
             "event": "TaskFailed",
             "id": id,
             "error": error,
+        }),
+        Paused { id, bytes_downloaded, total_bytes } => serde_json::json!({
+            "event": "Paused",
+            "id": id,
+            "bytes_downloaded": bytes_downloaded,
+            "total_bytes": total_bytes,
         }),
         ConnectionCreated { protocol, .. } => serde_json::json!({
             "event": "ConnectionCreated",
@@ -142,7 +153,9 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         }
     };
 
-    let user_filename = map.remove("filename").and_then(|v| v.as_str().map(String::from));
+    let user_filename = map.remove("filename")
+        .and_then(|v| v.as_str().map(String::from))
+        .filter(|s| !s.is_empty());
     let is_auto_name = user_filename.is_none();
     let filename = user_filename.unwrap_or_else(|| filename::from_url(&url));
 
@@ -209,6 +222,44 @@ async fn handle_list(_params: Option<Value>, manager: &TaskManager) -> RpcRespon
         id: None,
         result: Some(serde_json::json!({ "tasks": task_list })),
         error: None,
+    }
+}
+
+async fn handle_pause(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
+    let id = params
+        .and_then(|v| v.get("id").and_then(|id| id.as_u64()))
+        .unwrap_or(0);
+
+    match manager.pause_task(id).await {
+        Ok(()) => RpcResponse {
+            id: None,
+            result: Some(serde_json::json!({ "id": id, "status": "paused" })),
+            error: None,
+        },
+        Err(e) => RpcResponse {
+            id: None,
+            result: None,
+            error: Some(RpcError { code: -32000, message: e }),
+        },
+    }
+}
+
+async fn handle_remove(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
+    let id = params
+        .and_then(|v| v.get("id").and_then(|id| id.as_u64()))
+        .unwrap_or(0);
+
+    match manager.remove_task(id).await {
+        Ok(()) => RpcResponse {
+            id: None,
+            result: Some(serde_json::json!({ "id": id, "status": "removed" })),
+            error: None,
+        },
+        Err(e) => RpcResponse {
+            id: None,
+            result: None,
+            error: Some(RpcError { code: -32000, message: e }),
+        },
     }
 }
 

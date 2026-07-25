@@ -1,106 +1,152 @@
 use std::path::PathBuf;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
-/// Parse a bandwidth value like "500KB", "2MB", "1.5GB", or plain bytes.
-/// Supports KB (1024), MB (1024^2), GB (1024^3), TB (1024^4), B (bytes).
-/// Decimals allowed: "1.5MB" = 1572864 bytes.
 fn parse_bandwidth(s: &str) -> Result<u64, String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Err("empty bandwidth value".to_string());
+    if s.trim() == "0" {
+        return Ok(0);
     }
-
-    // Normalize to uppercase for suffix matching
-    let upper = s.to_uppercase();
-
-    let (num_str, multiplier) = if upper.ends_with("TB") {
-        (&s[..s.len()-2], 1024u64.pow(4))
-    } else if upper.ends_with('T') {
-        (&s[..s.len()-1], 1024u64.pow(4))
-    } else if upper.ends_with("GB") {
-        (&s[..s.len()-2], 1024u64.pow(3))
-    } else if upper.ends_with('G') {
-        (&s[..s.len()-1], 1024u64.pow(3))
-    } else if upper.ends_with("MB") {
-        (&s[..s.len()-2], 1024u64.pow(2))
-    } else if upper.ends_with('M') {
-        (&s[..s.len()-1], 1024u64.pow(2))
-    } else if upper.ends_with("KB") {
-        (&s[..s.len()-2], 1024u64)
-    } else if upper.ends_with('K') {
-        (&s[..s.len()-1], 1024u64)
-    } else if upper.ends_with('B') {
-        (&s[..s.len()-1], 1u64)
-    } else {
-        (s, 1u64)
-    };
-
-    let num_str = num_str.trim();
-    if num_str.is_empty() {
-        return Err(format!("missing number before suffix in '{s}'"));
-    }
-
-    let value = match num_str.parse::<f64>() {
-        Ok(v) if v >= 0.0 => v,
-        _ => return Err(format!("invalid number '{num_str}' in bandwidth value")),
-    };
-
-    let bytes = (value * multiplier as f64) as u64;
-    if bytes == 0 {
-        return Err("bandwidth must be greater than 0".to_string());
-    }
-    Ok(bytes)
+    rxext::bandwidth::parse_rate(s).ok_or_else(|| format!("invalid bandwidth value: '{s}'"))
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "rxdl", version, about = "Download files with HTTP/1.1, HTTP/2, and HTTP/3.", long_about = None)]
+#[command(name = "rxdl", version, about = "A modern HTTP downloader with segmented concurrent downloads", long_about = None, disable_help_subcommand = true)]
 pub struct Args {
-    #[arg(required_unless_present = "daemon")]
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
+    #[arg(hide = true)]
     pub urls: Vec<String>,
 
-    #[arg(long, short = 'o', help = "Output filename")]
+    #[arg(long = "output", short = 'o', help = "Output filename")]
     pub output: Option<PathBuf>,
 
-    #[arg(long, short = 'd', help = "Output directory")]
+    #[arg(long = "dir", short = 'd', help = "Output directory")]
     pub dir: Option<PathBuf>,
 
-    #[arg(long, short = 'n', default_value = "4", help = "Max parallel connections")]
+    #[arg(long = "connections", short = 'n', default_value = "4", help = "Max parallel connections")]
     pub connections: usize,
 
-    #[arg(long, help = "Start daemon (Unix socket)")]
-    pub daemon: bool,
-
-    #[arg(long, short = 'q', help = "Quiet mode")]
+    #[arg(long = "quiet", short = 'q', help = "Quiet mode")]
     pub quiet: bool,
 
-    #[arg(long, short = 'r', hide = true)]
-    pub resume: bool,
-
-    #[arg(long, help = "Skip TLS verification")]
+    #[arg(long = "insecure", short = 'k', help = "Skip TLS verification")]
     pub insecure: bool,
 
     #[arg(
-        long,
+        long = "max-download-rate",
+        short = 'r',
         value_parser = parse_bandwidth,
         default_value = "0",
         help = "Max download rate (500KB, 2MB, 1.5GB, 0 = unlimited)"
     )]
     pub max_download_rate: u64,
 
-    #[arg(long, help = "Verify checksum (auto-detect type by length)")]
+    #[arg(long = "checksum", short = 'c', help = "Verify checksum (auto-detect type by length)")]
     pub checksum: Option<String>,
 
-    #[arg(long, help = "HTTP/HTTPS proxy")]
+    #[arg(long = "proxy", short = 'x', help = "HTTP/HTTPS proxy")]
     pub proxy: Option<String>,
 
-    #[arg(long, help = "Mirror URLs for failover")]
+    #[arg(long = "mirror", short = 'm', help = "Mirror URLs for failover")]
     pub mirror: Vec<String>,
 
     #[arg(
-        long,
+        long = "bwlimit",
+        short = 'b',
         help = "Bandwidth schedule (e.g. '08:00,500KB 18:00,2MB')"
     )]
     pub bwlimit: Option<String>,
+
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    #[command(name = "daemon", about = "Start the download daemon", alias = "d")]
+    Daemon,
+
+    #[command(name = "schedule", about = "Manage scheduled downloads", alias = "sched", alias = "s")]
+    Schedule(ScheduleArgs),
+
+    #[command(name = "config", about = "Manage configuration", alias = "cfg", alias = "c")]
+    Config(ConfigArgs),
+
+    #[command(name = "list", about = "List all downloads (daemon)", alias = "ls", alias = "tasks")]
+    List,
+}
+
+#[derive(Parser, Debug)]
+pub struct ScheduleArgs {
+    #[command(subcommand)]
+    pub action: ScheduleAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScheduleAction {
+    #[command(about = "List all scheduled downloads", alias = "ls")]
+    List,
+
+    #[command(about = "Add a scheduled download")]
+    Add {
+        #[arg(help = "Download URL")]
+        url: String,
+
+        #[arg(short = 't', long, help = "Start time in HH:MM format (e.g. 02:00)")]
+        at: String,
+
+        #[arg(short = 'e', long, help = "End time in HH:MM (e.g. 07:00). When set, triggers anytime within [at, end) window")]
+        end: Option<String>,
+
+        #[arg(long, help = "Days of week (comma-separated, e.g. Mon,Wed,Fri)")]
+        days: Option<String>,
+
+        #[arg(short = 'o', long, help = "Output file path")]
+        output: Option<String>,
+
+        #[arg(long, short = 'n', default_value = "4", help = "Max connections")]
+        connections: Option<usize>,
+    },
+
+    #[command(about = "Remove a scheduled download", alias = "rm")]
+    Remove {
+        #[arg(help = "Schedule entry ID")]
+        id: String,
+    },
+}
+
+#[derive(Parser, Debug)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub action: ConfigAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    #[command(about = "List all configuration values", alias = "ls")]
+    List,
+
+    #[command(about = "Set a configuration value (e.g. rxdl config set download_dir ~/Downloads)")]
+    Set {
+        #[arg(help = "Configuration key")]
+        key: String,
+
+        #[arg(help = "Configuration value")]
+        value: String,
+    },
+
+    #[command(about = "Get a configuration value")]
+    Get {
+        #[arg(help = "Configuration key")]
+        key: String,
+    },
+
+    #[command(about = "Delete a configuration key", alias = "del", alias = "rm")]
+    Delete {
+        #[arg(help = "Configuration key")]
+        key: String,
+    },
+
+    #[command(about = "Open configuration in editor", alias = "e")]
+    Edit,
 }
 
 #[cfg(test)]
@@ -150,6 +196,6 @@ mod tests {
         assert!(parse_bandwidth("").is_err());
         assert!(parse_bandwidth("abc").is_err());
         assert!(parse_bandwidth("-1").is_err());
-        assert!(parse_bandwidth("0").is_err());
+        assert_eq!(parse_bandwidth("0"), Ok(0));
     }
 }
