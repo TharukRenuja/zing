@@ -160,6 +160,7 @@ async fn run(args: Args) -> Result<()> {
     }
 
     // SIGTERM: graceful shutdown (save control file before exit)
+    #[cfg(unix)]
     {
         let tx = shutdown_tx.clone();
         let quit = Arc::clone(&quit_requested);
@@ -175,6 +176,7 @@ async fn run(args: Args) -> Result<()> {
     }
 
     // SIGCONT: resume
+    #[cfg(unix)]
     {
         let resume = Arc::clone(&resume_requested);
         tokio::spawn(async move {
