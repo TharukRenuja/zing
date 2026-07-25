@@ -41,7 +41,7 @@ jobs:
   release:
     name: Build & package (${{ matrix.target }})
     needs: [test, lint]
-    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    if: github.ref_type == 'tag' || github.event_name != 'pull_request'
     strategy:
       matrix:
         include:
