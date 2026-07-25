@@ -278,10 +278,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_pause_task() {
+        use tokio::io::AsyncReadExt;
+
+        // Start a local TCP listener that holds connections open without responding
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}/file", addr);
+
+        // Accept connections and hold them open indefinitely
+        tokio::spawn(async move {
+            loop {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 4096];
+                        // Read whatever the client sends, then hold
+                        let _ = stream.read(&mut buf).await;
+                        // Hold connection open by waiting forever
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
+                    });
+                }
+            }
+        });
+
         let mgr = TaskManager::new();
         let id = mgr
             .add_task(
-                "http://example.com/file",
+                &url,
                 "/tmp/test",
                 false,
                 4,
@@ -295,9 +319,10 @@ mod tests {
             )
             .await;
 
-        // Small sleep to let the spawned task start
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Let the task start and establish TCP connection
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
+        // Task should be alive — pause it
         mgr.pause_task(id).await.unwrap();
 
         let task = mgr.get_task(id).await.unwrap();

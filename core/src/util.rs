@@ -13,7 +13,8 @@ pub fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::FileExt;
-        return file.seek_write(buf, offset);
+        file.seek_write(buf, offset)?;
+        Ok(())
     }
 
     #[cfg(not(any(unix, windows)))]
