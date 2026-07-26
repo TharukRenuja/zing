@@ -8,19 +8,35 @@ zing https://example.com/file.zip
 
 ## Contents
 
-- [How it works](#how-it-works)
-- [Install](#install)
-- [Uninstall](#uninstall)
-- [Quick start](#quick-start)
-- [Pipe mode](#pipe-mode)
-- [Resume](#resume)
-- [Cookies & Authentication](#cookies--authentication)
-- [Daemon with systemd](#daemon-with-systemd)
-- [Scheduled downloads](#scheduled-downloads)
-- [Configuration](#configuration)
-- [Features & Comparison](#features--comparison)
-- [Architecture](#architecture)
-- [Design](#design)
+- [zing](#zing)
+  - [Contents](#contents)
+  - [How it works](#how-it-works)
+  - [Install](#install)
+      - [Install script (Linux/macOS)](#install-script-linuxmacos)
+      - [Download pre-built binary](#download-pre-built-binary)
+      - [Build from source](#build-from-source)
+  - [Uninstall](#uninstall)
+      - [Using uninstall script](#using-uninstall-script)
+      - [Or manually](#or-manually)
+  - [Quick start](#quick-start)
+  - [Pipe mode](#pipe-mode)
+  - [Resume](#resume)
+    - [Standalone resume](#standalone-resume)
+    - [Daemon resume](#daemon-resume)
+  - [Cookies \& Authentication](#cookies--authentication)
+    - [Cookie jars (Netscape format)](#cookie-jars-netscape-format)
+    - [.netrc authentication](#netrc-authentication)
+    - [Basic auth](#basic-auth)
+    - [Event hooks](#event-hooks)
+    - [Logging](#logging)
+  - [Daemon with systemd](#daemon-with-systemd)
+  - [Scheduled downloads](#scheduled-downloads)
+  - [Configuration](#configuration)
+  - [Features \& Comparison](#features--comparison)
+    - [Features](#features)
+    - [Comparison](#comparison)
+  - [Architecture](#architecture)
+  - [Design](#design)
 
 ## How it works
 
@@ -62,9 +78,7 @@ cargo build --release
 
 #### Using uninstall script
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | sh
-# Or with zing's pipe mode:
-zing -p=https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh
+zing -p https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | sh
 ```
 
 #### Or manually

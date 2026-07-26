@@ -429,7 +429,9 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
+    color_eyre::config::HookBuilder::default()
+        .display_env_section(false)
+        .install()?;
 
     let args = Args::parse();
 
