@@ -195,7 +195,14 @@ pub async fn run_update() -> Result<()> {
 
 fn swap_binary(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     let tmp_dst = dst.with_extension("tmp");
-    std::fs::rename(src, &tmp_dst)?;
+    if let Err(e) = std::fs::rename(src, &tmp_dst) {
+        if e.raw_os_error() == Some(18) {
+            std::fs::copy(src, &tmp_dst)?;
+            let _ = std::fs::remove_file(src);
+        } else {
+            return Err(e.into());
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
