@@ -34,7 +34,12 @@ pub struct ConnectionPool {
 }
 
 impl ConnectionPool {
-    fn build_client(insecure: bool, proxy_url: Option<&str>) -> reqwest::Client {
+    fn build_client(
+        insecure: bool,
+        proxy_url: Option<&str>,
+        connect_timeout_secs: u64,
+        max_time_secs: u64,
+    ) -> reqwest::Client {
         let mut builder = reqwest::Client::builder()
             .user_agent("zing/0.1.0")
             .no_gzip()
@@ -44,8 +49,9 @@ impl ConnectionPool {
             .pool_max_idle_per_host(32)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(300));
+            .connect_timeout(Duration::from_secs(connect_timeout_secs))
+            .timeout(Duration::from_secs(max_time_secs))
+            .cookie_store(true);
 
         if let Some(proxy) = proxy_url {
             match reqwest::Proxy::all(proxy) {
@@ -61,8 +67,13 @@ impl ConnectionPool {
         builder.build().expect("failed to build connection pool")
     }
 
-    pub fn new(insecure: bool, proxy_url: Option<&str>) -> Self {
-        let client = Self::build_client(insecure, proxy_url);
+    pub fn new(
+        insecure: bool,
+        proxy_url: Option<&str>,
+        connect_timeout_secs: u64,
+        max_time_secs: u64,
+    ) -> Self {
+        let client = Self::build_client(insecure, proxy_url, connect_timeout_secs, max_time_secs);
 
         Self {
             client,
@@ -201,7 +212,7 @@ impl ConnectionResponse {
 
 impl Default for ConnectionPool {
     fn default() -> Self {
-        Self::new(false, None)
+        Self::new(false, None, 30, 300)
     }
 }
 

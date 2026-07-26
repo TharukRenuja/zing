@@ -25,6 +25,13 @@ pub struct ScheduleEntry {
     #[serde(default)]
     pub max_download_rate: u64,
     pub proxy: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<String>,
+    pub checksum: Option<String>,
+    #[serde(default)]
+    pub mirrors: Vec<String>,
+    #[serde(default)]
+    pub max_filesize: u64,
 }
 
 fn default_days() -> Vec<String> {
@@ -44,6 +51,21 @@ fn default_enabled() -> bool {
 }
 fn default_connections() -> usize {
     4
+}
+
+fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
+    raw.iter()
+        .filter_map(|s| {
+            let mut parts = s.splitn(2, ':');
+            let key = parts.next()?.trim().to_string();
+            let val = parts.next()?.trim().to_string();
+            if key.is_empty() || val.is_empty() {
+                None
+            } else {
+                Some((key, val))
+            }
+        })
+        .collect()
 }
 
 pub struct Scheduler {
@@ -221,10 +243,11 @@ impl Scheduler {
                             entry.insecure,
                             entry.max_download_rate,
                             entry.proxy.clone(),
-                            Vec::new(),
+                            entry.mirrors.clone(),
                             None,
-                            Vec::new(),
-                            0,
+                            parse_headers(&entry.headers),
+                            entry.max_filesize,
+                            entry.checksum.clone(),
                         )
                         .await;
                 }

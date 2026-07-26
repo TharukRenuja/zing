@@ -13,7 +13,7 @@ async fn test_server_full_request() {
     let payload = test_payload(64 * 1024);
     let server = TestServer::new(payload.clone()).await;
 
-    let pool = ConnectionPool::new(false, None).with_event_bus(EventBus::new());
+    let pool = ConnectionPool::new(false, None, 30, 300).with_event_bus(EventBus::new());
     let resp = pool.get(&server.url(), 0).await.unwrap();
     let body = resp.resp.bytes().await.unwrap();
 
@@ -27,7 +27,7 @@ async fn test_server_range_request() {
     let payload = test_payload(1000);
     let server = TestServer::new(payload.clone()).await;
 
-    let pool = ConnectionPool::new(false, None).with_event_bus(EventBus::new());
+    let pool = ConnectionPool::new(false, None, 30, 300).with_event_bus(EventBus::new());
     let resp = pool.get_range(&server.url(), 100, 200, 0).await.unwrap();
     assert_eq!(resp.resp.status(), 206);
 
@@ -42,7 +42,7 @@ async fn test_server_range_out_of_bounds() {
     let payload = test_payload(500);
     let server = TestServer::new(payload.clone()).await;
 
-    let pool = ConnectionPool::new(false, None).with_event_bus(EventBus::new());
+    let pool = ConnectionPool::new(false, None, 30, 300).with_event_bus(EventBus::new());
     let resp = pool.get_range(&server.url(), 1000, 200, 0).await.unwrap();
     assert_eq!(resp.resp.status(), 416);
 }
@@ -64,6 +64,7 @@ async fn test_full_download() {
         &server.url(),
         output.to_str().unwrap(),
         false,
+        false,
         4,
         bus,
         false,
@@ -73,6 +74,10 @@ async fn test_full_download() {
         None,
         vec![],
         0,
+        5,
+        500,
+        30,
+        300,
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;
@@ -138,6 +143,7 @@ async fn test_resume_download() {
         &server.url(),
         output.to_str().unwrap(),
         false,
+        false,
         2,
         bus,
         false,
@@ -147,6 +153,10 @@ async fn test_resume_download() {
         None,
         vec![],
         0,
+        5,
+        500,
+        30,
+        300,
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;

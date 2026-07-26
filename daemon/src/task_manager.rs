@@ -67,6 +67,7 @@ impl TaskManager {
         bw_schedule: Option<String>,
         headers: Vec<(String, String)>,
         max_filesize: u64,
+        checksum: Option<String>,
     ) -> TaskId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -97,6 +98,7 @@ impl TaskManager {
         let bus = self.bus.clone();
         let url = url.to_string();
         let filename = filename.to_string();
+        let checksum2 = checksum.clone();
         let (cancel_tx, shutdown_rx) = broadcast::channel(16);
 
         {
@@ -141,6 +143,7 @@ impl TaskManager {
                 &url,
                 &filename,
                 is_auto_name,
+                false,
                 max_connections,
                 bus.clone(),
                 insecure,
@@ -150,6 +153,10 @@ impl TaskManager {
                 bw_schedule.clone(),
                 headers.clone(),
                 max_filesize,
+                5,
+                500,
+                30,
+                300,
             );
 
             {
@@ -167,6 +174,22 @@ impl TaskManager {
                     Ok(()) => {
                         if let Some(t) = tasks.get_mut(&id) {
                             if t.status != TaskStatus::Paused {
+                                // Verify checksum if provided
+                                if let Some(ref chk) = checksum2 {
+                                    let path = std::path::Path::new(&t.filename);
+                                    match zing_ext::checksum::verify_file(path, chk) {
+                                        Ok(true) => tracing::info!("Checksum: OK ({chk})"),
+                                        Ok(false) => {
+                                            let err = format!("Checksum mismatch: expected {chk}");
+                                            t.status = TaskStatus::Failed(err.clone());
+                                            bus.emit(EngineEvent::TaskFailed { id, error: err });
+                                            return;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("Checksum verification skipped: {e}");
+                                        }
+                                    }
+                                }
                                 t.downloaded = t.total_bytes.unwrap_or(t.downloaded);
                                 t.status = TaskStatus::Completed;
                                 bus.emit(EngineEvent::TaskCompleted {
@@ -277,6 +300,7 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
 
@@ -327,6 +351,7 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
 
@@ -363,6 +388,7 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
 
@@ -388,6 +414,7 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
         let id2 = mgr
@@ -403,6 +430,7 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
 
@@ -428,6 +456,7 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
         let id2 = mgr
@@ -443,6 +472,7 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
         assert!(id2 > id1, "task IDs should increment");
@@ -471,6 +501,7 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
 

@@ -1,5 +1,12 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+
+#[derive(Copy, Clone, Debug, PartialEq, ValueEnum)]
+pub enum ProgressType {
+    Bar,
+    Json,
+    None,
+}
 
 fn parse_bandwidth(s: &str) -> Result<u64, String> {
     if s.trim() == "0" {
@@ -31,8 +38,20 @@ pub struct Args {
     )]
     pub connections: usize,
 
-    #[arg(long = "quiet", short = 'q', help = "Quiet mode")]
+    #[arg(
+        long = "quiet",
+        short = 'q',
+        help = "Quiet mode (suppress all progress output)"
+    )]
     pub quiet: bool,
+
+    #[arg(
+        long = "progress",
+        value_enum,
+        default_value = "bar",
+        help = "Progress output type: bar, json, or none"
+    )]
+    pub progress: ProgressType,
 
     #[arg(long = "insecure", short = 'k', help = "Skip TLS verification")]
     pub insecure: bool,
@@ -83,6 +102,20 @@ pub struct Args {
     pub bwlimit: Option<String>,
 
     #[arg(
+        long = "referer",
+        short = 'e',
+        help = "Referer URL (sets the Referer header)"
+    )]
+    pub referer: Option<String>,
+
+    #[arg(
+        long = "user",
+        short = 'u',
+        help = "HTTP basic auth username:password (e.g. 'user:pass' or 'token')"
+    )]
+    pub user: Option<String>,
+
+    #[arg(
         long = "header",
         short = 'H',
         help = "Custom HTTP header (e.g. 'User-Agent: MyApp/1.0'). Can be repeated."
@@ -95,8 +128,68 @@ pub struct Args {
         help = "Metalink (.meta4) file — extracts mirrors, checksums, and filename"
     )]
     pub metalink: Option<String>,
+
+    #[arg(
+        long = "retry",
+        default_value = "5",
+        help = "Max retry attempts per connection"
+    )]
+    pub retry: u32,
+
+    #[arg(
+        long = "retry-wait",
+        default_value = "500",
+        help = "Base retry wait in milliseconds (doubles each attempt)"
+    )]
+    pub retry_wait: u64,
+
+    #[arg(
+        long = "connect-timeout",
+        default_value = "30",
+        help = "Connection timeout in seconds"
+    )]
+    pub connect_timeout: u64,
+
+    #[arg(
+        long = "max-time",
+        default_value = "300",
+        help = "Maximum total transfer time in seconds"
+    )]
+    pub max_time: u64,
+
+    #[arg(
+        long = "input-file",
+        short = 'i',
+        help = "Read URLs from file (one per line, # for comments)"
+    )]
+    pub input_file: Option<String>,
+
+    #[arg(long = "continue", help = "Resume partially downloaded files")]
+    pub resume: bool,
+
+    #[arg(
+        long = "method",
+        short = 'X',
+        help = "HTTP method (GET, POST, PUT, etc.)"
+    )]
+    pub method: Option<String>,
+
+    #[arg(
+        long = "upload-file",
+        short = 'T',
+        help = "Upload file as request body (PUT/POST)"
+    )]
+    pub upload_file: Option<String>,
+
+    #[arg(
+        long = "pipe",
+        short = 'p',
+        help = "Output raw content to stdout, suppress all logs (for piping to sh)"
+    )]
+    pub pipe: bool,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(name = "daemon", about = "Manage the download daemon", alias = "d")]
@@ -126,6 +219,23 @@ pub enum Commands {
     )]
     List,
 
+    #[command(name = "pause", about = "Pause a download (daemon)", alias = "p")]
+    Pause {
+        #[arg(help = "Task ID to pause")]
+        id: u64,
+    },
+
+    #[command(
+        name = "remove",
+        about = "Remove a download (daemon)",
+        alias = "rm",
+        alias = "delete"
+    )]
+    Remove {
+        #[arg(help = "Task ID to remove")]
+        id: u64,
+    },
+
     #[command(
         name = "completions",
         about = "Generate shell completions",
@@ -151,6 +261,9 @@ pub enum DaemonAction {
     #[command(about = "Start the download daemon in the foreground")]
     Start,
 
+    #[command(about = "Stop the running download daemon")]
+    Stop,
+
     #[command(about = "Install daemon as a systemd user service (auto-start on login)")]
     Install,
 
@@ -159,6 +272,9 @@ pub enum DaemonAction {
 
     #[command(about = "Show daemon status")]
     Status,
+
+    #[command(about = "Restart the download daemon")]
+    Restart,
 }
 
 #[derive(Parser, Debug)]
@@ -167,6 +283,7 @@ pub struct ScheduleArgs {
     pub action: ScheduleAction,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum ScheduleAction {
     #[command(about = "List all scheduled downloads", alias = "ls")]
@@ -193,8 +310,65 @@ pub enum ScheduleAction {
         #[arg(short = 'o', long, help = "Output file path")]
         output: Option<String>,
 
+        #[arg(long, short = 'd', help = "Output directory")]
+        output_dir: Option<String>,
+
         #[arg(long, short = 'n', default_value = "4", help = "Max connections")]
         connections: Option<usize>,
+
+        #[arg(long, short = 'k', help = "Skip TLS verification")]
+        insecure: bool,
+
+        #[arg(
+            long = "max-download-rate",
+            short = 'r',
+            value_parser = parse_bandwidth,
+            default_value = "0",
+            help = "Max download rate (500KB, 2MB, 1.5GB, 0 = unlimited)"
+        )]
+        max_download_rate: u64,
+
+        #[arg(long, short = 'x', help = "HTTP/HTTPS proxy")]
+        proxy: Option<String>,
+
+        #[arg(
+            long = "header",
+            short = 'H',
+            help = "Custom HTTP header. Can be repeated."
+        )]
+        header: Vec<String>,
+
+        #[arg(
+            long = "user",
+            short = 'u',
+            help = "HTTP basic auth username:password (e.g. 'user:pass')"
+        )]
+        user: Option<String>,
+
+        #[arg(
+            long = "referer",
+            help = "Referer URL (sets the Referer header)"
+        )]
+        referer: Option<String>,
+
+        #[arg(long = "checksum", short = 'c', help = "Verify checksum")]
+        checksum: Option<String>,
+
+        #[arg(
+            long = "mirror",
+            short = 'm',
+            help = "Mirror URLs for failover. Can be repeated."
+        )]
+        mirror: Vec<String>,
+
+        #[arg(
+            long = "max-filesize",
+            short = 'S',
+            value_parser = parse_bandwidth,
+            default_value = "0",
+            help = "Max file size (500KB, 2MB, 1GB, 0 = unlimited)"
+        )]
+        max_filesize: u64,
     },
 
     #[command(about = "Remove a scheduled download", alias = "rm")]

@@ -96,7 +96,7 @@ pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, 
     Ok(value.get("result").cloned().unwrap_or(Value::Null))
 }
 
-pub async fn subscribe_and_show_progress(task_id: u64) {
+pub async fn subscribe_and_show_progress(task_id: u64, progress_type: crate::args::ProgressType) {
     let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| default_socket());
     let stream = match UnixStream::connect(&path).await {
         Ok(s) => s,
@@ -148,96 +148,106 @@ pub async fn subscribe_and_show_progress(task_id: u64) {
             continue;
         }
 
-        match event_type {
-            "TaskCreated" => {
-                let url = event
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("download");
-                let display = zing_ext::filename::from_url(url);
-                let bar = indicatif::ProgressBar::new(0);
-                bar.set_prefix(display);
-                bar.set_style(
-                    indicatif::ProgressStyle::default_bar()
-                        .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})")
-                        .unwrap(),
-                );
-                bar.enable_steady_tick(std::time::Duration::from_millis(100));
-                pb = Some(bar);
+        use crate::args::ProgressType;
+        match progress_type {
+            ProgressType::Json => {
+                println!("{}", line.trim());
             }
-            "TaskProgress" => {
-                let bytes = event
-                    .get("bytes_downloaded")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let total = event.get("total_bytes").and_then(|v| v.as_u64());
-                let speed = event
-                    .get("speed_bytes_per_sec")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                if let Some(ref bar) = pb {
-                    bar.set_position(bytes);
-                    if total.is_some_and(|t| t > 0) && bar.length().is_none_or(|l| l == 0) {
-                        let t = total.unwrap();
-                        bar.set_length(t);
-                    }
-                    if total.is_some_and(|t| t > 0) {
-                        if speed < 1.0 {
-                            bar.set_style(
-                                indicatif::ProgressStyle::default_bar()
-                                    .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}")
-                                    .unwrap()
-                                    .progress_chars("=>-"),
-                            );
-                        } else {
-                            bar.set_style(
-                                indicatif::ProgressStyle::default_bar()
-                                    .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
-                                    .unwrap()
-                                    .progress_chars("=>-"),
-                            );
-                        }
-                    }
-                } else {
-                    let bar = indicatif::ProgressBar::new(total.unwrap_or(0));
-                    if total.is_some_and(|t| t > 0) {
-                        bar.set_style(
-                            indicatif::ProgressStyle::default_bar()
-                                .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
-                                .unwrap()
-                                .progress_chars("=>-"),
-                        );
-                    } else {
-                        bar.set_style(
-                            indicatif::ProgressStyle::default_bar()
-                                .template(
-                                    "{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})",
-                                )
-                                .unwrap(),
-                        );
-                    }
+            ProgressType::Bar => match event_type {
+                "TaskCreated" => {
+                    let url = event
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("download");
+                    let display = zing_ext::filename::from_url(url);
+                    let bar = indicatif::ProgressBar::new(0);
+                    bar.set_prefix(display);
+                    bar.set_style(
+                        indicatif::ProgressStyle::default_bar()
+                            .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})")
+                            .unwrap(),
+                    );
                     bar.enable_steady_tick(std::time::Duration::from_millis(100));
                     pb = Some(bar);
                 }
-            }
-            "TaskCompleted" => {
-                if let Some(bar) = pb.take() {
-                    bar.finish();
+                "TaskProgress" => {
+                    let bytes = event
+                        .get("bytes_downloaded")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let total = event.get("total_bytes").and_then(|v| v.as_u64());
+                    let speed = event
+                        .get("speed_bytes_per_sec")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    if let Some(ref bar) = pb {
+                        bar.set_position(bytes);
+                        if total.is_some_and(|t| t > 0) && bar.length().is_none_or(|l| l == 0) {
+                            let t = total.unwrap();
+                            bar.set_length(t);
+                        }
+                        if total.is_some_and(|t| t > 0) {
+                            if speed < 1.0 {
+                                bar.set_style(
+                                        indicatif::ProgressStyle::default_bar()
+                                            .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}")
+                                            .unwrap()
+                                            .progress_chars("=>-"),
+                                    );
+                            } else {
+                                bar.set_style(
+                                        indicatif::ProgressStyle::default_bar()
+                                            .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
+                                            .unwrap()
+                                            .progress_chars("=>-"),
+                                    );
+                            }
+                        }
+                    } else {
+                        let bar = indicatif::ProgressBar::new(total.unwrap_or(0));
+                        if total.is_some_and(|t| t > 0) {
+                            bar.set_style(
+                                    indicatif::ProgressStyle::default_bar()
+                                        .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
+                                        .unwrap()
+                                        .progress_chars("=>-"),
+                                );
+                        } else {
+                            bar.set_style(
+                                    indicatif::ProgressStyle::default_bar()
+                                        .template(
+                                            "{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})",
+                                        )
+                                        .unwrap(),
+                                );
+                        }
+                        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+                        pb = Some(bar);
+                    }
                 }
-                break;
-            }
-            "TaskFailed" => {
-                let error = event
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                if let Some(bar) = pb.take() {
-                    bar.finish_with_message("Failed");
+                "TaskCompleted" => {
+                    if let Some(bar) = pb.take() {
+                        bar.finish();
+                    }
+                    break;
                 }
-                eprintln!("Error: {error}");
-                break;
-            }
-            _ => {}
+                "TaskFailed" => {
+                    let error = event
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    if let Some(bar) = pb.take() {
+                        bar.finish_with_message("Failed");
+                    }
+                    eprintln!("Error: {error}");
+                    break;
+                }
+                _ => {}
+            },
+            ProgressType::None => match event_type {
+                "TaskCompleted" | "TaskFailed" => break,
+                _ => {}
+            },
         }
     }
 }

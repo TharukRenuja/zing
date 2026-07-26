@@ -37,6 +37,7 @@ pub async fn handle_request(
     req: RpcRequest,
     expected_token: &str,
     manager: &TaskManager,
+    shutdown_tx: &tokio::sync::broadcast::Sender<()>,
 ) -> RpcResponse {
     if !req.is_authorized(expected_token) {
         return RpcResponse {
@@ -54,6 +55,14 @@ pub async fn handle_request(
         "zing.tellStatus" => handle_tell_status(req.params, manager).await,
         "zing.pause" => handle_pause(req.params, manager).await,
         "zing.remove" => handle_remove(req.params, manager).await,
+        "zing.shutdown" => {
+            let _ = shutdown_tx.send(());
+            RpcResponse {
+                id: req.id,
+                result: Some(serde_json::json!({ "status": "shutting_down" })),
+                error: None,
+            }
+        }
         _ => RpcResponse {
             id: req.id,
             result: None,
@@ -257,6 +266,11 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
 
+    let checksum = map
+        .remove("checksum")
+        .and_then(|v| v.as_str().map(String::from))
+        .filter(|s| !s.is_empty());
+
     let id = manager
         .add_task(
             &url,
@@ -270,6 +284,7 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
             bw_schedule,
             headers,
             max_filesize,
+            checksum,
         )
         .await;
 
@@ -388,6 +403,7 @@ mod tests {
     use super::*;
     use crate::task_manager::TaskManager;
     use serde_json::json;
+    use tokio::sync::broadcast;
 
     const TEST_TOKEN: &str = "test-token";
 
@@ -400,43 +416,48 @@ mod tests {
         }
     }
 
+    fn test_setup() -> (TaskManager, broadcast::Sender<()>) {
+        let (tx, _) = broadcast::channel(1);
+        (TaskManager::new(), tx)
+    }
+
     #[tokio::test]
     async fn test_auth_fails_without_token() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let req = RpcRequest {
             id: Some(Value::Number(serde_json::Number::from(1))),
             method: "zing.list".to_string(),
             params: None,
             token: None,
         };
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32001);
     }
 
     #[tokio::test]
     async fn test_auth_fails_with_wrong_token() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let req = RpcRequest {
             id: Some(Value::Number(serde_json::Number::from(1))),
             method: "zing.list".to_string(),
             params: None,
             token: Some("wrong-token".to_string()),
         };
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32001);
     }
 
     #[tokio::test]
     async fn test_handle_add_uri() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let params = json!({
             "url": "http://example.com/file",
             "filename": "/tmp/test",
         });
         let req = make_req("zing.addUri", Some(params));
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
         let result = resp.result.unwrap();
         assert_eq!(result["status"], "pending");
@@ -445,18 +466,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_add_uri_missing_url() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let params = json!({ "filename": "/tmp/test" });
         let req = make_req("zing.addUri", Some(params));
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_some(), "expected error for missing url");
     }
 
     #[tokio::test]
     async fn test_handle_list_empty() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let req = make_req("zing.list", None);
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         let tasks = result["tasks"].as_array().unwrap();
@@ -465,7 +486,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_list_with_tasks() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         mgr.add_task(
             "http://example.com/file",
             "/tmp/test",
@@ -478,11 +499,12 @@ mod tests {
             None,
             vec![],
             0,
+            None,
         )
         .await;
 
         let req = make_req("zing.list", None);
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         let result = resp.result.unwrap();
         let tasks = result["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 1);
@@ -490,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_tell_status() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let id = mgr
             .add_task(
                 "http://example.com/file",
@@ -504,12 +526,13 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
 
         let params = json!({ "id": id });
         let req = make_req("zing.tellStatus", Some(params));
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
         let result = resp.result.unwrap();
         assert_eq!(result["url"], "http://example.com/file");
@@ -517,17 +540,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_tell_status_not_found() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let params = json!({ "id": 999 });
         let req = make_req("zing.tellStatus", Some(params));
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32000);
     }
 
     #[tokio::test]
     async fn test_handle_pause() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let id = mgr
             .add_task(
                 "http://example.com/file",
@@ -541,19 +564,20 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
 
         let params = json!({ "id": id });
         let req = make_req("zing.pause", Some(params));
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         let result = resp.result.unwrap();
         assert_eq!(result["status"], "paused");
     }
 
     #[tokio::test]
     async fn test_handle_remove() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let id = mgr
             .add_task(
                 "http://example.com/file",
@@ -567,12 +591,13 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
             )
             .await;
 
         let params = json!({ "id": id });
         let req = make_req("zing.remove", Some(params));
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["status"], "removed");
@@ -583,9 +608,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_unknown_method() {
-        let mgr = TaskManager::new();
+        let (mgr, stx) = test_setup();
         let req = make_req("zing.unknown", None);
-        let resp = handle_request(req, TEST_TOKEN, &mgr).await;
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
     }
@@ -595,5 +620,18 @@ mod tests {
         assert!(is_subscribe("zing.subscribe"));
         assert!(!is_subscribe("zing.addUri"));
         assert!(!is_subscribe(""));
+    }
+
+    #[tokio::test]
+    async fn test_handle_shutdown() {
+        let (mgr, stx) = test_setup();
+        let mut rx = stx.subscribe();
+        let req = make_req("zing.shutdown", None);
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["status"], "shutting_down");
+        // Verify the shutdown signal was sent
+        assert!(rx.try_recv().is_ok());
     }
 }

@@ -4,7 +4,8 @@ mod config;
 mod daemon_client;
 mod update;
 
-use args::{Args, Commands, ConfigAction, DaemonAction, ScheduleAction};
+use args::{Args, Commands, ConfigAction, DaemonAction, ProgressType, ScheduleAction};
+use base64::Engine;
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::generate;
@@ -38,18 +39,37 @@ fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
+fn build_headers(args: &Args) -> Vec<(String, String)> {
+    let mut headers = parse_headers(&args.header);
+    if let Some(referer) = &args.referer {
+        headers.push(("Referer".into(), referer.clone()));
+    }
+    if let Some(user) = &args.user {
+        let creds = if let Some((u, p)) = user.split_once(':') {
+            format!("{u}:{p}")
+        } else {
+            user.clone()
+        };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+        headers.push(("Authorization".into(), format!("Basic {encoded}")));
+    }
+    headers
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
 
+    let args = Args::parse();
+
+    let default_level = if args.quiet || args.pipe { "error" } else { "info" };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
         )
         .compact()
+        .with_writer(std::io::stderr)
         .init();
-
-    let args = Args::parse();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -63,6 +83,12 @@ async fn run(args: Args) -> Result<()> {
         Some(Commands::Daemon(ref daemon_args)) => {
             return match daemon_args.action {
                 DaemonAction::Start => run_daemon_start().await,
+                DaemonAction::Stop => run_daemon_stop().await,
+                DaemonAction::Restart => {
+                    let _ = run_daemon_stop().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    run_daemon_start().await
+                }
                 DaemonAction::Install => run_daemon_install().await,
                 DaemonAction::Uninstall => run_daemon_uninstall().await,
                 DaemonAction::Status => run_daemon_status().await,
@@ -77,6 +103,32 @@ async fn run(args: Args) -> Result<()> {
         Some(Commands::List) => {
             return run_list().await;
         }
+        Some(Commands::Pause { id }) => {
+            #[cfg(unix)]
+            match daemon_client::send_request("zing.pause", Some(serde_json::json!({ "id": id })))
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                    tracing::info!("Task {id}: {status}");
+                }
+                Err(e) => tracing::error!("Failed to pause task {id}: {e}"),
+            }
+            return Ok(());
+        }
+        Some(Commands::Remove { id }) => {
+            #[cfg(unix)]
+            match daemon_client::send_request("zing.remove", Some(serde_json::json!({ "id": id })))
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                    tracing::info!("Task {id}: {status}");
+                }
+                Err(e) => tracing::error!("Failed to remove task {id}: {e}"),
+            }
+            return Ok(());
+        }
         Some(Commands::Completions { shell }) => {
             let mut cmd = Args::command();
             generate(shell, &mut cmd, "zing", &mut std::io::stdout());
@@ -86,16 +138,47 @@ async fn run(args: Args) -> Result<()> {
             return update::run_update().await;
         }
         None => {
-            if args.urls.is_empty() {
+            if args.urls.is_empty() && args.input_file.is_none() {
                 eprintln!("error: the following required arguments were not provided:\n  <URLS>...\n\nFor more information, try '--help'.");
                 std::process::exit(1);
             }
         }
     }
 
+    // Load URLs from input file if provided
+    let urls = if let Some(ref path) = args.input_file {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("Cannot read input file '{}': {e}", path))?;
+        let mut urls = content
+            .lines()
+            .map(|l| l.split('#').next().unwrap_or("").trim())
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect::<Vec<_>>();
+        if !args.urls.is_empty() {
+            // Prepend CLI URLs (they should be first in line)
+            let mut all = args.urls.clone();
+            all.append(&mut urls);
+            all
+        } else {
+            urls
+        }
+    } else {
+        args.urls.clone()
+    };
+
+    let to_stdout = args.pipe || args.output.as_deref() == Some(std::path::Path::new("-"));
+
+    let progress_type = if args.quiet || to_stdout || args.pipe {
+        ProgressType::None
+    } else {
+        args.progress
+    };
+
     // Download mode — check for daemon proxy
     #[cfg(unix)]
-    if daemon_client::daemon_is_running().await {
+    if !to_stdout && daemon_client::daemon_is_running().await {
         tracing::info!("zing daemon detected, proxying commands");
 
         let cfg = Config::load(None);
@@ -103,7 +186,11 @@ async fn run(args: Args) -> Result<()> {
         let download_dir_str = download_dir.to_string_lossy().to_string();
 
         let mut handles = Vec::new();
-        for url_str in &args.urls {
+        let daemon_headers: Vec<String> = build_headers(&args)
+            .into_iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect();
+        for url_str in &urls {
             let params = serde_json::json!({
                 "url": url_str,
                 "filename": args.output.as_ref().and_then(|p| p.to_str()).filter(|s| !s.is_empty()),
@@ -115,6 +202,9 @@ async fn run(args: Args) -> Result<()> {
                 "proxy": args.proxy,
                 "mirror": args.mirror,
                 "bwlimit": args.bwlimit,
+                "headers": daemon_headers,
+                "checksum": args.checksum,
+                "method": args.method,
             });
             match daemon_client::send_request("zing.addUri", Some(params)).await {
                 Ok(resp) => {
@@ -122,8 +212,9 @@ async fn run(args: Args) -> Result<()> {
                     let name = zing_ext::filename::from_url(url_str);
                     tracing::info!("Downloading: {name}");
                     #[cfg(unix)]
+                    let pt = progress_type;
                     handles.push(tokio::spawn(async move {
-                        daemon_client::subscribe_and_show_progress(id).await;
+                        daemon_client::subscribe_and_show_progress(id, pt).await;
                     }));
                 }
                 Err(e) => tracing::error!("Daemon error: {e}"),
@@ -189,7 +280,11 @@ async fn run(args: Args) -> Result<()> {
         });
     }
 
-    let bar_handle = tokio::spawn(progress_bar_listener(rx));
+    let bar_handle = match progress_type {
+        ProgressType::Bar => Some(tokio::spawn(progress_bar_listener(rx))),
+        ProgressType::Json => Some(tokio::spawn(progress_json_writer(rx))),
+        ProgressType::None => None,
+    };
 
     let cfg = Config::load(None);
     let download_dir = args.dir.clone().unwrap_or_else(|| cfg.download_dir());
@@ -245,7 +340,7 @@ async fn run(args: Args) -> Result<()> {
     let urls: Vec<String> = if let Some(m) = metalink {
         vec![m.url.clone()]
     } else {
-        args.urls.clone()
+        urls.clone()
     };
 
     let semaphore = match args.max_concurrent {
@@ -282,7 +377,7 @@ async fn run(args: Args) -> Result<()> {
         let effective_checksum = metalink
             .and_then(|m| m.checksum.clone())
             .or_else(|| args.checksum.clone());
-        let headers = parse_headers(&args.header);
+        let headers = build_headers(&args);
         let proxy = args.proxy.clone();
         let bwlimit = args.bwlimit.clone();
         let download_dir = download_dir.clone();
@@ -319,6 +414,7 @@ async fn run(args: Args) -> Result<()> {
                     &url,
                     &filename,
                     is_auto_name,
+                    to_stdout,
                     args.connections,
                     bus.clone(),
                     args.insecure,
@@ -328,6 +424,10 @@ async fn run(args: Args) -> Result<()> {
                     bwlimit.clone(),
                     headers.clone(),
                     args.max_filesize,
+                    args.retry,
+                    args.retry_wait,
+                    args.connect_timeout,
+                    args.max_time,
                 );
 
                 let task_shutdown = shutdown_tx.subscribe();
@@ -405,7 +505,9 @@ async fn run(args: Args) -> Result<()> {
     }
 
     drop(bus);
-    bar_handle.await??;
+    if let Some(h) = bar_handle {
+        h.await??;
+    }
     Ok(())
 }
 
@@ -426,6 +528,24 @@ async fn run_daemon_start() -> Result<()> {
         .spawn()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to start daemon: {e}"))?;
     tracing::info!("Daemon started with PID {}", child.id());
+    Ok(())
+}
+
+async fn run_daemon_stop() -> Result<()> {
+    #[cfg(unix)]
+    match daemon_client::send_request("zing.shutdown", None).await {
+        Ok(resp) => {
+            tracing::info!(
+                "Daemon: {}",
+                resp.get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("stopped")
+            );
+        }
+        Err(e) => {
+            tracing::error!("Failed to stop daemon: {e}");
+        }
+    }
     Ok(())
 }
 
@@ -652,7 +772,17 @@ async fn run_schedule(_args: &Args, sched: &args::ScheduleArgs) -> Result<()> {
             end,
             days,
             output,
+            output_dir,
             connections,
+            insecure,
+            max_download_rate,
+            proxy,
+            header,
+            checksum,
+            mirror,
+            max_filesize,
+            user,
+            referer,
         } => {
             if !at.contains(':') || at.len() != 5 {
                 eprintln!("Error: --at must be in HH:MM format (e.g. 02:00)");
@@ -665,6 +795,20 @@ async fn run_schedule(_args: &Args, sched: &args::ScheduleArgs) -> Result<()> {
                 }
             }
 
+            let mut combined_headers = header.clone();
+            if let Some(ref referer_val) = referer {
+                combined_headers.push(format!("Referer: {referer_val}"));
+            }
+            if let Some(ref user_val) = user {
+                let creds = if let Some((u, p)) = user_val.split_once(':') {
+                    format!("{u}:{p}")
+                } else {
+                    user_val.clone()
+                };
+                let encoded = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+                combined_headers.push(format!("Authorization: Basic {encoded}"));
+            }
+
             let id = filename::from_url(url);
             let entry = serde_json::json!({
                 "url": url,
@@ -675,8 +819,16 @@ async fn run_schedule(_args: &Args, sched: &args::ScheduleArgs) -> Result<()> {
                     .map(|d| d.trim().to_string())
                     .collect::<Vec<String>>(),
                 "output": output,
+                "output_dir": output_dir,
                 "enabled": true,
                 "connections": connections.unwrap_or(4),
+                "insecure": insecure,
+                "max_download_rate": max_download_rate,
+                "proxy": proxy,
+                "headers": combined_headers,
+                "checksum": checksum,
+                "mirrors": mirror,
+                "max_filesize": max_filesize,
             });
 
             let display_id = if id.is_empty() {
@@ -1011,6 +1163,51 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
     // Clear remaining bars
     for (_, bar) in bars.drain() {
         bar.finish_and_clear();
+    }
+    Ok(())
+}
+
+fn event_to_json_line(event: &EngineEvent) -> Option<String> {
+    use EngineEvent::*;
+    let v = match event {
+        TaskCreated { id, url } => serde_json::json!({
+            "event": "TaskCreated", "id": id, "url": url
+        }),
+        TaskProgress(p) => serde_json::json!({
+            "event": "TaskProgress", "id": p.id,
+            "bytes_downloaded": p.bytes_downloaded,
+            "total_bytes": p.total_bytes,
+            "speed_bytes_per_sec": p.speed_bytes_per_sec
+        }),
+        TaskCompleted {
+            id,
+            total_bytes,
+            duration,
+        } => serde_json::json!({
+            "event": "TaskCompleted", "id": id,
+            "total_bytes": total_bytes,
+            "duration_secs": duration.as_secs_f64()
+        }),
+        TaskFailed { id, error } => serde_json::json!({
+            "event": "TaskFailed", "id": id, "error": error
+        }),
+        _ => return None,
+    };
+    Some(serde_json::to_string(&v).unwrap_or_default())
+}
+
+async fn progress_json_writer(mut rx: broadcast::Receiver<EngineEvent>) -> Result<()> {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                if let Some(line) = event_to_json_line(&event) {
+                    println!("{line}");
+                }
+            }
+            Err(RecvError::Closed) => break,
+            Err(RecvError::Lagged(n)) => tracing::warn!("Bus lagged by {n}"),
+        }
     }
     Ok(())
 }

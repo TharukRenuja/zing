@@ -24,6 +24,9 @@ struct SharedState {
     pub mirrors: Vec<String>,
     pub filename: Mutex<String>,
     pub is_auto_name: bool,
+    pub to_stdout: bool,
+    pub retry_count: u32,
+    pub retry_wait_ms: u64,
     pub segment_mgr: Mutex<SegmentManager>,
     pub file: std::sync::Mutex<Option<Arc<std::fs::File>>>,
     pub bus: EventBus,
@@ -77,6 +80,7 @@ impl DownloadTask {
         url: &str,
         filename: &str,
         is_auto_name: bool,
+        to_stdout: bool,
         max_connections: usize,
         bus: EventBus,
         insecure: bool,
@@ -86,10 +90,19 @@ impl DownloadTask {
         bw_schedule: Option<String>,
         headers: Vec<(String, String)>,
         max_filesize: u64,
+        retry_count: u32,
+        retry_wait_ms: u64,
+        connect_timeout_secs: u64,
+        max_time_secs: u64,
     ) -> Self {
-        let pool = ConnectionPool::new(insecure, proxy_url.as_deref())
-            .with_event_bus(bus.clone())
-            .with_headers(headers);
+        let pool = ConnectionPool::new(
+            insecure,
+            proxy_url.as_deref(),
+            connect_timeout_secs,
+            max_time_secs,
+        )
+        .with_event_bus(bus.clone())
+        .with_headers(headers);
         let rate_limiter = if max_download_rate > 0 {
             Some(Arc::new(TokenBucket::new(max_download_rate)))
         } else {
@@ -109,6 +122,9 @@ impl DownloadTask {
                 mirrors,
                 filename: Mutex::new(filename.to_string()),
                 is_auto_name,
+                to_stdout,
+                retry_count,
+                retry_wait_ms,
                 segment_mgr: Mutex::new(SegmentManager::new(max_connections)),
                 file: std::sync::Mutex::new(None),
                 bus,
@@ -179,6 +195,10 @@ impl DownloadTask {
 
     pub async fn run(&self) -> Result<()> {
         let current_url = self.state.url.lock().await.clone();
+
+        if self.state.to_stdout {
+            return self.run_to_stdout(&current_url).await;
+        }
 
         let profile = probe::probe(
             &self.state.pool,
@@ -671,6 +691,49 @@ impl DownloadTask {
         });
         Ok(())
     }
+
+    async fn run_to_stdout(&self, url: &str) -> Result<()> {
+        tracing::info!("Streaming to stdout");
+        let resp = self.state.pool.get(url, self.state.id).await?;
+        if !resp.status().is_success() {
+            bail!("HTTP {}", resp.status());
+        }
+
+        use futures::StreamExt;
+        let mut stdout = tokio::io::stdout();
+        let mut stream = resp.into_inner().bytes_stream();
+        let mut downloaded: u64 = 0;
+        let start = Instant::now();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if let Some(ref limiter) = self.state.rate_limiter {
+                limiter.consume(chunk.len() as u64).await;
+            }
+            stdout.write_all(&chunk).await?;
+            downloaded += chunk.len() as u64;
+            let elapsed = start.elapsed().as_secs_f64();
+            let speed = if elapsed > 0.0 {
+                downloaded as f64 / elapsed
+            } else {
+                0.0
+            };
+            self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+                id: self.state.id,
+                bytes_downloaded: downloaded,
+                total_bytes: None,
+                speed_bytes_per_sec: speed,
+            }));
+        }
+
+        stdout.flush().await?;
+        self.state.bus.emit(EngineEvent::TaskCompleted {
+            id: self.state.id,
+            total_bytes: downloaded,
+            duration: start.elapsed(),
+        });
+        Ok(())
+    }
 }
 
 fn is_retryable_error(e: &anyhow::Error) -> bool {
@@ -699,8 +762,8 @@ fn is_retryable_error(e: &anyhow::Error) -> bool {
 
 async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
     let mut retry = RetryManager::new(
-        5,
-        std::time::Duration::from_millis(500),
+        state.retry_count,
+        std::time::Duration::from_millis(state.retry_wait_ms),
         std::time::Duration::from_secs(10),
     );
 
@@ -838,10 +901,13 @@ mod tests {
             mirrors: vec![],
             filename: Mutex::new("/tmp/test".into()),
             is_auto_name: false,
+            to_stdout: false,
+            retry_count: 5,
+            retry_wait_ms: 500,
             segment_mgr: Mutex::new(SegmentManager::new(4)),
             file: std::sync::Mutex::new(None),
             bus: crate::engine::event::EventBus::new(),
-            pool: ConnectionPool::new(false, None)
+            pool: ConnectionPool::new(false, None, 30, 300)
                 .with_event_bus(crate::engine::event::EventBus::new()),
             rate_limiter: None,
             start_time: tokio::sync::Mutex::new(Instant::now()),
