@@ -6,7 +6,6 @@ mod update;
 
 use args::{Args, Commands, ConfigAction, DaemonAction, ProgressType, ScheduleAction};
 use base64::Engine;
-#[cfg(unix)]
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::generate;
