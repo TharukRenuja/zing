@@ -492,42 +492,42 @@ async fn run(args: Args) -> Result<()> {
         Some(Commands::List) => {
             return run_list().await;
         }
-        Some(Commands::Pause { id }) => {
+        Some(Commands::Pause { id: _id }) => {
             #[cfg(unix)]
-            match daemon_client::send_request("zing.pause", Some(serde_json::json!({ "id": id })))
+            match daemon_client::send_request("zing.pause", Some(serde_json::json!({ "id": _id })))
                 .await
             {
                 Ok(resp) => {
                     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                    tracing::info!("Task {id}: {status}");
+                    tracing::info!("Task {_id}: {status}");
                 }
-                Err(e) => tracing::error!("Failed to pause task {id}: {e}"),
+                Err(e) => tracing::error!("Failed to pause task {_id}: {e}"),
             }
             return Ok(());
         }
-        Some(Commands::Resume { id }) => {
+        Some(Commands::Resume { id: _id }) => {
             #[cfg(unix)]
-            match daemon_client::send_request("zing.resume", Some(serde_json::json!({ "id": id })))
+            match daemon_client::send_request("zing.resume", Some(serde_json::json!({ "id": _id })))
                 .await
             {
                 Ok(resp) => {
                     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                    tracing::info!("Task {id}: {status}");
+                    tracing::info!("Task {_id}: {status}");
                 }
-                Err(e) => tracing::error!("Failed to resume task {id}: {e}"),
+                Err(e) => tracing::error!("Failed to resume task {_id}: {e}"),
             }
             return Ok(());
         }
-        Some(Commands::Remove { id }) => {
+        Some(Commands::Remove { id: _id }) => {
             #[cfg(unix)]
-            match daemon_client::send_request("zing.remove", Some(serde_json::json!({ "id": id })))
+            match daemon_client::send_request("zing.remove", Some(serde_json::json!({ "id": _id })))
                 .await
             {
                 Ok(resp) => {
                     let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                    tracing::info!("Task {id}: {status}");
+                    tracing::info!("Task {_id}: {status}");
                 }
-                Err(e) => tracing::error!("Failed to remove task {id}: {e}"),
+                Err(e) => tracing::error!("Failed to remove task {_id}: {e}"),
             }
             return Ok(());
         }
