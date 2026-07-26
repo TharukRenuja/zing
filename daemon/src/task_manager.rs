@@ -327,9 +327,14 @@ impl TaskManager {
 
     pub async fn resume_task(&self, id: TaskId) -> Result<(), String> {
         let mut tasks = self.tasks.lock().await;
-        let task = tasks.get_mut(&id).ok_or_else(|| format!("Task {id} not found"))?;
+        let task = tasks
+            .get_mut(&id)
+            .ok_or_else(|| format!("Task {id} not found"))?;
         if task.status != TaskStatus::Paused {
-            return Err(format!("Task {id} is not paused (status: {:?})", task.status));
+            return Err(format!(
+                "Task {id} is not paused (status: {:?})",
+                task.status
+            ));
         }
         // Re-add the task to re-spawn it
         let url = task.url.clone();

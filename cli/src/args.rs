@@ -191,11 +191,7 @@ pub struct Args {
     )]
     pub pipe: Option<String>,
 
-    #[arg(
-        long = "user-agent",
-        short = 'A',
-        help = "Custom User-Agent header"
-    )]
+    #[arg(long = "user-agent", short = 'A', help = "Custom User-Agent header")]
     pub user_agent: Option<String>,
 
     #[arg(
@@ -244,11 +240,7 @@ pub struct Args {
     )]
     pub netrc: bool,
 
-    #[arg(
-        long = "log",
-        short = 'l',
-        help = "Log to file instead of stderr"
-    )]
+    #[arg(long = "log", short = 'l', help = "Log to file instead of stderr")]
     pub log: Option<String>,
 
     #[arg(
@@ -430,10 +422,7 @@ pub enum ScheduleAction {
         )]
         user: Option<String>,
 
-        #[arg(
-            long = "referer",
-            help = "Referer URL (sets the Referer header)"
-        )]
+        #[arg(long = "referer", help = "Referer URL (sets the Referer header)")]
         referer: Option<String>,
 
         #[arg(long = "checksum", short = 'c', help = "Verify checksum")]

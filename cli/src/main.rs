@@ -11,10 +11,10 @@ use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::generate;
 use color_eyre::Result;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use config::Config;
 use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -67,9 +67,15 @@ fn auto_rename_filename(path: &str, counter: usize) -> String {
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
     if ext.is_empty() {
-        parent.join(format!("{}({})", stem, counter)).to_string_lossy().to_string()
+        parent
+            .join(format!("{}({})", stem, counter))
+            .to_string_lossy()
+            .to_string()
     } else {
-        parent.join(format!("{}({}).{}", stem, counter, ext)).to_string_lossy().to_string()
+        parent
+            .join(format!("{}({}).{}", stem, counter, ext))
+            .to_string_lossy()
+            .to_string()
     }
 }
 
@@ -96,11 +102,18 @@ fn parse_netrc_for_url(url: &str, headers: &mut Vec<(String, String)>) {
         if line.starts_with("machine ") {
             let machine_host = line.strip_prefix("machine ").unwrap_or("").trim();
             if machine_host == host {
-                let login = lines.get(i + 1).and_then(|l| l.trim().strip_prefix("login ")).unwrap_or("");
-                let password = lines.get(i + 2).and_then(|l| l.trim().strip_prefix("password ")).unwrap_or("");
+                let login = lines
+                    .get(i + 1)
+                    .and_then(|l| l.trim().strip_prefix("login "))
+                    .unwrap_or("");
+                let password = lines
+                    .get(i + 2)
+                    .and_then(|l| l.trim().strip_prefix("password "))
+                    .unwrap_or("");
                 if !login.is_empty() {
                     let creds = format!("{login}:{password}");
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+                    let encoded =
+                        base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
                     headers.push(("Authorization".into(), format!("Basic {encoded}")));
                 }
                 return;
@@ -160,7 +173,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                     .map_err(|e| color_eyre::eyre::eyre!("Pipe error: {e}"))?;
             }
             drop(stdin);
-            let status = child.wait().await.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
             if !status.success() {
                 tracing::warn!("{shell} exited with {status}");
             }
@@ -246,7 +262,9 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             tokio::fs::create_dir_all(&bin_dir).await?;
             let fname = zing_ext::filename::from_url(url);
             if fname.is_empty() {
-                return Err(color_eyre::eyre::eyre!("Cannot determine filename from URL"));
+                return Err(color_eyre::eyre::eyre!(
+                    "Cannot determine filename from URL"
+                ));
             }
             let out_path = bin_dir.join(&fname);
             let resp = reqwest::Client::builder()
@@ -256,15 +274,20 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                 .send()
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
-            let bytes = resp.bytes().await.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
             tokio::fs::write(&out_path, &bytes).await?;
-                set_executable(&out_path);
+            set_executable(&out_path);
             tracing::info!("Installed AppImage: {} -> {}", fname, out_path.display());
         }
         "install" => {
             let fname = zing_ext::filename::from_url(url);
             if fname.is_empty() {
-                return Err(color_eyre::eyre::eyre!("Cannot determine filename from URL"));
+                return Err(color_eyre::eyre::eyre!(
+                    "Cannot determine filename from URL"
+                ));
             }
             let tmp = tempfile::tempdir().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
             let tmp_path = tmp.path().join(&fname);
@@ -275,7 +298,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                 .send()
                 .await
                 .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
-            let bytes = resp.bytes().await.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
             tokio::fs::write(&tmp_path, &bytes).await?;
             let bin_dir = dirs::home_dir()
                 .map(|p| p.join(".local").join("bin"))
@@ -328,7 +354,8 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                     if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
                         while let Ok(Some(entry)) = entries.next_entry().await {
                             let ft = match entry.file_type().await {
-                                Ok(ft) => ft, _ => continue,
+                                Ok(ft) => ft,
+                                _ => continue,
                             };
                             if ft.is_dir() {
                                 dirs_to_visit.push(entry.path());
@@ -362,7 +389,7 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                             .unwrap_or_else(|| pkg_name.to_string()),
                     );
                     tokio::fs::copy(&bin_path, &out).await?;
-                set_executable(&out);
+                    set_executable(&out);
                     tracing::info!("Installed: {} -> {}", pkg_name, out.display());
                 } else {
                     tracing::warn!("No binary found in extracted archive");
@@ -395,8 +422,7 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             use futures::StreamExt;
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
-                tokio::io::AsyncWriteExt::write_all(&mut stdout, &chunk)
-                    .await?;
+                tokio::io::AsyncWriteExt::write_all(&mut stdout, &chunk).await?;
             }
         }
     }
@@ -408,7 +434,11 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let default_level = if args.quiet || args.pipe.is_some() { "error" } else { "info" };
+    let default_level = if args.quiet || args.pipe.is_some() {
+        "error"
+    } else {
+        "info"
+    };
 
     let writer: BoxMakeWriter = if let Some(ref log_path) = args.log {
         match std::fs::File::create(log_path) {
@@ -541,7 +571,8 @@ async fn run(args: Args) -> Result<()> {
         args.urls.clone()
     };
 
-    let to_stdout = args.pipe.is_some() || args.output.as_deref() == Some(std::path::Path::new("-"));
+    let to_stdout =
+        args.pipe.is_some() || args.output.as_deref() == Some(std::path::Path::new("-"));
 
     // Dry-run
     if args.dry_run {
