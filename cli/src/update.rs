@@ -79,6 +79,16 @@ pub async fn run_update() -> Result<()> {
         .parent()
         .ok_or_else(|| color_eyre::eyre::eyre!("Cannot determine executable directory"))?;
 
+    // Check write permission before downloading
+    let probe = exe_dir.join(".zing-update-probe");
+    if std::fs::write(&probe, b"").is_err() {
+        bail!(
+            "No write permission to {}. Run with sudo: sudo zing update",
+            exe_dir.display()
+        );
+    }
+    let _ = std::fs::remove_file(&probe);
+
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 
