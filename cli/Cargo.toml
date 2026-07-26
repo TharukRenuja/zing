@@ -6,7 +6,7 @@ eula = false
 
 [package]
 name = "zing"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "A modern HTTP downloader with segmented concurrent downloads"
 authors = ["Tharuk Renuja"]
@@ -29,10 +29,10 @@ Features include segmented concurrent downloads, daemon mode, and adaptive conne
 [package.metadata.bundle]
 name = "zing"
 identifier = "com.tharukrj.zing"
-version = "0.1.1"
+version = "0.1.2"
 display-name = "zing"
-short-version = "0.1.1"
-long-version = "0.1.1"
+short-version = "0.1.2"
+long-version = "0.1.2"
 frameworks = ["CoreFoundation", "Foundation"]
 
 [[bin]]

@@ -6,10 +6,11 @@ use crate::probe;
 use crate::ratelimit::{SharedRateLimiter, TokenBucket};
 use crate::retry::RetryManager;
 use crate::segment::allocator::SlowStartAllocator;
-use crate::segment::manager::SegmentManager;
+use crate::segment::manager::{Segment, SegmentManager, SegmentState};
 use crate::segment::pid::PidController;
 use crate::segment::stealer::WorkStealer;
-use crate::storage::{ControlFile, SegmentEntry};
+use crate::storage::control::BlockBitfield;
+use crate::storage::ControlFile;
 use crate::util;
 use anyhow::{bail, Result};
 use std::path::Path;
@@ -36,7 +37,6 @@ struct SharedState {
     pub start_time: tokio::sync::Mutex<Instant>,
     pub total_downloaded: AtomicU64,
     pub done: AtomicBool,
-    pub save_interval: tokio::sync::Mutex<Instant>,
     pub reprobe: AtomicBool,
     pub peak_speed: AtomicU64,
     pub bandwidth_estimate: AtomicU64,
@@ -44,6 +44,7 @@ struct SharedState {
     pub use_cd: bool,
     pub cookie_jar: Option<Arc<ZingCookieStore>>,
     pub save_cookies_path: Option<String>,
+    pub block_bitfield: tokio::sync::Mutex<BlockBitfield>,
 }
 
 impl SharedState {
@@ -153,7 +154,6 @@ impl DownloadTask {
                 start_time: tokio::sync::Mutex::new(Instant::now()),
                 total_downloaded: AtomicU64::new(0),
                 done: AtomicBool::new(false),
-                save_interval: tokio::sync::Mutex::new(Instant::now()),
                 reprobe: AtomicBool::new(false),
                 peak_speed: AtomicU64::new(0),
                 bandwidth_estimate: AtomicU64::new(0),
@@ -161,6 +161,10 @@ impl DownloadTask {
                 use_cd,
                 cookie_jar,
                 save_cookies_path,
+                block_bitfield: tokio::sync::Mutex::new(BlockBitfield::new(
+                    0,
+                    crate::storage::control::BLOCK_SIZE,
+                )),
             }),
         }
     }
@@ -274,7 +278,7 @@ impl DownloadTask {
         if let Some(ref cf) = resume {
             // Verify the download file still exists and hasn't been truncated/corrupted
             let file_ok = match tokio::fs::metadata(&filename).await {
-                Ok(m) => m.len() >= cf.total_downloaded(),
+                Ok(m) => m.len() >= cf.bitfield.total_downloaded(),
                 Err(_) => false,
             };
             if !file_ok {
@@ -283,7 +287,7 @@ impl DownloadTask {
                 let _ = tokio::fs::remove_file(Path::new(&filename)).await;
                 return self.run_fresh(profile.total_size).await;
             }
-            tracing::info!("Resuming: {:.1}% complete", cf.progress_pct());
+            tracing::info!("Resuming: {:.1}% complete", cf.bitfield.progress_pct());
         }
 
         if profile.total_size.is_none_or(|s| s == 0) && !resume.is_some() {
@@ -306,12 +310,10 @@ impl DownloadTask {
         );
 
         if let Some(ref cf) = resume {
-            if let Some(cf_size) = cf.total_size {
-                if total_size.is_some_and(|s| s != cf_size) {
-                    tracing::warn!("Server file size changed, starting fresh");
-                    let _ = tokio::fs::remove_file(&control_path).await;
-                    return self.run_fresh(total_size).await;
-                }
+            if total_size.is_some_and(|s| s != cf.total_size) {
+                tracing::warn!("Server file size changed, starting fresh");
+                let _ = tokio::fs::remove_file(&control_path).await;
+                return self.run_fresh(total_size).await;
             }
         }
 
@@ -337,11 +339,30 @@ impl DownloadTask {
         }
     }
 
-    async fn run_with_resume(&self, resume: Option<ControlFile>, total_size: u64) -> Result<()> {
+    async fn run_with_resume(
+        &self,
+        mut resume: Option<ControlFile>,
+        total_size: u64,
+    ) -> Result<()> {
         tracing::info!("Segmented: {} bytes", total_size);
-        let filename = self.state.filename.lock().await.clone();
+        let mut filename = self.state.filename.lock().await.clone();
+        loop {
+            if resume.is_some() {
+                let file_ok = match tokio::fs::metadata(&filename).await {
+                    Ok(m) => m.len() >= total_size,
+                    Err(_) => false,
+                };
+                if !file_ok {
+                    tracing::warn!("Download file missing or truncated, starting fresh");
+                    let control_path = ControlFile::control_path(Path::new(&filename));
+                    let _ = tokio::fs::remove_file(&control_path).await;
+                    let _ = tokio::fs::remove_file(Path::new(&filename)).await;
+                    resume = None;
+                    filename = self.state.filename.lock().await.clone();
+                    continue;
+                }
+            }
 
-        {
             let f = tokio::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -351,33 +372,34 @@ impl DownloadTask {
             f.set_len(total_size).await?;
             let std_file: std::fs::File = f.into_std().await;
             *self.state.file.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(std_file));
+            break;
         }
 
-        let mut cf = ControlFile::new(&self.state.url.lock().await, &filename, Some(total_size));
+        let mut cf = ControlFile::new(total_size, crate::storage::control::BLOCK_SIZE);
 
         if let Some(ref resume_cf) = resume {
-            let base_downloaded = resume_cf.total_downloaded();
-            cf.base_downloaded = base_downloaded;
-            self.state
-                .total_downloaded
-                .store(base_downloaded, Ordering::Relaxed);
+            cf.bitfield
+                .raw_bits_mut()
+                .copy_from_slice(resume_cf.bitfield.raw_bits());
+            let base = cf.bitfield.total_downloaded();
+            self.state.total_downloaded.store(base, Ordering::Relaxed);
             {
                 let mut mgr = self.state.segment_mgr.lock().await;
                 mgr.set_total_size(total_size);
-                let mut conn_idx = 0usize;
-                for entry in &resume_cf.segments {
-                    if entry.downloaded >= entry.length {
-                        continue;
+                // Push all missing ranges as Pending segments
+                for (off, len) in cf.bitfield.missing_ranges() {
+                    let seg_id = mgr.segment_counter;
+                    mgr.segment_counter += 1;
+                    mgr.segments.push(Segment::new(seg_id, off, len));
+                }
+                // Assign first missing range to initial connection
+                if !mgr.segments.is_empty() {
+                    let conn_id = mgr.add_connection();
+                    let first_id = mgr.segments[0].id;
+                    mgr.segments[0].state = SegmentState::Active { conn_id };
+                    if let Some(conn) = mgr.connections.get_mut(conn_id) {
+                        conn.segment_id = Some(first_id);
                     }
-                    if conn_idx >= mgr.connections.len() {
-                        mgr.add_connection();
-                    }
-                    let conn_id = conn_idx;
-                    let remaining = entry.length - entry.downloaded;
-                    if remaining > 0 {
-                        mgr.allocate_segment(entry.offset + entry.downloaded, remaining, conn_id);
-                    }
-                    conn_idx += 1;
                 }
             }
         } else {
@@ -385,13 +407,10 @@ impl DownloadTask {
                 let mut mgr = self.state.segment_mgr.lock().await;
                 mgr.set_total_size(total_size);
                 SlowStartAllocator::initial_split(&mut mgr, total_size);
-                cf.segments.push(SegmentEntry {
-                    id: 0,
-                    offset: 0,
-                    length: total_size,
-                    downloaded: 0,
-                });
             }
+        }
+        {
+            *self.state.block_bitfield.lock().await = cf.bitfield.clone();
         }
 
         let batches =
@@ -436,9 +455,35 @@ impl DownloadTask {
         }
 
         let state_mon = Arc::clone(&self.state);
-        let cf_mon = Arc::new(tokio::sync::Mutex::new(cf));
         let control_path = ControlFile::control_path(Path::new(&filename));
         let control_path_mon = control_path.clone();
+        // Periodic save task (every 5 seconds)
+        let _periodic_save = {
+            let state = Arc::clone(&self.state);
+            let cp = control_path.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    if state.done.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let bf = state.block_bitfield.lock().await;
+                    let cf_save = ControlFile {
+                        version: 2,
+                        total_size: bf.total_size,
+                        block_size: bf.block_size,
+                        bitfield: bf.clone(),
+                    };
+                    drop(bf);
+                    if let Err(e) = cf_save.save(&cp).await {
+                        tracing::error!("Failed to save control file: {e}");
+                    }
+                }
+            })
+        };
+
         let monitor = tokio::spawn(async move {
             let stealer = WorkStealer::new();
             let mut pid = PidController::new(0.0);
@@ -447,8 +492,16 @@ impl DownloadTask {
             let mut throttle_start: Option<Instant> = None;
             loop {
                 if state_mon.done.load(Ordering::Acquire) {
-                    sync_cf(&state_mon, &cf_mon).await;
-                    let _ = cf_mon.lock().await.save(&control_path_mon).await;
+                    // Final save on done
+                    let bf = state_mon.block_bitfield.lock().await;
+                    let cf_save = ControlFile {
+                        version: 2,
+                        total_size: bf.total_size,
+                        block_size: bf.block_size,
+                        bitfield: bf.clone(),
+                    };
+                    drop(bf);
+                    let _ = cf_save.save(&control_path_mon).await;
                     return;
                 }
 
@@ -465,8 +518,6 @@ impl DownloadTask {
                             total_bytes: total_size,
                             speed_bytes_per_sec: 0.0,
                         }));
-                        sync_cf(&state_mon, &cf_mon).await;
-                        let _ = cf_mon.lock().await.save(&control_path_mon).await;
                         return;
                     }
                     mgr.total_size
@@ -481,8 +532,6 @@ impl DownloadTask {
                         total_bytes: total,
                         speed_bytes_per_sec: 0.0,
                     }));
-                    sync_cf(&state_mon, &cf_mon).await;
-                    let _ = cf_mon.lock().await.save(&control_path_mon).await;
                     return;
                 }
 
@@ -527,8 +576,16 @@ impl DownloadTask {
                                 speed_u64, peak, threshold,
                             );
                             state_mon.reprobe.store(true, Ordering::Release);
-                            sync_cf(&state_mon, &cf_mon).await;
-                            let _ = cf_mon.lock().await.save(&control_path_mon).await;
+                            // Sync bitfield on throttle detection
+                            let bf = state_mon.block_bitfield.lock().await;
+                            let cf_save = ControlFile {
+                                version: 2,
+                                total_size: bf.total_size,
+                                block_size: bf.block_size,
+                                bitfield: bf.clone(),
+                            };
+                            drop(bf);
+                            let _ = cf_save.save(&control_path_mon).await;
                             throttle_start = None;
                         }
                     }
@@ -608,17 +665,6 @@ impl DownloadTask {
                     tokio::spawn(async move { run_connection(s, new_id).await });
                 }
 
-                {
-                    let mut last_save = state_mon.save_interval.lock().await;
-                    if last_save.elapsed()
-                        > std::time::Duration::from_secs(constants::SAVE_INTERVAL_SECS)
-                    {
-                        sync_cf(&state_mon, &cf_mon).await;
-                        let _ = cf_mon.lock().await.save(&control_path_mon).await;
-                        *last_save = Instant::now();
-                    }
-                }
-
                 tokio::time::sleep(std::time::Duration::from_millis(constants::MONITOR_TICK_MS))
                     .await;
             }
@@ -627,7 +673,6 @@ impl DownloadTask {
         for h in handles {
             h.await.ok();
         }
-        self.state.done.store(true, Ordering::Release);
         monitor.await.ok();
 
         if let Ok(guard) = self.state.file.lock() {
@@ -799,10 +844,17 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
         }
 
         let (offset, length) = {
-            let mgr = state.segment_mgr.lock().await;
+            let mut mgr = state.segment_mgr.lock().await;
             match mgr.active_segment_for(conn_id) {
                 Some(s) if s.remaining() > 0 => (s.offset + s.downloaded, s.remaining()),
-                _ => return,
+                _ => {
+                    if mgr.claim_pending_segment(conn_id) {
+                        let s = mgr.active_segment_for(conn_id).unwrap();
+                        (s.offset + s.downloaded, s.remaining())
+                    } else {
+                        return;
+                    }
+                }
             }
         };
 
@@ -894,100 +946,74 @@ async fn download_range(
         state
             .total_downloaded
             .fetch_add(data.len() as u64, Ordering::Relaxed);
+
+        // Mark completed blocks in bitfield
+        let end_pos = pos;
+        let start_block =
+            (offset + (written - data.len() as u64)) / crate::storage::control::BLOCK_SIZE;
+        let end_block = (end_pos - 1) / crate::storage::control::BLOCK_SIZE;
+        if start_block <= end_block {
+            let mut bf = state.block_bitfield.lock().await;
+            for b in start_block as u32..=end_block as u32 {
+                bf.mark_complete(b);
+            }
+        }
     }
 
     Ok(written)
 }
 
-async fn sync_cf(state: &SharedState, cf: &tokio::sync::Mutex<ControlFile>) {
-    let mgr = state.segment_mgr.lock().await;
-    let mut cf = cf.lock().await;
-    cf.segments = mgr
-        .segments
-        .iter()
-        .map(|s| SegmentEntry {
-            id: s.id,
-            offset: s.offset,
-            length: s.length,
-            downloaded: s.downloaded,
-        })
-        .collect();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::segment::manager::{Segment, SegmentState};
 
     #[tokio::test]
-    async fn test_sync_cf_copies_segments() {
-        let state = Arc::new(SharedState {
-            id: 0,
-            url: Mutex::new("http://example.com/file".into()),
-            mirrors: vec![],
-            filename: Mutex::new("/tmp/test".into()),
-            is_auto_name: false,
-            to_stdout: false,
-            retry_count: 5,
-            retry_wait_ms: 500,
-            segment_mgr: Mutex::new(SegmentManager::new(4)),
-            file: std::sync::Mutex::new(None),
-            bus: crate::engine::event::EventBus::new(),
-            pool: ConnectionPool::new(false, None, 30, 300, None, None)
-                .with_event_bus(crate::engine::event::EventBus::new()),
-            rate_limiter: None,
-            start_time: tokio::sync::Mutex::new(Instant::now()),
-            total_downloaded: AtomicU64::new(0),
-            done: AtomicBool::new(false),
-            save_interval: tokio::sync::Mutex::new(Instant::now()),
-            reprobe: AtomicBool::new(false),
-            peak_speed: AtomicU64::new(0),
-            bandwidth_estimate: AtomicU64::new(0),
-            max_filesize: 0,
-            use_cd: true,
-            cookie_jar: None,
-            save_cookies_path: None,
-        });
+    async fn test_block_bitfield_missing_ranges() {
+        let mut bf = BlockBitfield::new(1024 * 1024, 65536);
+        assert_eq!(bf.num_blocks, 16);
+        assert_eq!(bf.total_downloaded(), 0);
 
-        // Manually insert segments into the manager
-        {
-            let mut mgr = state.segment_mgr.lock().await;
-            mgr.segments.push(Segment {
-                id: 0,
-                offset: 0,
-                length: 100,
-                downloaded: 50,
-                state: SegmentState::Pending,
-            });
-            mgr.segments.push(Segment {
-                id: 1,
-                offset: 100,
-                length: 200,
-                downloaded: 200,
-                state: SegmentState::Complete,
-            });
-        }
+        bf.mark_complete(0);
+        bf.mark_complete(1);
+        assert_eq!(bf.total_downloaded(), 131072);
 
-        let cf = Arc::new(tokio::sync::Mutex::new(ControlFile {
-            version: 1,
-            url: "http://example.com/file".into(),
-            total_size: Some(300),
-            filename: "/tmp/test".into(),
-            segments: vec![],
-            metadata: std::collections::HashMap::new(),
-            base_downloaded: 0,
-        }));
+        let missing = bf.missing_ranges();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0], (131072, 1024 * 1024 - 131072));
+    }
 
-        sync_cf(&state, &cf).await;
+    #[tokio::test]
+    async fn test_control_file_roundtrip() {
+        let dir = std::env::temp_dir().join("zing-test-cf");
+        let _ = tokio::fs::create_dir_all(&dir).await;
+        let path = dir.join("test.zing");
 
-        let cf_guard = cf.lock().await;
-        assert_eq!(cf_guard.segments.len(), 2);
-        assert_eq!(cf_guard.segments[0].id, 0);
-        assert_eq!(cf_guard.segments[0].offset, 0);
-        assert_eq!(cf_guard.segments[0].length, 100);
-        assert_eq!(cf_guard.segments[0].downloaded, 50);
-        assert_eq!(cf_guard.segments[1].id, 1);
-        assert_eq!(cf_guard.segments[1].offset, 100);
-        assert_eq!(cf_guard.segments[1].downloaded, 200);
+        let mut cf = ControlFile::new(1024 * 1024, 65536);
+        cf.bitfield.mark_complete(0);
+        cf.bitfield.mark_complete(2);
+        cf.save(&path).await.unwrap();
+
+        let loaded = ControlFile::load(&path).await.unwrap();
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.total_size, 1024 * 1024);
+        assert_eq!(loaded.block_size, 65536);
+        assert!(loaded.bitfield.is_complete(0));
+        assert!(!loaded.bitfield.is_complete(1));
+        assert!(loaded.bitfield.is_complete(2));
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_block_bitfield_all_complete() {
+        let mut bf = BlockBitfield::new(100, 64);
+        assert_eq!(bf.num_blocks, 2);
+        assert!(!bf.all_complete());
+
+        bf.mark_complete(0);
+        assert!(!bf.all_complete());
+
+        bf.mark_complete(1);
+        assert!(bf.all_complete());
     }
 }

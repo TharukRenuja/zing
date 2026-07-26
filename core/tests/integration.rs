@@ -5,7 +5,7 @@ use tokio::sync::broadcast;
 use zing_core::connection::ConnectionPool;
 use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::EventBus;
-use zing_core::storage::{ControlFile, SegmentEntry};
+use zing_core::storage::ControlFile;
 
 /// test that the mock server serves the full file on a plain GET
 #[tokio::test]
@@ -102,13 +102,14 @@ async fn test_full_download() {
 /// Test resume from a control file with partial progress
 #[tokio::test]
 async fn test_resume_download() {
-    let payload = test_payload(64 * 1024);
+    // 128KB = 2 blocks of 64KB
+    let payload = test_payload(128 * 1024);
     let server = TestServer::new(payload.clone()).await;
     let tmp = tempfile::tempdir().unwrap();
     let output = tmp.path().join("resume.bin");
 
-    // Simulate 30KB already downloaded: pre-allocate file and write control file
-    let already = 30 * 1024u64;
+    // Simulate first block (64KB) already fully downloaded
+    let already = 64 * 1024u64;
     let mut f = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -116,31 +117,18 @@ async fn test_resume_download() {
         .open(&output)
         .await
         .unwrap();
-    f.set_len(64 * 1024).await.unwrap();
-    // Write the first 30KB correctly
+    f.set_len(128 * 1024).await.unwrap();
     use tokio::io::AsyncWriteExt;
     f.write_all(&payload[..already as usize]).await.unwrap();
     drop(f);
 
-    // Create control file with partial segment
-    let cf = ControlFile {
-        version: 1,
-        url: server.url(),
-        total_size: Some(64 * 1024),
-        filename: output.to_str().unwrap().to_string(),
-        segments: vec![SegmentEntry {
-            id: 0,
-            offset: 0,
-            length: 64 * 1024,
-            downloaded: already,
-        }],
-        metadata: std::collections::HashMap::new(),
-        base_downloaded: 0,
-    };
+    // Create control file with block 0 marked complete
+    let mut cf = ControlFile::new(128 * 1024, 65536);
+    cf.bitfield.mark_complete(0);
     let control_path = ControlFile::control_path(&output);
     cf.save(&control_path).await.unwrap();
 
-    // Run download — should resume from 30KB
+    // Run download — should resume block 1
     let bus = EventBus::new();
     let (_shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
     let _rx = bus.subscribe();

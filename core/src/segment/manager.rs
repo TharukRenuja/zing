@@ -65,7 +65,7 @@ pub struct SegmentManager {
     pub connections: Vec<ConnectionInfo>,
     pub min_segment_size: u64,
     pub max_connections: usize,
-    segment_counter: usize,
+    pub(crate) segment_counter: usize,
 }
 
 impl SegmentManager {
@@ -225,6 +225,25 @@ impl SegmentManager {
         }
 
         Some((offset, remaining))
+    }
+
+    /// Claim a pending segment for a connection. Returns true if a pending segment
+    /// was found and assigned.
+    pub fn claim_pending_segment(&mut self, conn_id: usize) -> bool {
+        if let Some(pending_idx) = self
+            .segments
+            .iter()
+            .position(|s| s.state == SegmentState::Pending)
+        {
+            let seg = &mut self.segments[pending_idx];
+            seg.state = SegmentState::Active { conn_id };
+            if let Some(conn) = self.connections.get_mut(conn_id) {
+                conn.segment_id = Some(seg.id);
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Number of pending (unowned) segments.

@@ -702,6 +702,28 @@ async fn run(args: Args) -> Result<()> {
         });
     }
 
+    // SIGTSTP (Ctrl+Z): save control files then suspend
+    #[cfg(unix)]
+    {
+        let tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            let mut sigtstp = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP),
+            )
+            .expect("sigtstp handler");
+            sigtstp.recv().await;
+            tracing::info!("SIGTSTP received, saving state before suspend...");
+            let _ = tx.send(());
+            // Yield to let the runtime process the shutdown and save
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // Restore default SIGTSTP and re-raise to actually suspend
+            unsafe {
+                libc::signal(libc::SIGTSTP, libc::SIG_DFL);
+                libc::raise(libc::SIGTSTP);
+            }
+        });
+    }
+
     // SIGCONT: resume
     #[cfg(unix)]
     {
