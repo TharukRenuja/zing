@@ -184,9 +184,84 @@ pub struct Args {
     #[arg(
         long = "pipe",
         short = 'p',
-        help = "Output raw content to stdout, suppress all logs (for piping to sh)"
+        default_missing_value = "raw",
+        num_args = 0..=1,
+        require_equals = true,
+        help = "Pipe output mode: 'raw' (default, no value), 'sh', 'run', 'bash', 'python', 'node', 'tar', 'app', 'install'"
     )]
-    pub pipe: bool,
+    pub pipe: Option<String>,
+
+    #[arg(
+        long = "user-agent",
+        short = 'A',
+        help = "Custom User-Agent header"
+    )]
+    pub user_agent: Option<String>,
+
+    #[arg(
+        long = "dry-run",
+        help = "Show what would be downloaded without fetching content"
+    )]
+    pub dry_run: bool,
+
+    #[arg(
+        long = "auto-file-renaming",
+        help = "Auto-rename file if exists (e.g. file(1).ext)"
+    )]
+    pub auto_file_renaming: bool,
+
+    #[arg(
+        long = "allow-overwrite",
+        help = "Overwrite existing files without prompting"
+    )]
+    pub allow_overwrite: bool,
+
+    #[arg(
+        long = "content-disposition",
+        short = 'C',
+        help = "Use server-provided filename from Content-Disposition"
+    )]
+    pub content_disposition: bool,
+
+    #[arg(
+        long = "load-cookies",
+        short = 'L',
+        help = "Load cookies from Netscape-format cookie file"
+    )]
+    pub load_cookies: Option<String>,
+
+    #[arg(
+        long = "save-cookies",
+        short = 's',
+        help = "Save cookies to file after download"
+    )]
+    pub save_cookies: Option<String>,
+
+    #[arg(
+        long = "netrc",
+        short = 'N',
+        help = "Use .netrc file for authentication"
+    )]
+    pub netrc: bool,
+
+    #[arg(
+        long = "log",
+        short = 'l',
+        help = "Log to file instead of stderr"
+    )]
+    pub log: Option<String>,
+
+    #[arg(
+        long = "on-download-complete",
+        help = "Command to run when download completes ({} = file path)"
+    )]
+    pub on_download_complete: Option<String>,
+
+    #[arg(
+        long = "on-download-error",
+        help = "Command to run when download fails ({} = file path)"
+    )]
+    pub on_download_error: Option<String>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -222,6 +297,16 @@ pub enum Commands {
     #[command(name = "pause", about = "Pause a download (daemon)", alias = "p")]
     Pause {
         #[arg(help = "Task ID to pause")]
+        id: u64,
+    },
+
+    #[command(
+        name = "resume",
+        about = "Resume a paused download (daemon)",
+        alias = "unpause"
+    )]
+    Resume {
+        #[arg(help = "Task ID to resume")]
         id: u64,
     },
 

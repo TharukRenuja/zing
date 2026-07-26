@@ -1,3 +1,4 @@
+use crate::cookie_store::ZingCookieStore;
 use crate::engine::event::{EngineEvent, EventBus, TaskId};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -31,6 +32,7 @@ pub struct ConnectionPool {
     event_bus: Option<EventBus>,
     created_at: Instant,
     headers: Vec<(String, String)>,
+    pub cookie_jar: Option<Arc<ZingCookieStore>>,
 }
 
 impl ConnectionPool {
@@ -39,9 +41,12 @@ impl ConnectionPool {
         proxy_url: Option<&str>,
         connect_timeout_secs: u64,
         max_time_secs: u64,
+        user_agent: Option<&str>,
+        cookie_jar: Option<Arc<ZingCookieStore>>,
     ) -> reqwest::Client {
+        let ua = user_agent.unwrap_or("zing/0.1.0");
         let mut builder = reqwest::Client::builder()
-            .user_agent("zing/0.1.0")
+            .user_agent(ua)
             .no_gzip()
             .no_brotli()
             .no_deflate()
@@ -50,8 +55,13 @@ impl ConnectionPool {
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
-            .timeout(Duration::from_secs(max_time_secs))
-            .cookie_store(true);
+            .timeout(Duration::from_secs(max_time_secs));
+
+        if let Some(jar) = cookie_jar {
+            builder = builder.cookie_provider(jar);
+        } else {
+            builder = builder.cookie_store(true);
+        }
 
         if let Some(proxy) = proxy_url {
             match reqwest::Proxy::all(proxy) {
@@ -72,8 +82,17 @@ impl ConnectionPool {
         proxy_url: Option<&str>,
         connect_timeout_secs: u64,
         max_time_secs: u64,
+        user_agent: Option<&str>,
+        cookie_jar: Option<Arc<ZingCookieStore>>,
     ) -> Self {
-        let client = Self::build_client(insecure, proxy_url, connect_timeout_secs, max_time_secs);
+        let client = Self::build_client(
+            insecure,
+            proxy_url,
+            connect_timeout_secs,
+            max_time_secs,
+            user_agent,
+            cookie_jar.clone(),
+        );
 
         Self {
             client,
@@ -84,6 +103,7 @@ impl ConnectionPool {
             event_bus: None,
             created_at: Instant::now(),
             headers: Vec::new(),
+            cookie_jar,
         }
     }
 
@@ -212,7 +232,7 @@ impl ConnectionResponse {
 
 impl Default for ConnectionPool {
     fn default() -> Self {
-        Self::new(false, None, 30, 300)
+        Self::new(false, None, 30, 300, None, None)
     }
 }
 

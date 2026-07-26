@@ -1,6 +1,6 @@
 [package]
 name = "zing-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Core functionality for the zing downloader"
 authors = ["Tharuk Renuja"]
@@ -17,6 +17,8 @@ url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "cookies"] }
 anyhow = "1"
 rand = "0.8"
+cookie_store = "0.22"
+cookie = "0.18"
 
 [dev-dependencies]
 tempfile = "3"

@@ -6,10 +6,13 @@ mod update;
 
 use args::{Args, Commands, ConfigAction, DaemonAction, ProgressType, ScheduleAction};
 use base64::Engine;
+#[cfg(unix)]
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::generate;
 use color_eyre::Result;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use config::Config;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
@@ -17,6 +20,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
+use zing_core::cookie_store::ZingCookieStore;
 use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::{EngineEvent, EventBus};
 use zing_ext::checksum;
@@ -56,19 +61,374 @@ fn build_headers(args: &Args) -> Vec<(String, String)> {
     headers
 }
 
+fn auto_rename_filename(path: &str, counter: usize) -> String {
+    let p = std::path::Path::new(path);
+    let parent = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if ext.is_empty() {
+        parent.join(format!("{}({})", stem, counter)).to_string_lossy().to_string()
+    } else {
+        parent.join(format!("{}({}).{}", stem, counter, ext)).to_string_lossy().to_string()
+    }
+}
+
+fn parse_netrc_for_url(url: &str, headers: &mut Vec<(String, String)>) {
+    let netrc_path = dirs::home_dir()
+        .map(|p| p.join(".netrc"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".netrc"));
+    let content = match std::fs::read_to_string(&netrc_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let parsed_url = match url::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return,
+    };
+    let host = match parsed_url.host_str() {
+        Some(h) => h,
+        None => return,
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if line.starts_with("machine ") {
+            let machine_host = line.strip_prefix("machine ").unwrap_or("").trim();
+            if machine_host == host {
+                let login = lines.get(i + 1).and_then(|l| l.trim().strip_prefix("login ")).unwrap_or("");
+                let password = lines.get(i + 2).and_then(|l| l.trim().strip_prefix("password ")).unwrap_or("");
+                if !login.is_empty() {
+                    let creds = format!("{login}:{password}");
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+                    headers.push(("Authorization".into(), format!("Basic {encoded}")));
+                }
+                return;
+            }
+        }
+        i += 1;
+    }
+}
+
+fn run_hook(cmd: &str, filepath: &str) {
+    let expanded = cmd.replace("{}", filepath);
+    if let Ok(mut child) = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&expanded)
+        .spawn()
+    {
+        let _ = child.wait();
+    } else {
+        tracing::warn!("Failed to run hook command: {cmd}");
+    }
+}
+
+fn set_executable(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
+    match mode {
+        "sh" | "run" | "bash" => {
+            let resp = reqwest::Client::builder()
+                .build()
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let shell = if mode == "bash" { "bash" } else { "sh" };
+            let mut child = tokio::process::Command::new(shell)
+                .arg("-s")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| color_eyre::eyre::eyre!("Cannot spawn {shell}: {e}"))?;
+            let mut stdin = child.stdin.take().unwrap();
+            let mut stream = resp.bytes_stream();
+            use futures::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+                tokio::io::AsyncWriteExt::write_all(&mut stdin, &chunk)
+                    .await
+                    .map_err(|e| color_eyre::eyre::eyre!("Pipe error: {e}"))?;
+            }
+            drop(stdin);
+            let status = child.wait().await.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            if !status.success() {
+                tracing::warn!("{shell} exited with {status}");
+            }
+        }
+        "python" => {
+            let resp = reqwest::Client::builder()
+                .build()
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let mut child = tokio::process::Command::new("python3")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| color_eyre::eyre::eyre!("Cannot spawn python3: {e}"))?;
+            let mut stdin = child.stdin.take().unwrap();
+            let mut stream = resp.bytes_stream();
+            use futures::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+                tokio::io::AsyncWriteExt::write_all(&mut stdin, &chunk)
+                    .await
+                    .map_err(|e| color_eyre::eyre::eyre!("Pipe error: {e}"))?;
+            }
+            drop(stdin);
+            let _ = child.wait().await;
+        }
+        "node" => {
+            let resp = reqwest::Client::builder()
+                .build()
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let mut child = tokio::process::Command::new("node")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| color_eyre::eyre::eyre!("Cannot spawn node: {e}"))?;
+            let mut stdin = child.stdin.take().unwrap();
+            let mut stream = resp.bytes_stream();
+            use futures::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+                tokio::io::AsyncWriteExt::write_all(&mut stdin, &chunk)
+                    .await
+                    .map_err(|e| color_eyre::eyre::eyre!("Pipe error: {e}"))?;
+            }
+            drop(stdin);
+            let _ = child.wait().await;
+        }
+        "tar" => {
+            let resp = reqwest::Client::builder()
+                .build()
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let mut child = tokio::process::Command::new("tar")
+                .arg("-xzf")
+                .arg("-")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| color_eyre::eyre::eyre!("Cannot spawn tar: {e}"))?;
+            let mut stdin = child.stdin.take().unwrap();
+            let mut stream = resp.bytes_stream();
+            use futures::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+                tokio::io::AsyncWriteExt::write_all(&mut stdin, &chunk)
+                    .await
+                    .map_err(|e| color_eyre::eyre::eyre!("Pipe error: {e}"))?;
+            }
+            drop(stdin);
+            let _ = child.wait().await;
+        }
+        "app" => {
+            let bin_dir = dirs::home_dir()
+                .map(|p| p.join(".local").join("bin"))
+                .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin"));
+            tokio::fs::create_dir_all(&bin_dir).await?;
+            let fname = zing_ext::filename::from_url(url);
+            if fname.is_empty() {
+                return Err(color_eyre::eyre::eyre!("Cannot determine filename from URL"));
+            }
+            let out_path = bin_dir.join(&fname);
+            let resp = reqwest::Client::builder()
+                .build()
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let bytes = resp.bytes().await.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            tokio::fs::write(&out_path, &bytes).await?;
+                set_executable(&out_path);
+            tracing::info!("Installed AppImage: {} -> {}", fname, out_path.display());
+        }
+        "install" => {
+            let fname = zing_ext::filename::from_url(url);
+            if fname.is_empty() {
+                return Err(color_eyre::eyre::eyre!("Cannot determine filename from URL"));
+            }
+            let tmp = tempfile::tempdir().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let tmp_path = tmp.path().join(&fname);
+            let resp = reqwest::Client::builder()
+                .build()
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let bytes = resp.bytes().await.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            tokio::fs::write(&tmp_path, &bytes).await?;
+            let bin_dir = dirs::home_dir()
+                .map(|p| p.join(".local").join("bin"))
+                .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin"));
+            tokio::fs::create_dir_all(&bin_dir).await?;
+            let ext = std::path::Path::new(&fname)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let lower = fname.to_lowercase();
+            if lower.ends_with(".appimage") {
+                set_executable(&tmp_path);
+                let out = bin_dir.join(
+                    std::path::Path::new(&fname)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| fname.clone()),
+                );
+                tokio::fs::copy(&tmp_path, &out).await?;
+                set_executable(&out);
+                tracing::info!("Installed: {} -> {}", fname, out.display());
+            } else if ["gz", "xz", "bz2", "zst", "zip"].contains(&ext) || lower.contains(".tar.") {
+                let extract_dir = tmp.path().join("extracted");
+                tokio::fs::create_dir_all(&extract_dir).await?;
+                if lower.ends_with(".zip") {
+                    let _ = tokio::process::Command::new("unzip")
+                        .arg("-q")
+                        .arg(&tmp_path)
+                        .arg("-d")
+                        .arg(&extract_dir)
+                        .output()
+                        .await;
+                } else {
+                    let _ = tokio::process::Command::new("tar")
+                        .arg("-xf")
+                        .arg(&tmp_path)
+                        .arg("-C")
+                        .arg(&extract_dir)
+                        .output()
+                        .await;
+                }
+                // Find binary: recursively search for files without extension or matching the package name
+                let pkg_name = std::path::Path::new(&fname)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("app");
+                let mut found_bin = None;
+                let mut dirs_to_visit = vec![extract_dir.clone()];
+                while let Some(dir) = dirs_to_visit.pop() {
+                    if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            let ft = match entry.file_type().await {
+                                Ok(ft) => ft, _ => continue,
+                            };
+                            if ft.is_dir() {
+                                dirs_to_visit.push(entry.path());
+                                continue;
+                            }
+                            if !ft.is_file() {
+                                continue;
+                            }
+                            let name = entry.file_name().to_string_lossy().to_string();
+                            if name.starts_with('.') {
+                                continue;
+                            }
+                            if name == pkg_name {
+                                found_bin = Some(entry.path());
+                                break;
+                            }
+                            if found_bin.is_none() && !name.contains('.') {
+                                found_bin = Some(entry.path());
+                            }
+                        }
+                    }
+                    if found_bin.is_some() {
+                        break;
+                    }
+                }
+                if let Some(bin_path) = found_bin {
+                    let out = bin_dir.join(
+                        bin_path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| pkg_name.to_string()),
+                    );
+                    tokio::fs::copy(&bin_path, &out).await?;
+                set_executable(&out);
+                    tracing::info!("Installed: {} -> {}", pkg_name, out.display());
+                } else {
+                    tracing::warn!("No binary found in extracted archive");
+                }
+            } else if ext == "sh" {
+                let mut child = tokio::process::Command::new("sh")
+                    .arg(&tmp_path)
+                    .spawn()
+                    .map_err(|e| color_eyre::eyre::eyre!("Cannot run installer: {e}"))?;
+                let _ = child.wait().await;
+                tracing::info!("Ran installer: {fname}");
+            } else {
+                let out = bin_dir.join(&fname);
+                tokio::fs::copy(&tmp_path, &out).await?;
+                set_executable(&out);
+                tracing::info!("Installed: {} -> {}", fname, out.display());
+            }
+        }
+        _ => {
+            // Unknown mode — just output raw (same as -p)
+            let resp = reqwest::Client::builder()
+                .build()
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let mut stdout = tokio::io::stdout();
+            let mut stream = resp.bytes_stream();
+            use futures::StreamExt;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+                tokio::io::AsyncWriteExt::write_all(&mut stdout, &chunk)
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
 
     let args = Args::parse();
 
-    let default_level = if args.quiet || args.pipe { "error" } else { "info" };
+    let default_level = if args.quiet || args.pipe.is_some() { "error" } else { "info" };
+
+    let writer: BoxMakeWriter = if let Some(ref log_path) = args.log {
+        match std::fs::File::create(log_path) {
+            Ok(file) => BoxMakeWriter::new(std::sync::Mutex::new(file)),
+            Err(e) => {
+                eprintln!("Warning: cannot create log file '{}': {e}", log_path);
+                BoxMakeWriter::new(std::io::stderr)
+            }
+        }
+    } else {
+        BoxMakeWriter::new(std::io::stderr)
+    };
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
         )
         .compact()
-        .with_writer(std::io::stderr)
+        .with_writer(writer)
         .init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -113,6 +473,19 @@ async fn run(args: Args) -> Result<()> {
                     tracing::info!("Task {id}: {status}");
                 }
                 Err(e) => tracing::error!("Failed to pause task {id}: {e}"),
+            }
+            return Ok(());
+        }
+        Some(Commands::Resume { id }) => {
+            #[cfg(unix)]
+            match daemon_client::send_request("zing.resume", Some(serde_json::json!({ "id": id })))
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                    tracing::info!("Task {id}: {status}");
+                }
+                Err(e) => tracing::error!("Failed to resume task {id}: {e}"),
             }
             return Ok(());
         }
@@ -168,9 +541,18 @@ async fn run(args: Args) -> Result<()> {
         args.urls.clone()
     };
 
-    let to_stdout = args.pipe || args.output.as_deref() == Some(std::path::Path::new("-"));
+    let to_stdout = args.pipe.is_some() || args.output.as_deref() == Some(std::path::Path::new("-"));
 
-    let progress_type = if args.quiet || to_stdout || args.pipe {
+    // Dry-run
+    if args.dry_run {
+        tracing::info!("Dry-run mode: {} URL(s) would be downloaded", urls.len());
+        for url in &urls {
+            println!("  {url}");
+        }
+        return Ok(());
+    }
+
+    let progress_type = if args.quiet || to_stdout || args.pipe.is_some() {
         ProgressType::None
     } else {
         args.progress
@@ -228,6 +610,32 @@ async fn run(args: Args) -> Result<()> {
     }
 
     tracing::info!("No daemon found, running standalone");
+
+    // Pipe mode dispatch (non-raw modes)
+    if let Some(ref mode) = args.pipe {
+        if mode != "raw" {
+            for url_str in &urls {
+                run_pipe_mode(mode, url_str, &args).await?;
+            }
+            return Ok(());
+        }
+    }
+
+    // Cookie jar
+    let cookie_jar: Option<Arc<ZingCookieStore>> = if let Some(ref path) = args.load_cookies {
+        match ZingCookieStore::from_netscape_file(path) {
+            Ok(store) => {
+                tracing::info!("Loaded cookies from {}", path);
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load cookies from '{}': {}", path, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let bus = EventBus::new();
     let rx = bus.subscribe();
@@ -354,7 +762,7 @@ async fn run(args: Args) -> Result<()> {
         let is_auto_name =
             args.output.is_none() && metalink.is_none_or(|m| i == 0 && m.is_auto_name);
 
-        let filename = match &args.output {
+        let mut filename = match &args.output {
             Some(name) => name.to_string_lossy().to_string(),
             None => {
                 let base = if i == 0 {
@@ -373,11 +781,32 @@ async fn run(args: Args) -> Result<()> {
             }
         };
 
+        // Auto-file-renaming
+        if args.auto_file_renaming && !args.allow_overwrite {
+            let path = Path::new(&filename);
+            if path.exists() {
+                let mut counter = 1;
+                let base_filename = filename.clone();
+                loop {
+                    let new_name = auto_rename_filename(&base_filename, counter);
+                    if !Path::new(&new_name).exists() {
+                        tracing::info!("File exists, auto-renamed to: {}", new_name);
+                        filename = new_name;
+                        break;
+                    }
+                    counter += 1;
+                }
+            }
+        }
+
         let effective_mirrors = metalink.map_or_else(|| args.mirror.clone(), |m| m.mirrors.clone());
         let effective_checksum = metalink
             .and_then(|m| m.checksum.clone())
             .or_else(|| args.checksum.clone());
-        let headers = build_headers(&args);
+        let mut headers = build_headers(&args);
+        if args.netrc {
+            parse_netrc_for_url(&url, &mut headers);
+        }
         let proxy = args.proxy.clone();
         let bwlimit = args.bwlimit.clone();
         let download_dir = download_dir.clone();
@@ -386,6 +815,20 @@ async fn run(args: Args) -> Result<()> {
         let quit_requested = Arc::clone(&quit_requested);
         let resume_requested = Arc::clone(&resume_requested);
         let sem = semaphore.clone();
+        let on_complete = args.on_download_complete.clone();
+        let on_error = args.on_download_error.clone();
+        let user_agent = args.user_agent.clone();
+        let use_cd = args.content_disposition;
+        let jar = cookie_jar.clone();
+        let save_cookies = args.save_cookies.clone();
+        let connections = args.connections;
+        let insecure = args.insecure;
+        let max_rate = args.max_download_rate;
+        let max_fsize = args.max_filesize;
+        let retry = args.retry;
+        let retry_wait = args.retry_wait;
+        let connect_timeout = args.connect_timeout;
+        let max_time = args.max_time;
 
         join_set.spawn(async move {
             if let Some(ref s) = sem {
@@ -415,19 +858,23 @@ async fn run(args: Args) -> Result<()> {
                     &filename,
                     is_auto_name,
                     to_stdout,
-                    args.connections,
+                    connections,
                     bus.clone(),
-                    args.insecure,
-                    args.max_download_rate,
+                    insecure,
+                    max_rate,
                     proxy.clone(),
                     effective_mirrors.clone(),
                     bwlimit.clone(),
                     headers.clone(),
-                    args.max_filesize,
-                    args.retry,
-                    args.retry_wait,
-                    args.connect_timeout,
-                    args.max_time,
+                    max_fsize,
+                    retry,
+                    retry_wait,
+                    connect_timeout,
+                    max_time,
+                    user_agent.clone(),
+                    use_cd,
+                    jar.clone(),
+                    save_cookies.clone(),
                 );
 
                 let task_shutdown = shutdown_tx.subscribe();
@@ -435,6 +882,9 @@ async fn run(args: Args) -> Result<()> {
                     Ok(()) => {}
                     Err(e) => {
                         tracing::error!("{filename}: {e}");
+                        if let Some(ref cmd) = on_error {
+                            run_hook(cmd, &filename);
+                        }
                         break;
                     }
                 }
@@ -489,6 +939,9 @@ async fn run(args: Args) -> Result<()> {
                         Ok(false) => tracing::error!("Checksum: MISMATCH (expected {chk})"),
                         Err(e) => tracing::error!("Checksum: {e}"),
                     }
+                }
+                if let Some(ref cmd) = on_complete {
+                    run_hook(cmd, &filename);
                 }
                 break;
             }

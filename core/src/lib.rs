@@ -1,6 +1,7 @@
 pub mod bwschedule;
 pub mod connection;
 pub mod constants;
+pub mod cookie_store;
 pub mod downloader;
 pub mod engine;
 pub mod probe;

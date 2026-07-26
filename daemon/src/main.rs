@@ -52,6 +52,30 @@ async fn main() {
 
     let task_manager = TaskManager::new();
 
+    // Load saved session
+    let session = task_manager.load_session().await;
+    if !session.is_empty() {
+        tracing::info!("Restoring {} task(s) from session", session.len());
+        for entry in session {
+            task_manager
+                .add_task(
+                    &entry.url,
+                    &entry.filename,
+                    entry.is_auto_name,
+                    entry.max_connections,
+                    entry.insecure,
+                    entry.max_download_rate,
+                    entry.proxy_url,
+                    entry.mirrors,
+                    entry.bw_schedule,
+                    entry.headers,
+                    entry.max_filesize,
+                    entry.checksum,
+                )
+                .await;
+        }
+    }
+
     let scheduler = Scheduler::new(task_manager.clone());
     scheduler.spawn();
 

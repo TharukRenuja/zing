@@ -1,4 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -6,6 +8,22 @@ use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::{EngineEvent, EventBus, TaskId};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEntry {
+    pub url: String,
+    pub filename: String,
+    pub is_auto_name: bool,
+    pub max_connections: usize,
+    pub insecure: bool,
+    pub max_download_rate: u64,
+    pub proxy_url: Option<String>,
+    pub mirrors: Vec<String>,
+    pub bw_schedule: Option<String>,
+    pub headers: Vec<(String, String)>,
+    pub max_filesize: u64,
+    pub checksum: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct TaskInfo {
@@ -32,6 +50,7 @@ pub struct TaskManager {
     tasks: Arc<Mutex<HashMap<TaskId, TaskInfo>>>,
     cancel_txs: Arc<Mutex<HashMap<TaskId, broadcast::Sender<()>>>>,
     bus: EventBus,
+    session_path: PathBuf,
 }
 
 impl std::fmt::Debug for TaskManager {
@@ -42,15 +61,53 @@ impl std::fmt::Debug for TaskManager {
 
 impl TaskManager {
     pub fn new() -> Self {
+        let session_path = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("zing")
+            .join("session.json");
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             cancel_txs: Arc::new(Mutex::new(HashMap::new())),
             bus: EventBus::new(),
+            session_path,
         }
     }
 
     pub fn event_bus(&self) -> &EventBus {
         &self.bus
+    }
+
+    pub async fn save_session(&self) {
+        let tasks = self.tasks.lock().await;
+        let entries: Vec<SessionEntry> = tasks
+            .values()
+            .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::Paused))
+            .map(|t| SessionEntry {
+                url: t.url.clone(),
+                filename: t.filename.clone(),
+                is_auto_name: false,
+                max_connections: 4,
+                insecure: false,
+                max_download_rate: 0,
+                proxy_url: None,
+                mirrors: vec![],
+                bw_schedule: None,
+                headers: vec![],
+                max_filesize: 0,
+                checksum: None,
+            })
+            .collect();
+        if let Ok(json) = serde_json::to_string_pretty(&entries) {
+            let _ = tokio::fs::write(&self.session_path, json).await;
+        }
+    }
+
+    pub async fn load_session(&self) -> Vec<SessionEntry> {
+        let content = match tokio::fs::read_to_string(&self.session_path).await {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        serde_json::from_str(&content).unwrap_or_default()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -85,6 +142,7 @@ impl TaskManager {
             let mut tasks = self.tasks.lock().await;
             tasks.insert(id, info);
         }
+        self.save_session().await;
 
         self.bus.emit(EngineEvent::TaskCreated {
             id,
@@ -157,6 +215,10 @@ impl TaskManager {
                 500,
                 30,
                 300,
+                None,
+                true,
+                None,
+                None,
             );
 
             {
@@ -242,6 +304,7 @@ impl TaskManager {
                 total_bytes: t.total_bytes.unwrap_or(0),
             });
         }
+        self.save_session().await;
         Ok(())
     }
 
@@ -258,6 +321,45 @@ impl TaskManager {
 
         let mut tasks = self.tasks.lock().await;
         tasks.remove(&id);
+        self.save_session().await;
+        Ok(())
+    }
+
+    pub async fn resume_task(&self, id: TaskId) -> Result<(), String> {
+        let mut tasks = self.tasks.lock().await;
+        let task = tasks.get_mut(&id).ok_or_else(|| format!("Task {id} not found"))?;
+        if task.status != TaskStatus::Paused {
+            return Err(format!("Task {id} is not paused (status: {:?})", task.status));
+        }
+        // Re-add the task to re-spawn it
+        let url = task.url.clone();
+        let filename = task.filename.clone();
+        drop(tasks);
+
+        let new_id = self
+            .add_task(
+                &url,
+                &filename,
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+                None,
+            )
+            .await;
+
+        // Remove the old paused entry
+        self.remove_task(id).await.ok();
+        if new_id != id {
+            // Update the cancel map and task map to point to the new ID
+            // The old task will remain as Paused but the new one will run
+            tracing::info!("Resumed task {id} as new task {new_id}");
+        }
         Ok(())
     }
 

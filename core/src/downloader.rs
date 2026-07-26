@@ -1,5 +1,6 @@
 use crate::connection::ConnectionPool;
 use crate::constants;
+use crate::cookie_store::ZingCookieStore;
 use crate::engine::event::{EngineEvent, EventBus, TaskId, TaskProgress};
 use crate::probe;
 use crate::ratelimit::{SharedRateLimiter, TokenBucket};
@@ -40,6 +41,9 @@ struct SharedState {
     pub peak_speed: AtomicU64,
     pub bandwidth_estimate: AtomicU64,
     pub max_filesize: u64,
+    pub use_cd: bool,
+    pub cookie_jar: Option<Arc<ZingCookieStore>>,
+    pub save_cookies_path: Option<String>,
 }
 
 impl SharedState {
@@ -65,6 +69,16 @@ impl SharedState {
             true
         } else {
             false
+        }
+    }
+
+    async fn save_cookies(&self) {
+        if let Some(ref path) = self.save_cookies_path {
+            if let Some(ref jar) = self.cookie_jar {
+                if let Err(e) = jar.save_netscape(path) {
+                    tracing::error!("Failed to save cookies: {e}");
+                }
+            }
         }
     }
 }
@@ -94,12 +108,18 @@ impl DownloadTask {
         retry_wait_ms: u64,
         connect_timeout_secs: u64,
         max_time_secs: u64,
+        user_agent: Option<String>,
+        use_cd: bool,
+        cookie_jar: Option<Arc<ZingCookieStore>>,
+        save_cookies_path: Option<String>,
     ) -> Self {
         let pool = ConnectionPool::new(
             insecure,
             proxy_url.as_deref(),
             connect_timeout_secs,
             max_time_secs,
+            user_agent.as_deref(),
+            cookie_jar.clone(),
         )
         .with_event_bus(bus.clone())
         .with_headers(headers);
@@ -138,6 +158,9 @@ impl DownloadTask {
                 peak_speed: AtomicU64::new(0),
                 bandwidth_estimate: AtomicU64::new(0),
                 max_filesize,
+                use_cd,
+                cookie_jar,
+                save_cookies_path,
             }),
         }
     }
@@ -225,7 +248,7 @@ impl DownloadTask {
             }
         }
 
-        if self.state.is_auto_name {
+        if self.state.is_auto_name && self.state.use_cd {
             if let Some(ref cd) = profile.content_disposition {
                 if let Some(cd_name) = zing_ext::filename::from_content_disposition(cd) {
                     tracing::info!("Using server-provided filename: {cd_name}");
@@ -631,6 +654,7 @@ impl DownloadTask {
                 duration: self.state.start_time.lock().await.elapsed(),
             });
             let _ = tokio::fs::remove_file(&control_path).await;
+            self.state.save_cookies().await;
         } else {
             self.state.bus.emit(EngineEvent::Paused {
                 id: self.state.id,
@@ -689,6 +713,7 @@ impl DownloadTask {
             total_bytes: downloaded,
             duration: start.elapsed(),
         });
+        self.state.save_cookies().await;
         Ok(())
     }
 
@@ -732,6 +757,7 @@ impl DownloadTask {
             total_bytes: downloaded,
             duration: start.elapsed(),
         });
+        self.state.save_cookies().await;
         Ok(())
     }
 }
@@ -907,7 +933,7 @@ mod tests {
             segment_mgr: Mutex::new(SegmentManager::new(4)),
             file: std::sync::Mutex::new(None),
             bus: crate::engine::event::EventBus::new(),
-            pool: ConnectionPool::new(false, None, 30, 300)
+            pool: ConnectionPool::new(false, None, 30, 300, None, None)
                 .with_event_bus(crate::engine::event::EventBus::new()),
             rate_limiter: None,
             start_time: tokio::sync::Mutex::new(Instant::now()),
@@ -918,6 +944,9 @@ mod tests {
             peak_speed: AtomicU64::new(0),
             bandwidth_estimate: AtomicU64::new(0),
             max_filesize: 0,
+            use_cd: true,
+            cookie_jar: None,
+            save_cookies_path: None,
         });
 
         // Manually insert segments into the manager

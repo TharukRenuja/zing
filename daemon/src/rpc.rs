@@ -54,6 +54,7 @@ pub async fn handle_request(
         "zing.list" => handle_list(req.params, manager).await,
         "zing.tellStatus" => handle_tell_status(req.params, manager).await,
         "zing.pause" => handle_pause(req.params, manager).await,
+        "zing.resume" => handle_resume(req.params, manager).await,
         "zing.remove" => handle_remove(req.params, manager).await,
         "zing.shutdown" => {
             let _ = shutdown_tx.send(());
@@ -333,6 +334,28 @@ async fn handle_pause(params: Option<Value>, manager: &TaskManager) -> RpcRespon
         Ok(()) => RpcResponse {
             id: None,
             result: Some(serde_json::json!({ "id": id, "status": "paused" })),
+            error: None,
+        },
+        Err(e) => RpcResponse {
+            id: None,
+            result: None,
+            error: Some(RpcError {
+                code: -32000,
+                message: e,
+            }),
+        },
+    }
+}
+
+async fn handle_resume(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
+    let id = params
+        .and_then(|v| v.get("id").and_then(|id| id.as_u64()))
+        .unwrap_or(0);
+
+    match manager.resume_task(id).await {
+        Ok(()) => RpcResponse {
+            id: None,
+            result: Some(serde_json::json!({ "id": id, "status": "resumed" })),
             error: None,
         },
         Err(e) => RpcResponse {
