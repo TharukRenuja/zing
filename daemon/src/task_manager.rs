@@ -295,14 +295,16 @@ impl TaskManager {
             .map_err(|_| format!("Task {id} already finished"))?;
         drop(cancel_map);
 
-        let mut tasks = self.tasks.lock().await;
-        if let Some(t) = tasks.get_mut(&id) {
-            t.status = TaskStatus::Paused;
-            self.bus.emit(EngineEvent::Paused {
-                id,
-                bytes_downloaded: t.downloaded,
-                total_bytes: t.total_bytes.unwrap_or(0),
-            });
+        {
+            let mut tasks = self.tasks.lock().await;
+            if let Some(t) = tasks.get_mut(&id) {
+                t.status = TaskStatus::Paused;
+                self.bus.emit(EngineEvent::Paused {
+                    id,
+                    bytes_downloaded: t.downloaded,
+                    total_bytes: t.total_bytes.unwrap_or(0),
+                });
+            }
         }
         self.save_session().await;
         Ok(())
@@ -319,8 +321,10 @@ impl TaskManager {
         cancel_map.remove(&id);
         drop(cancel_map);
 
-        let mut tasks = self.tasks.lock().await;
-        tasks.remove(&id);
+        {
+            let mut tasks = self.tasks.lock().await;
+            tasks.remove(&id);
+        }
         self.save_session().await;
         Ok(())
     }
