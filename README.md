@@ -6,6 +6,32 @@ Simple, modern, intelligent, cross-platform HTTP downloader with adaptive connec
 zing https://example.com/file.zip
 ```
 
+## Contents
+
+- [How it works](#how-it-works)
+- [Install](#install)
+- [Uninstall](#uninstall)
+- [Quick start](#quick-start)
+- [Pipe mode](#pipe-mode)
+- [Resume](#resume)
+- [Cookies & Authentication](#cookies--authentication)
+- [Daemon with systemd](#daemon-with-systemd)
+- [Scheduled downloads](#scheduled-downloads)
+- [Configuration](#configuration)
+- [Features & Comparison](#features--comparison)
+- [Architecture](#architecture)
+- [Design](#design)
+
+## How it works
+
+```
+zing https://example.com/file.zip
+
+→ checks /tmp/zing.sock
+  exists?  proxies to daemon, shows progress, exits
+  absent?  downloads directly (like curl)
+```
+
 ## Install
 
 #### Install script (Linux/macOS)
@@ -17,7 +43,7 @@ Optionally sets up zing-daemon as a systemd service. Installs to `/usr/local/bin
 
 #### Download pre-built binary
 
-Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/releases).
+Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/releases/latest).
 
 - Linux: `zing-<tag>-{arch}-linux.tar.gz` (contains `zing` + `zing-daemon`)
 - macOS: `zing-<tag>-aarch64-mac.dmg`
@@ -57,16 +83,6 @@ rm -f /tmp/zing.sock /tmp/zing.sock.auth
 ```
 
 </details>
-
-## How it works
-
-```
-zing https://example.com/file.zip
-
-→ checks /tmp/zing.sock
-  exists?  proxies to daemon, shows progress, exits
-  absent?  downloads directly (like curl)
-```
 
 ## Quick start
 
