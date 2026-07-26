@@ -15,6 +15,7 @@ struct UpdateCache {
     checked_at: u64,
 }
 
+#[allow(dead_code)]
 pub async fn check_for_update(cfg: &Config) -> Option<String> {
     let interval_days = cfg.update_check_interval_days.unwrap_or(7);
     if interval_days == 0 {
