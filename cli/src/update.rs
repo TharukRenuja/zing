@@ -94,7 +94,8 @@ pub async fn run_update() -> Result<()> {
         }
     };
 
-    let url = format!("https://github.com/{REPO}/releases/download/{tag}/zing-{tag}-{suffix}.{ext}");
+    let url =
+        format!("https://github.com/{REPO}/releases/download/{tag}/zing-{tag}-{suffix}.{ext}");
     let tmp = std::env::temp_dir().join(format!("zing-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp)?;
 
