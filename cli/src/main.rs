@@ -135,6 +135,79 @@ fn run_hook(cmd: &str, filepath: &str) {
     }
 }
 
+async fn download_with_progress(url: &str) -> Result<Vec<u8>> {
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+    let total = resp.content_length().unwrap_or(0);
+    use futures::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut data = Vec::with_capacity(total as usize);
+    let mut downloaded: u64 = 0;
+    let start = std::time::Instant::now();
+    let mut last_tick = std::time::Instant::now();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+        data.extend_from_slice(&chunk);
+        downloaded += chunk.len() as u64;
+
+        let now = std::time::Instant::now();
+        if now.duration_since(last_tick).as_millis() >= 100 {
+            let elapsed = start.elapsed().as_secs_f64();
+            let speed = if elapsed > 0.0 {
+                downloaded as f64 / elapsed
+            } else {
+                0.0
+            };
+            if total > 0 {
+                let pct = downloaded as f64 / total as f64 * 100.0;
+                let rem = total - downloaded;
+                let eta = if speed > 0.0 { rem as f64 / speed } else { 0.0 };
+                eprint!(
+                    "\r  Downloading {:.1} MB / {:.1} MB ({:.0}%) at {:.1} MB/s ETA {:.0}s  ",
+                    downloaded as f64 / 1_048_576.0,
+                    total as f64 / 1_048_576.0,
+                    pct,
+                    speed / 1_048_576.0,
+                    eta,
+                );
+            } else {
+                eprint!(
+                    "\r  Downloaded {:.1} MB at {:.1} MB/s  ",
+                    downloaded as f64 / 1_048_576.0,
+                    speed / 1_048_576.0,
+                );
+            }
+            last_tick = now;
+        }
+    }
+    eprintln!();
+    drop(stream);
+    Ok(data)
+}
+
+fn create_desktop_entry(app_name: &str, exec_path: &std::path::Path) -> Result<()> {
+    let apps_dir = dirs::data_dir()
+        .map(|p| p.join("applications"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/share/applications"));
+    let _ = std::fs::create_dir_all(&apps_dir);
+    let desktop_path = apps_dir.join(format!("{}.desktop", app_name));
+    let exec = exec_path.to_string_lossy();
+    let content = format!(
+        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nCategories=Installed by Zing;\nTerminal=false\n",
+        app_name, exec
+    );
+    std::fs::write(&desktop_path, content)?;
+    eprintln!("  Desktop entry: {}", desktop_path.display());
+    Ok(())
+}
+
 fn set_executable(path: &std::path::Path) {
     #[cfg(unix)]
     {
@@ -266,20 +339,11 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                 ));
             }
             let out_path = bin_dir.join(&fname);
-            let resp = reqwest::Client::builder()
-                .build()
-                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
-                .get(url)
-                .send()
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
-            let bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let bytes = download_with_progress(url).await?;
             tokio::fs::write(&out_path, &bytes).await?;
             set_executable(&out_path);
-            tracing::info!("Installed AppImage: {} -> {}", fname, out_path.display());
+            eprintln!("  Installed: {} -> {}", fname, out_path.display());
+            let _ = create_desktop_entry(&fname, &out_path);
         }
         "install" => {
             let fname = zing_ext::filename::from_url(url);
@@ -290,17 +354,7 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             }
             let tmp = tempfile::tempdir().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
             let tmp_path = tmp.path().join(&fname);
-            let resp = reqwest::Client::builder()
-                .build()
-                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?
-                .get(url)
-                .send()
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
-            let bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let bytes = download_with_progress(url).await?;
             tokio::fs::write(&tmp_path, &bytes).await?;
             let bin_dir = dirs::home_dir()
                 .map(|p| p.join(".local").join("bin"))
@@ -321,8 +375,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                 );
                 tokio::fs::copy(&tmp_path, &out).await?;
                 set_executable(&out);
-                tracing::info!("Installed: {} -> {}", fname, out.display());
+                eprintln!("  Installed: {} -> {}", fname, out.display());
+                let _ = create_desktop_entry(&fname, &out);
             } else if ["gz", "xz", "bz2", "zst", "zip"].contains(&ext) || lower.contains(".tar.") {
+                eprintln!("  Extracting...");
                 let extract_dir = tmp.path().join("extracted");
                 tokio::fs::create_dir_all(&extract_dir).await?;
                 if lower.ends_with(".zip") {
@@ -381,30 +437,32 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                     }
                 }
                 if let Some(bin_path) = found_bin {
-                    let out = bin_dir.join(
-                        bin_path
-                            .file_name()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_else(|| pkg_name.to_string()),
-                    );
+                    let bin_name = bin_path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| pkg_name.to_string());
+                    let out = bin_dir.join(&bin_name);
                     tokio::fs::copy(&bin_path, &out).await?;
                     set_executable(&out);
-                    tracing::info!("Installed: {} -> {}", pkg_name, out.display());
+                    eprintln!("  Installed: {} -> {}", bin_name, out.display());
+                    let _ = create_desktop_entry(&bin_name, &out);
                 } else {
-                    tracing::warn!("No binary found in extracted archive");
+                    eprintln!("  No binary found in extracted archive");
                 }
             } else if ext == "sh" {
+                eprintln!("  Running installer...");
                 let mut child = tokio::process::Command::new("sh")
                     .arg(&tmp_path)
                     .spawn()
                     .map_err(|e| color_eyre::eyre::eyre!("Cannot run installer: {e}"))?;
                 let _ = child.wait().await;
-                tracing::info!("Ran installer: {fname}");
+                eprintln!("  Ran installer: {fname}");
             } else {
                 let out = bin_dir.join(&fname);
                 tokio::fs::copy(&tmp_path, &out).await?;
                 set_executable(&out);
-                tracing::info!("Installed: {} -> {}", fname, out.display());
+                eprintln!("  Installed: {} -> {}", fname, out.display());
+                let _ = create_desktop_entry(&fname, &out);
             }
         }
         _ => {
