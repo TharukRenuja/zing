@@ -26,8 +26,8 @@ zing https://example.com/file.zip
     - [Cookie jars (Netscape format)](#cookie-jars-netscape-format)
     - [.netrc authentication](#netrc-authentication)
     - [Basic auth](#basic-auth)
-    - [Event hooks](#event-hooks)
-    - [Logging](#logging)
+- [Event hooks](#event-hooks)
+- [Logging](#logging)
 - [Daemon](#daemon)
     - [Start / Stop / Restart](#start--stop--restart)
     - [Manage tasks](#manage-tasks)
@@ -65,9 +65,9 @@ Optionally sets up zing-daemon as a systemd service. Installs to `/usr/local/bin
 Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/releases/latest).
 
 - Linux: `zing-<tag>-{arch}-linux.tar.gz` (contains `zing` + `zing-daemon`)
-- macOS: `zing-<tag>-aarch64-mac.dmg`
-- Windows: `zing-<tag>-{arch}-windows.zip` (contains `zing.exe` + `zing-daemon.exe`)
-- Windows: `zing-<tag>-{arch}-installer.exe` (NSIS installer, adds to PATH)
+- macOS: `zing-<tag>-{arch}-mac.dmg` (fresh install) or `...-mac-update.tar.gz` (update)
+- Windows: `zing-<tag>-{arch}-windows-update.zip` (contains `zing.exe` + `zing-daemon.exe`)
+- Windows: `zing-<tag>-{arch}-windows-installer.exe` (NSIS installer, adds to PATH)
 
 #### Build from source
 ```bash
@@ -82,7 +82,9 @@ cargo build --release
 zing update
 ```
 
-`zing update` downloads the latest release, extracts it, and swaps the binary. On Linux it handles tar.gz, on Windows it handles ZIP. If a `zing-daemon` binary is present in the same directory, it's updated too.
+`zing update` downloads the latest release for your platform (Linux, macOS, Windows; x86_64 or ARM), extracts it, and swaps the binary. If a `zing-daemon` binary is present in the same directory, it's updated too.
+
+Update archives are named with a `-update` suffix on macOS and Windows (e.g. `zing-*-x86_64-mac-update.tar.gz`) to distinguish them from source archives. Linux archives use the plain name. zing automatically checks for updates every 7 days — configure with `update_check_interval_days` in config, or set to `0` to disable.
 
 ## Uninstall
 
@@ -239,7 +241,7 @@ zing resume <id>
 ## Cookies & Authentication
 
 <details>
-<summary>Cookie files, .netrc, event hooks, logging</summary>
+<summary>Cookie files, .netrc, basic auth</summary>
 
 ### Cookie jars (Netscape format)
 ```
@@ -266,7 +268,10 @@ zing -u user:pass https://example.com/private.zip
 zing -u "token:" https://example.com/api/download
 ```
 
-### Event hooks
+</details>
+
+## Event hooks
+
 Run custom commands when downloads finish or fail:
 
 ```
@@ -276,18 +281,12 @@ zing --on-download-error  "echo 'Failed: {}' >> ~/failures.log" https://example.
 
 `{}` is replaced with the file path.
 
-### Logging
+## Logging
+
 ```
 # Log to file instead of stderr
 zing -l download.log https://example.com/file.zip
-
-# Control log level via RUST_LOG (default: info)
-RUST_LOG=debug zing https://example.com/file.zip
-RUST_LOG=warn  zing https://example.com/file.zip
-RUST_LOG=error zing https://example.com/file.zip
 ```
-
-</details>
 
 ## Daemon
 

@@ -104,7 +104,12 @@ jobs:
           cp "$BIN_DIR/zing" "staging/zing-$TAG-${{ matrix.suffix }}"
           test -f "$BIN_DIR/zing-daemon" && \
             cp "$BIN_DIR/zing-daemon" "staging/zing-daemon-$TAG-${{ matrix.suffix }}" || true
-          tar czf "zing-$TAG-${{ matrix.suffix }}-update.tar.gz" -C staging .
+          if [[ "${{ matrix.suffix }}" == *mac ]]; then
+            archive_name="zing-$TAG-${{ matrix.suffix }}-update.tar.gz"
+          else
+            archive_name="zing-$TAG-${{ matrix.suffix }}.tar.gz"
+          fi
+          tar czf "$archive_name" -C staging .
 
       - name: Prepare .dmg (macOS)
         if: runner.os == 'macOS'
@@ -138,7 +143,7 @@ jobs:
           choco install nsis -y --no-progress
           $tag = "${{ github.ref_name }}"
           $version = $tag.TrimStart('v')
-          (Get-Content packaging/nsis/installer.nsi) -replace '0\.1\.3', $version | Set-Content packaging/nsis/installer.nsi
+          (Get-Content packaging/nsis/installer.nsi) -replace '0\.[0-9]+\.[0-9]+', $version | Set-Content packaging/nsis/installer.nsi
           $stagingDir = Join-Path $pwd "staging"
           & "C:\Program Files (x86)\NSIS\makensis.exe" "/DSOURCE_DIR=$stagingDir" "/DARCH_SUFFIX=${{ matrix.suffix }}" packaging/nsis/installer.nsi
           Move-Item "packaging/nsis/zing-$version-${{ matrix.suffix }}-installer.exe" "zing-$tag-${{ matrix.suffix }}-installer.exe"

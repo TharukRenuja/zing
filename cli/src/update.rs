@@ -92,13 +92,13 @@ pub async fn run_update() -> Result<()> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 
-    let (suffix, ext) = match (os, arch) {
-        ("linux", "x86_64") => ("x86_64-linux", "tar.gz"),
-        ("linux", "aarch64") => ("aarch64-linux", "tar.gz"),
-        ("macos", "x86_64") => ("x86_64-mac", "tar.gz"),
-        ("macos", "aarch64") => ("aarch64-mac", "tar.gz"),
-        ("windows", "x86_64") => ("x86_64-windows", "zip"),
-        ("windows", "aarch64") => ("aarch64-windows", "zip"),
+    let (suffix, ext, needs_update) = match (os, arch) {
+        ("linux", "x86_64") => ("x86_64-linux", "tar.gz", false),
+        ("linux", "aarch64") => ("aarch64-linux", "tar.gz", false),
+        ("macos", "x86_64") => ("x86_64-mac", "tar.gz", true),
+        ("macos", "aarch64") => ("aarch64-mac", "tar.gz", true),
+        ("windows", "x86_64") => ("x86_64-windows", "zip", true),
+        ("windows", "aarch64") => ("aarch64-windows", "zip", true),
         _ => {
             println!("Update not supported on {os}-{arch}.");
             println!("Re-run install.sh: curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | sh");
@@ -106,7 +106,7 @@ pub async fn run_update() -> Result<()> {
         }
     };
 
-    let archive_suffix = if matches!(ext, "tar.gz" | "zip") {
+    let archive_suffix = if needs_update {
         format!("{suffix}-update")
     } else {
         suffix.to_string()
