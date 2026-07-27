@@ -75,37 +75,46 @@ jobs:
             pkgs: -p zing -p zing-daemon
             ext: zip
           - os: macos-latest
+            target: x86_64-apple-darwin
+            suffix: x86_64-mac
+            pkgs: -p zing -p zing-daemon
+            ext: tar.gz
+          - os: macos-latest
             target: aarch64-apple-darwin
             suffix: aarch64-mac
             pkgs: -p zing -p zing-daemon
-            ext: dmg
+            ext: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release ${{ matrix.pkgs }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.pkgs }}
 
       - name: Prepare archive (Unix tar.gz)
         if: matrix.ext == 'tar.gz'
         run: |
           TAG=${{ github.ref_name }}
+          BIN_DIR="target/${{ matrix.target }}/release"
           mkdir -p staging
-          cp target/release/zing "staging/zing-$TAG-${{ matrix.suffix }}"
-          test -f target/release/zing-daemon && \
-            cp target/release/zing-daemon "staging/zing-daemon-$TAG-${{ matrix.suffix }}" || true
-          tar czf "zing-$TAG-${{ matrix.suffix }}.tar.gz" -C staging .
+          cp "$BIN_DIR/zing" "staging/zing-$TAG-${{ matrix.suffix }}"
+          test -f "$BIN_DIR/zing-daemon" && \
+            cp "$BIN_DIR/zing-daemon" "staging/zing-daemon-$TAG-${{ matrix.suffix }}" || true
+          tar czf "zing-$TAG-${{ matrix.suffix }}-update.tar.gz" -C staging .
 
       - name: Prepare .dmg (macOS)
-        if: matrix.ext == 'dmg'
+        if: runner.os == 'macOS'
         run: |
           TAG=${{ github.ref_name }}
+          BIN_DIR="target/${{ matrix.target }}/release"
           mkdir -p staging
-          cp target/release/zing "staging/zing"
-          test -f target/release/zing-daemon && \
-            cp target/release/zing-daemon "staging/zing-daemon" || true
+          cp "$BIN_DIR/zing" "staging/zing"
+          test -f "$BIN_DIR/zing-daemon" && \
+            cp "$BIN_DIR/zing-daemon" "staging/zing-daemon" || true
           hdiutil create -volname "zing $TAG" -srcfolder staging -ov -format UDZO \
             "zing-$TAG-${{ matrix.suffix }}.dmg"
 
@@ -114,12 +123,13 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
+          $binDir = "target/${{ matrix.target }}/release"
           New-Item -ItemType Directory -Force -Path staging
-          Copy-Item target/release/zing.exe staging/zing.exe
-          if (Test-Path target/release/zing-daemon.exe) {
-            Copy-Item target/release/zing-daemon.exe staging/zing-daemon.exe
+          Copy-Item "$binDir/zing.exe" staging/zing.exe
+          if (Test-Path "$binDir/zing-daemon.exe") {
+            Copy-Item "$binDir/zing-daemon.exe" staging/zing-daemon.exe
           }
-          Compress-Archive -Path staging/* -DestinationPath "zing-$tag-${{ matrix.suffix }}.zip"
+          Compress-Archive -Path staging/* -DestinationPath "zing-$tag-${{ matrix.suffix }}-update.zip"
 
       - name: Build NSIS installer (Windows)
         if: matrix.ext == 'zip'

@@ -95,7 +95,8 @@ pub async fn run_update() -> Result<()> {
     let (suffix, ext) = match (os, arch) {
         ("linux", "x86_64") => ("x86_64-linux", "tar.gz"),
         ("linux", "aarch64") => ("aarch64-linux", "tar.gz"),
-        ("macos", "aarch64") => ("aarch64-mac", "dmg"),
+        ("macos", "x86_64") => ("x86_64-mac", "tar.gz"),
+        ("macos", "aarch64") => ("aarch64-mac", "tar.gz"),
         ("windows", "x86_64") => ("x86_64-windows", "zip"),
         ("windows", "aarch64") => ("aarch64-windows", "zip"),
         _ => {
@@ -105,8 +106,13 @@ pub async fn run_update() -> Result<()> {
         }
     };
 
+    let archive_suffix = if matches!(ext, "tar.gz" | "zip") {
+        format!("{suffix}-update")
+    } else {
+        suffix.to_string()
+    };
     let url =
-        format!("https://github.com/{REPO}/releases/download/{tag}/zing-{tag}-{suffix}.{ext}");
+        format!("https://github.com/{REPO}/releases/download/{tag}/zing-{tag}-{archive_suffix}.{ext}");
     let tmp = std::env::temp_dir().join(format!("zing-update-{}", std::process::id()));
     std::fs::create_dir_all(&tmp)?;
 
