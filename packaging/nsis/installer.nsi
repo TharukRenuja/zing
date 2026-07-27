@@ -1,6 +1,7 @@
 !define PRODUCT_NAME "zing"
 !define PRODUCT_PUBLISHER "TharukRenuja"
 !define PRODUCT_VERSION "0.1.3"
+!define SOURCE_DIR "."
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
@@ -25,8 +26,8 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   ; Copy binaries
-  File "staging\zing.exe"
-  File "staging\zing-daemon.exe"
+  File "${SOURCE_DIR}\zing.exe"
+  File "${SOURCE_DIR}\zing-daemon.exe"
 
   ; Write uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"

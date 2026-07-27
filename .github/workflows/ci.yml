@@ -128,8 +128,9 @@ jobs:
           choco install nsis -y --no-progress
           $tag = "${{ github.ref_name }}"
           $version = $tag.TrimStart('v')
-          (Get-Content packaging/nsis/installer.nsi) -replace '0\.1\.2', $version | Set-Content packaging/nsis/installer.nsi
-          & "C:\Program Files (x86)\NSIS\makensis.exe" packaging/nsis/installer.nsi
+          (Get-Content packaging/nsis/installer.nsi) -replace '0\.1\.3', $version | Set-Content packaging/nsis/installer.nsi
+          $stagingDir = Join-Path $pwd "staging"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" "/DSOURCE_DIR=$stagingDir" packaging/nsis/installer.nsi
           Move-Item "zing-$version-x86_64-windows-installer.exe" "zing-$tag-x86_64-windows-installer.exe"
 
       - name: Upload artifacts
