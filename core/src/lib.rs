@@ -9,6 +9,7 @@ pub mod ratelimit;
 pub mod retry;
 pub mod segment;
 pub mod storage;
+pub mod transport;
 pub mod util;
 
 pub use engine::event::EventBus;

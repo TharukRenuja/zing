@@ -1,21 +1,12 @@
 use crate::rpc::RpcRequest;
 use crate::rpc::RpcResponse;
 use crate::task_manager::TaskManager;
-use std::path::Path;
 use std::sync::Arc;
-use tokio::net::UnixListener;
+use zing_core::transport;
 
-pub async fn run(
-    socket_path: &Path,
-    auth_token: String,
-    manager: TaskManager,
-) -> std::io::Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
-    let listener = UnixListener::bind(socket_path)?;
-    tracing::info!("Listening on {}", socket_path.display());
+pub async fn run(addr: &str, auth_token: String, manager: TaskManager) -> std::io::Result<()> {
+    let listener = transport::bind(addr).await?;
+    tracing::info!("Listening on {addr}");
 
     let manager = Arc::new(manager);
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
@@ -40,12 +31,12 @@ pub async fn run(
 
                     let (reader, writer) = stream.into_split();
                     let mut reader = BufReader::new(reader);
-                    let mut writer: Option<tokio::io::BufWriter<tokio::net::unix::OwnedWriteHalf>> =
+                    let mut writer: Option<tokio::io::BufWriter<transport::DaemonWriteHalf>> =
                         Some(tokio::io::BufWriter::new(writer));
                     let mut line = String::new();
 
                     async fn write_resp(
-                        w: &mut Option<tokio::io::BufWriter<tokio::net::unix::OwnedWriteHalf>>,
+                        w: &mut Option<tokio::io::BufWriter<transport::DaemonWriteHalf>>,
                         json: &str,
                     ) {
                         use tokio::io::AsyncWriteExt;
@@ -118,6 +109,8 @@ pub async fn run(
             }
             _ = shutdown_rx.recv() => {
                 tracing::info!("Shutdown signal received, stopping server");
+                let mgr = Arc::clone(&manager);
+                mgr.save_session().await;
                 break;
             }
         }

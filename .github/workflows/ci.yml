@@ -24,7 +24,7 @@ jobs:
           - os: macos-latest
             args: --workspace
           - os: windows-latest
-            args: -p zing -p zing-core -p zing-ext
+            args: --workspace
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -67,13 +67,13 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             suffix: x86_64-windows
-            pkgs: -p zing
-            ext: exe
+            pkgs: -p zing -p zing-daemon
+            ext: zip
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             suffix: aarch64-windows
-            pkgs: -p zing
-            ext: exe
+            pkgs: -p zing -p zing-daemon
+            ext: zip
           - os: macos-latest
             target: aarch64-apple-darwin
             suffix: aarch64-mac
@@ -109,12 +109,28 @@ jobs:
           hdiutil create -volname "zing $TAG" -srcfolder staging -ov -format UDZO \
             "zing-$TAG-${{ matrix.suffix }}.dmg"
 
-      - name: Prepare .exe (Windows)
-        if: matrix.ext == 'exe'
-        shell: bash
+      - name: Prepare .zip (Windows)
+        if: matrix.ext == 'zip'
+        shell: pwsh
         run: |
-          TAG=${{ github.ref_name }}
-          cp target/release/zing.exe "zing-$TAG-${{ matrix.suffix }}.exe"
+          $tag = "${{ github.ref_name }}"
+          New-Item -ItemType Directory -Force -Path staging
+          Copy-Item target/release/zing.exe staging/zing.exe
+          if (Test-Path target/release/zing-daemon.exe) {
+            Copy-Item target/release/zing-daemon.exe staging/zing-daemon.exe
+          }
+          Compress-Archive -Path staging/* -DestinationPath "zing-$tag-${{ matrix.suffix }}.zip"
+
+      - name: Build NSIS installer (Windows)
+        if: matrix.ext == 'zip' && matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          (Get-Content packaging/nsis/installer.nsi) -replace '0\.1\.2', $version | Set-Content packaging/nsis/installer.nsi
+          & "C:\Program Files (x86)\NSIS\makensis.exe" packaging/nsis/installer.nsi
+          Move-Item "zing-$version-x86_64-windows-installer.exe" "zing-$tag-x86_64-windows-installer.exe"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -96,8 +96,8 @@ pub async fn run_update() -> Result<()> {
         ("linux", "x86_64") => ("x86_64-linux", "tar.gz"),
         ("linux", "aarch64") => ("aarch64-linux", "tar.gz"),
         ("macos", "aarch64") => ("aarch64-mac", "dmg"),
-        ("windows", "x86_64") => ("x86_64-windows", "exe"),
-        ("windows", "aarch64") => ("aarch64-windows", "exe"),
+        ("windows", "x86_64") => ("x86_64-windows", "zip"),
+        ("windows", "aarch64") => ("aarch64-windows", "zip"),
         _ => {
             println!("Update not supported on {os}-{arch}.");
             println!("Re-run install.sh: curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | sh");
@@ -154,7 +154,41 @@ pub async fn run_update() -> Result<()> {
                 found.ok_or_else(|| color_eyre::eyre::eyre!("Binary not found in archive"))?
             }
         }
-        "exe" => archive_path,
+        "zip" => {
+            println!("  Extracting...");
+            let file = std::fs::File::open(&archive_path)?;
+            let mut archive = zip::ZipArchive::new(file)
+                .map_err(|e| color_eyre::eyre::eyre!("Failed to read ZIP: {e}"))?;
+            for i in 0..archive.len() {
+                let mut entry = archive
+                    .by_index(i)
+                    .map_err(|e| color_eyre::eyre::eyre!("ZIP entry {i}: {e}"))?;
+                let name = entry.name().replace('\\', "/");
+                // Strip top-level directory if present (e.g. zing-0.1.2-x86_64-windows/zing.exe)
+                let basename = name.rsplit('/').next().unwrap_or(&name).to_string();
+                let out_path = tmp.join(&basename);
+                if !entry.is_dir() {
+                    if let Some(parent) = out_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let mut out = std::fs::File::create(&out_path)?;
+                    std::io::copy(&mut entry, &mut out)?;
+                }
+            }
+            // Find the extracted zing binary
+            let zing_bin = if cfg!(windows) { "zing.exe" } else { "zing" };
+            let mut found = None;
+            for entry in std::fs::read_dir(&tmp)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name == zing_bin {
+                    found = Some(entry.path());
+                    break;
+                }
+            }
+            found.ok_or_else(|| color_eyre::eyre::eyre!("{zing_bin} not found in ZIP"))?
+        }
         _ => bail!("Unsupported archive format: {ext}"),
     };
 
@@ -162,7 +196,12 @@ pub async fn run_update() -> Result<()> {
     swap_binary(&new_binary, &exe_path)?;
 
     // Also update zing-daemon if present
-    let daemon_path = exe_dir.join("zing-daemon");
+    let daemon_bin = if cfg!(windows) {
+        "zing-daemon.exe"
+    } else {
+        "zing-daemon"
+    };
+    let daemon_path = exe_dir.join(daemon_bin);
     if daemon_path.exists() {
         let daemon_extracted = match ext {
             "tar.gz" => {
@@ -171,7 +210,6 @@ pub async fn run_update() -> Result<()> {
                 if p.exists() {
                     Some(p)
                 } else {
-                    // Look for any zing-daemon-* file
                     let mut found = None;
                     for entry in std::fs::read_dir(&tmp)? {
                         let entry = entry?;
@@ -184,12 +222,21 @@ pub async fn run_update() -> Result<()> {
                     found
                 }
             }
+            "zip" => {
+                // Already extracted from ZIP alongside zing.exe
+                let p = tmp.join(daemon_bin);
+                if p.exists() {
+                    Some(p)
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
         if let Some(d) = daemon_extracted {
             swap_binary(&d, &daemon_path)?;
             println!("  zing-daemon updated");
-        } else if ext == "tar.gz" {
+        } else if ext == "tar.gz" || ext == "zip" {
             println!("  zing-daemon not found in archive, skipping");
         }
     }
@@ -218,7 +265,17 @@ fn swap_binary(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp_dst, std::fs::Permissions::from_mode(0o755))?;
     }
-    std::fs::rename(&tmp_dst, dst)?;
+    #[cfg(windows)]
+    {
+        let old = dst.with_extension("old");
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(dst, &old)?;
+        std::fs::rename(&tmp_dst, dst)?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&tmp_dst, dst)?;
+    }
     Ok(())
 }
 

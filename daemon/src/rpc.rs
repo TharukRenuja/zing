@@ -2,6 +2,7 @@ use crate::task_manager::TaskManager;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zing_core::engine::event::EngineEvent;
+use zing_core::transport;
 use zing_ext::filename;
 
 #[derive(Debug, Deserialize)]
@@ -81,7 +82,7 @@ pub fn is_subscribe(method: &str) -> bool {
 
 pub async fn handle_subscribe_and_stream(
     manager: &TaskManager,
-    writer: tokio::io::BufWriter<tokio::net::unix::OwnedWriteHalf>,
+    writer: tokio::io::BufWriter<transport::DaemonWriteHalf>,
 ) {
     use tokio::io::AsyncWriteExt;
     let mut writer = writer;

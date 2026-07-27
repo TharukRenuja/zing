@@ -34,6 +34,16 @@ pub struct TaskInfo {
     pub downloaded: u64,
     pub speed: f64,
     pub status: TaskStatus,
+    pub is_auto_name: bool,
+    pub max_connections: usize,
+    pub insecure: bool,
+    pub max_download_rate: u64,
+    pub proxy_url: Option<String>,
+    pub mirrors: Vec<String>,
+    pub bw_schedule: Option<String>,
+    pub headers: Vec<(String, String)>,
+    pub max_filesize: u64,
+    pub checksum: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,20 +91,25 @@ impl TaskManager {
         let tasks = self.tasks.lock().await;
         let entries: Vec<SessionEntry> = tasks
             .values()
-            .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::Paused))
+            .filter(|t| {
+                matches!(
+                    t.status,
+                    TaskStatus::Pending | TaskStatus::Paused | TaskStatus::Downloading
+                )
+            })
             .map(|t| SessionEntry {
                 url: t.url.clone(),
                 filename: t.filename.clone(),
-                is_auto_name: false,
-                max_connections: 4,
-                insecure: false,
-                max_download_rate: 0,
-                proxy_url: None,
-                mirrors: vec![],
-                bw_schedule: None,
-                headers: vec![],
-                max_filesize: 0,
-                checksum: None,
+                is_auto_name: t.is_auto_name,
+                max_connections: t.max_connections,
+                insecure: t.insecure,
+                max_download_rate: t.max_download_rate,
+                proxy_url: t.proxy_url.clone(),
+                mirrors: t.mirrors.clone(),
+                bw_schedule: t.bw_schedule.clone(),
+                headers: t.headers.clone(),
+                max_filesize: t.max_filesize,
+                checksum: t.checksum.clone(),
             })
             .collect();
         if let Ok(json) = serde_json::to_string_pretty(&entries) {
@@ -136,6 +151,16 @@ impl TaskManager {
             downloaded: 0,
             speed: 0.0,
             status: TaskStatus::Pending,
+            is_auto_name,
+            max_connections,
+            insecure,
+            max_download_rate,
+            proxy_url: proxy_url.clone(),
+            mirrors: mirrors.clone(),
+            bw_schedule: bw_schedule.clone(),
+            headers: headers.clone(),
+            max_filesize,
+            checksum: checksum.clone(),
         };
 
         {
@@ -340,25 +365,35 @@ impl TaskManager {
                 task.status
             ));
         }
-        // Re-add the task to re-spawn it
+        // Re-add the task to re-spawn it with original config
         let url = task.url.clone();
         let filename = task.filename.clone();
+        let is_auto_name = task.is_auto_name;
+        let max_connections = task.max_connections;
+        let insecure = task.insecure;
+        let max_download_rate = task.max_download_rate;
+        let proxy_url = task.proxy_url.clone();
+        let mirrors = task.mirrors.clone();
+        let bw_schedule = task.bw_schedule.clone();
+        let headers = task.headers.clone();
+        let max_filesize = task.max_filesize;
+        let checksum = task.checksum.clone();
         drop(tasks);
 
         let new_id = self
             .add_task(
                 &url,
                 &filename,
-                false,
-                4,
-                false,
-                0,
-                None,
-                vec![],
-                None,
-                vec![],
-                0,
-                None,
+                is_auto_name,
+                max_connections,
+                insecure,
+                max_download_rate,
+                proxy_url,
+                mirrors,
+                bw_schedule,
+                headers,
+                max_filesize,
+                checksum,
             )
             .await;
 

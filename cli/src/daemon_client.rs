@@ -1,38 +1,14 @@
-#![cfg(unix)]
-
 use serde_json::Value;
-use std::path::Path;
-use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
-
-fn socket_path_from_env() -> String {
-    if let Ok(dir) = std::env::var("RUNTIME_DIRECTORY") {
-        return PathBuf::from(dir)
-            .join("zing.sock")
-            .to_string_lossy()
-            .to_string();
-    }
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir)
-            .join("zing.sock")
-            .to_string_lossy()
-            .to_string();
-    }
-    "/tmp/zing.sock".to_string()
-}
+use zing_core::transport;
 
 async fn read_auth_token() -> Option<String> {
-    let socket = std::env::var("RXD_SOCKET").unwrap_or_else(|_| socket_path_from_env());
-    let token_path = format!("{}.auth", socket);
+    let addr = transport::default_addr();
+    let token_path = transport::auth_file(&addr);
     tokio::fs::read_to_string(&token_path)
         .await
         .ok()
         .map(|s| s.trim().to_string())
-}
-
-fn default_socket() -> String {
-    socket_path_from_env()
 }
 
 async fn build_request(method: &str, params: Option<Value>) -> serde_json::Value {
@@ -49,16 +25,13 @@ async fn build_request(method: &str, params: Option<Value>) -> serde_json::Value
 }
 
 pub async fn daemon_is_running() -> bool {
-    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| default_socket());
-    if !Path::new(&path).exists() {
-        return false;
-    }
-    UnixStream::connect(&path).await.is_ok()
+    let addr = transport::default_addr();
+    transport::connect(&addr).await.is_ok()
 }
 
 pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, String> {
-    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| default_socket());
-    let stream = UnixStream::connect(&path)
+    let addr = transport::default_addr();
+    let stream = transport::connect(&addr)
         .await
         .map_err(|e| format!("connect: {e}"))?;
 
@@ -97,8 +70,8 @@ pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, 
 }
 
 pub async fn subscribe_and_show_progress(task_id: u64, progress_type: crate::args::ProgressType) {
-    let path = std::env::var("RXD_SOCKET").unwrap_or_else(|_| default_socket());
-    let stream = match UnixStream::connect(&path).await {
+    let addr = transport::default_addr();
+    let stream = match transport::connect(&addr).await {
         Ok(s) => s,
         Err(_) => return,
     };

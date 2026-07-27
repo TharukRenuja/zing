@@ -1,6 +1,5 @@
 mod args;
 mod config;
-#[cfg(unix)]
 mod daemon_client;
 mod update;
 
@@ -538,9 +537,26 @@ async fn run(args: Args) -> Result<()> {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     run_daemon_start().await
                 }
-                DaemonAction::Install => run_daemon_install().await,
-                DaemonAction::Uninstall => run_daemon_uninstall().await,
-                DaemonAction::Status => run_daemon_status().await,
+                DaemonAction::Install => {
+                    #[cfg(unix)]
+                    return run_daemon_install().await;
+                    #[cfg(not(unix))]
+                    return Err(color_eyre::eyre::eyre!("Install is only supported on Unix"));
+                }
+                DaemonAction::Uninstall => {
+                    #[cfg(unix)]
+                    return run_daemon_uninstall().await;
+                    #[cfg(not(unix))]
+                    return Err(color_eyre::eyre::eyre!(
+                        "Uninstall is only supported on Unix"
+                    ));
+                }
+                DaemonAction::Status => {
+                    #[cfg(unix)]
+                    return run_daemon_status().await;
+                    #[cfg(not(unix))]
+                    return Err(color_eyre::eyre::eyre!("Status is only supported on Unix"));
+                }
             };
         }
         Some(Commands::Schedule(ref sched)) => {
@@ -553,7 +569,6 @@ async fn run(args: Args) -> Result<()> {
             return run_list().await;
         }
         Some(Commands::Pause { id: _id }) => {
-            #[cfg(unix)]
             match daemon_client::send_request("zing.pause", Some(serde_json::json!({ "id": _id })))
                 .await
             {
@@ -566,7 +581,6 @@ async fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         Some(Commands::Resume { id: _id }) => {
-            #[cfg(unix)]
             match daemon_client::send_request("zing.resume", Some(serde_json::json!({ "id": _id })))
                 .await
             {
@@ -579,7 +593,6 @@ async fn run(args: Args) -> Result<()> {
             return Ok(());
         }
         Some(Commands::Remove { id: _id }) => {
-            #[cfg(unix)]
             match daemon_client::send_request("zing.remove", Some(serde_json::json!({ "id": _id })))
                 .await
             {
@@ -649,7 +662,6 @@ async fn run(args: Args) -> Result<()> {
     };
 
     // Download mode — check for daemon proxy
-    #[cfg(unix)]
     if !to_stdout && daemon_client::daemon_is_running().await {
         tracing::info!("zing daemon detected, proxying commands");
 
@@ -683,7 +695,6 @@ async fn run(args: Args) -> Result<()> {
                     let id = resp.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
                     let name = zing_ext::filename::from_url(url_str);
                     tracing::info!("Downloading: {name}");
-                    #[cfg(unix)]
                     let pt = progress_type;
                     handles.push(tokio::spawn(async move {
                         daemon_client::subscribe_and_show_progress(id, pt).await;
@@ -1097,7 +1108,6 @@ async fn run_daemon_start() -> Result<()> {
 }
 
 async fn run_daemon_stop() -> Result<()> {
-    #[cfg(unix)]
     match daemon_client::send_request("zing.shutdown", None).await {
         Ok(resp) => {
             tracing::info!(
@@ -1114,6 +1124,7 @@ async fn run_daemon_stop() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn daemon_service_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -1122,6 +1133,7 @@ fn daemon_service_path() -> PathBuf {
         .join("zing-daemon.service")
 }
 
+#[cfg(unix)]
 fn daemon_service_content() -> String {
     let daemon_path = std::env::current_exe()
         .map(|p| p.parent().unwrap_or(&p).join("zing-daemon"))
@@ -1147,6 +1159,7 @@ WantedBy=default.target
     )
 }
 
+#[cfg(unix)]
 async fn run_daemon_install() -> Result<()> {
     let svc_path = daemon_service_path();
     if let Some(parent) = svc_path.parent() {
@@ -1204,6 +1217,7 @@ async fn run_daemon_install() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 async fn run_daemon_uninstall() -> Result<()> {
     let svc_path = daemon_service_path();
 
@@ -1245,6 +1259,7 @@ async fn run_daemon_uninstall() -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 async fn run_daemon_status() -> Result<()> {
     let output = tokio::process::Command::new("systemctl")
         .args(["--user", "status", "zing-daemon.service"])
@@ -1577,7 +1592,6 @@ async fn run_config_edit() -> Result<()> {
 }
 
 async fn run_list() -> Result<()> {
-    #[cfg(unix)]
     if daemon_client::daemon_is_running().await {
         match daemon_client::send_request("zing.list", None).await {
             Ok(resp) => {
@@ -1637,9 +1651,6 @@ async fn run_list() -> Result<()> {
             Err(e) => eprintln!("Failed to list downloads: {e}"),
         }
     } else {
-        #[cfg(not(unix))]
-        return Ok(());
-        #[cfg(unix)]
         eprintln!("No daemon running. Start one with: zing daemon");
     }
     Ok(())
