@@ -146,14 +146,12 @@ jobs:
 
       - name: Build MSI installer
         if: matrix.ext == 'zip'
-        run: cargo wix --nocapture -p zing
-
-      - name: Move MSI
-        if: matrix.ext == 'zip'
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
-          Move-Item "target/wix/*.msi" "zing-$tag-${{ matrix.suffix }}.msi"
+          cargo wix --nocapture -p zing -o .
+          $msi = Get-ChildItem -Filter "zing-*.msi" | Select-Object -First 1
+          Rename-Item $msi.Name "zing-$tag-${{ matrix.suffix }}.msi"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

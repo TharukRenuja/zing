@@ -35,7 +35,7 @@
                         <File Id='LicenseFile'
                             Name='LICENSE'
                             DiskId='1'
-                            Source='LICENSE'
+                            Source='..\LICENSE'
                             KeyPath='yes'/>
                     </Component>
 
@@ -55,7 +55,7 @@
                                 Id='exe0'
                                 Name='zing.exe'
                                 DiskId='1'
-                                Source='target\release\zing.exe'
+                                Source='$(var.CargoTargetDir)\release\zing.exe'
                                 KeyPath='yes'/>
                         </Component>
                         <Component Id='binary1' Guid='*'>
@@ -63,7 +63,7 @@
                                 Id='exe1'
                                 Name='zing-daemon.exe'
                                 DiskId='1'
-                                Source='target\release\zing-daemon.exe'
+                                Source='$(var.CargoTargetDir)\release\zing-daemon.exe'
                                 KeyPath='yes'/>
                         </Component>
                     </Directory>
