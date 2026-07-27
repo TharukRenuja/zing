@@ -78,6 +78,9 @@ cargo build --release
 
 ## Update
 
+<details>
+<summary>Check for updates & update instructions</summary>
+
 ```bash
 # Check for updates and apply
 zing update
@@ -85,7 +88,9 @@ zing update
 
 `zing update` downloads the latest release for your platform (Linux, macOS, Windows; x86_64 or ARM), extracts it, and swaps the binary. If a `zing-daemon` binary is present in the same directory, it's updated too.
 
-Update archives are named with a `-update` suffix on macOS and Windows (e.g. `zing-*-x86_64-mac-update.tar.gz`) to distinguish them from source archives. Linux archives use the plain name. zing automatically checks for updates every 7 days — configure with `update_check_interval_days` in config, or set to `0` to disable.
+Update archives are named with a `-update` suffix on macOS and Windows (e.g. `zing-*-x86_64-mac-update.tar.gz`) to distinguish them from source archives. Linux archives use the plain name. zing automatically checks for updates every 7 days, configure with `update_check_interval_days` in config, or set to `0` to disable.
+
+</details>
 
 ## Uninstall
 

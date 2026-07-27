@@ -97,8 +97,7 @@ Function AddToPath
       StrCpy $1 "$0"
     ${EndIf}
     WriteRegStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "PATH" "$1"
-    ; Notify system of environment change
-    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment"
+    System::Call 'USER32::PostMessage(i ${HWND_BROADCAST}, i ${WM_SETTINGCHANGE}, i 0, w "Environment")'
   ${EndIf}
 
   Pop $2
@@ -145,7 +144,7 @@ Function un.RemoveFromPath
       ${EndIf}
     ${Loop}
     WriteRegStr HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "PATH" "$1"
-    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment"
+    System::Call 'USER32::PostMessage(i ${HWND_BROADCAST}, i ${WM_SETTINGCHANGE}, i 0, w "Environment")'
   ${EndIf}
 
   Pop $4
