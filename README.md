@@ -13,6 +13,7 @@ zing https://example.com/file.zip
     - [Install script (Linux/macOS)](#install-script-linuxmacos)
     - [Download pre-built binary](#download-pre-built-binary)
     - [Build from source](#build-from-source)
+- [Update](#update)
 - [Uninstall](#uninstall)
     - [Using uninstall script](#using-uninstall-script)
     - [Or manually](#or-manually)
@@ -27,9 +28,13 @@ zing https://example.com/file.zip
     - [Basic auth](#basic-auth)
     - [Event hooks](#event-hooks)
     - [Logging](#logging)
-- [Daemon with systemd](#daemon-with-systemd)
+- [Daemon](#daemon)
+    - [Start / Stop / Restart](#start--stop--restart)
+    - [Manage tasks](#manage-tasks)
+    - [Install systemd service](#install-systemd-service)
 - [Scheduled downloads](#scheduled-downloads)
 - [Configuration](#configuration)
+- [Completions](#completions)
 - [Features \& Comparison](#features--comparison)
     - [Features](#features)
     - [Comparison](#comparison)
@@ -41,8 +46,8 @@ zing https://example.com/file.zip
 ```
 zing https://example.com/file.zip
 
-→ checks /tmp/zing.sock
-  exists?  proxies to daemon, shows progress, exits
+→ checks if daemon is running
+  running?  proxies to daemon, shows progress, exits
   absent?  downloads directly (like curl)
 ```
 
@@ -61,13 +66,23 @@ Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/rel
 
 - Linux: `zing-<tag>-{arch}-linux.tar.gz` (contains `zing` + `zing-daemon`)
 - macOS: `zing-<tag>-aarch64-mac.dmg`
-- Windows: `zing-<tag>-{arch}-windows.exe`
+- Windows: `zing-<tag>-{arch}-windows.zip` (contains `zing.exe` + `zing-daemon.exe`)
+- Windows: `zing-<tag>-{arch}-installer.exe` (NSIS installer, adds to PATH)
 
 #### Build from source
 ```bash
 cargo build --release
 ./target/release/zing --help
 ```
+
+## Update
+
+```bash
+# Check for updates and apply
+zing update
+```
+
+`zing update` downloads the latest release, extracts it, and swaps the binary. On Linux it handles tar.gz, on Windows it handles ZIP. If a `zing-daemon` binary is present in the same directory, it's updated too.
 
 ## Uninstall
 
@@ -82,7 +97,8 @@ zing -p https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | 
 #### Or manually
 ```bash
 # Remove binaries
-sudo rm /usr/local/bin/zing /usr/local/bin/zing-daemon
+sudo rm /usr/local/bin/zing /usr/local/bin/zing-daemon     # Linux
+# or: rm ~/.local/bin/zing ~/.local/bin/zing-daemon
 
 # Remove config and schedule files
 rm -rf ~/.config/zing
@@ -90,8 +106,11 @@ rm -rf ~/.config/zing
 # Remove daemon service (if installed)
 zing daemon uninstall
 
-# Remove socket and auth token
+# Remove socket and auth token (Linux)
 rm -f /tmp/zing.sock /tmp/zing.sock.auth
+
+# Windows: use Add/Remove Programs for the NSIS installer,
+# or manually delete the install directory and remove from PATH
 ```
 
 </details>
@@ -146,6 +165,15 @@ zing --dry-run https://example.com/file.zip
 
 # Use a Metalink file for mirrors + checksums
 zing -M file.meta4
+
+# Download multiple files concurrently
+zing --max-concurrent 3 url1 url2 url3
+
+# Progress output: bar (default), json, or none
+zing --progress json https://example.com/file.zip
+
+# Log to file instead of stderr
+zing -l download.log https://example.com/file.zip
 ```
 
 ## Pipe mode
@@ -252,29 +280,58 @@ zing --on-download-error  "echo 'Failed: {}' >> ~/failures.log" https://example.
 ```
 # Log to file instead of stderr
 zing -l download.log https://example.com/file.zip
+
+# Control log level via RUST_LOG (default: info)
+RUST_LOG=debug zing https://example.com/file.zip
+RUST_LOG=warn  zing https://example.com/file.zip
+RUST_LOG=error zing https://example.com/file.zip
 ```
 
 </details>
 
-## Daemon with systemd
+## Daemon
 
 <details>
-<summary>Background daemon with systemd integration</summary>
+<summary>Background daemon with task management</summary>
 
-Start a background daemon so downloads continue even after you close the terminal.
+The daemon runs downloads in the background so they continue even after you close the terminal. Any `zing download` command automatically detects the daemon and proxies through it.
+
+### Start / Stop / Restart
 
 ```bash
 # Start the daemon in the foreground
 zing daemon start
 
-# Install as a systemd user service (auto-start on login)
-zing daemon install
+# Stop the daemon
+zing daemon stop
 
-# Check daemon status
+# Restart the daemon
+zing daemon restart
+
+# Check daemon status (Unix only — systemd)
 zing daemon status
+```
 
-# Now any zing download will proxy through the daemon automatically
-zing https://example.com/file.zip
+### Manage tasks
+
+```bash
+# List all downloads
+zing list
+
+# Pause a download
+zing pause <id>
+
+# Resume a paused download
+zing resume <id>
+
+# Remove a download
+zing remove <id>
+```
+
+### Install systemd service (Unix only)
+```bash
+zing daemon install
+zing daemon uninstall
 ```
 
 </details>
@@ -329,16 +386,33 @@ zing config delete download_dir
 
 `zing config edit` opens an interactive wizard that shows all settings and lets you change them one by one.
 
-Config file: `~/.config/zing/config.json`
+Config file: `~/.config/zing/config.json` (Linux/macOS) or `%APPDATA%\zing\config.json` (Windows)
 
 ```json
 {
   "download_dir": "~/Downloads",
-  "prompt_location": false
+  "prompt_location": false,
+  "update_check_interval_days": 7
 }
 ```
 
+| Key | Default | Description |
+| --- | --- | --- |
+| `download_dir` | `~/Downloads` | Default download directory |
+| `prompt_location` | `false` | Ask for download location before each download |
+| `update_check_interval_days` | `7` | Days between update checks (`0` = disabled) |
+
 </details>
+
+## Completions
+
+```bash
+# Generate shell completions
+zing completions bash
+zing completions zsh
+zing completions fish
+zing completions powershell
+```
 
 ## Features & Comparison
 
@@ -369,6 +443,8 @@ Config file: `~/.config/zing/config.json`
 - **Dry-run** (`--dry-run`) to preview downloads
 - **Log to file** (`-l`/`--log`) instead of stderr
 - **Event hooks** (`--on-download-complete`, `--on-download-error`) for custom post-download actions
+- **Update command** (`zing update`) to automatically upgrade to the latest release
+- **Shell completions** (`zing completions <shell>`) for bash, zsh, fish, and powershell
 
 ### Comparison
 
@@ -386,7 +462,7 @@ Config file: `~/.config/zing/config.json`
 | Mirror failover | Rotate on fail/throttle | Multi-URL | No | No | No |
 | Metalink | .meta4 parser | Yes | No | No | No |
 | Proxy | Yes | Yes | Yes | Yes | Yes |
-| Daemon + RPC | Unix socket JSON-RPC | RPC | No | No | Web |
+| Daemon + RPC | Socket / TCP JSON-RPC | RPC | No | No | Web |
 | Daemon session persist | Save/restore on restart | Yes | No | No | No |
 | Daemon resume RPC | `zing resume <id>` | No | No | No | No |
 | Scheduled downloads | Day/time triggers | No | No | No | No |
@@ -408,15 +484,16 @@ Config file: `~/.config/zing/config.json`
 
 4 crates in a workspace:
 
-- **core**: Download engine: probe, segment management, PID control, rate limiting, retry, bandwidth scheduling, connection pool, cookie store
+- **core**: Download engine: probe, segment management, PID control, rate limiting, retry, bandwidth scheduling, connection pool, cookie store, cross-platform IPC (transport layer)
 - **cli**: CLI frontend with progress bar, daemon auto-detection, checksum verification, config/schedule management, pipe modes, cookie/netrc auth, event hooks
-- **daemon**: Unix socket JSON-RPC server for background and scheduled downloads
+- **daemon**: JSON-RPC server for background and scheduled downloads (Unix socket on Linux, TCP on Windows)
 - **ext**: Utilities: checksum verification, filename extraction, aria2 session import, metalink parsing
 
 ## Design
 
 - **Pwrite over mmap**: Sequential streaming writes benefit from `pwrite`'s direct kernel path. Mmap adds page fault overhead for write-once workloads.
 - **reqwest over hyper**: reqwest provides HTTP/2 ALPN negotiation, HTTP/3 via quinn, connection pooling, and proxy support out of the box.
-- **Unix socket over TCP**: No port conflicts, filesystem permissions control access, no network exposure.
+- **Unix socket over TCP (Linux)**: No port conflicts, filesystem permissions control access, no network exposure.
+- **TCP fallback (Windows)**: Windows daemon uses TCP on 127.0.0.1 with a random port, stored in `%APPDATA%\zing\daemon.port`.
 - **No BitTorrent / browser impersonation**: zing focuses on clean HTTP download intelligence.
 

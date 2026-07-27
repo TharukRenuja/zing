@@ -1,8 +1,12 @@
 !define PRODUCT_NAME "zing"
 !define PRODUCT_PUBLISHER "TharukRenuja"
 !define PRODUCT_VERSION "0.1.3"
+!ifndef SOURCE_DIR
 !define SOURCE_DIR "."
+!endif
+!ifndef ARCH_SUFFIX
 !define ARCH_SUFFIX "x86_64-windows"
+!endif
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
