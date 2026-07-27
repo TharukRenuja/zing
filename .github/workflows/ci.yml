@@ -66,12 +66,7 @@ jobs:
             ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            suffix: x86_64-windows
-            pkgs: -p zing -p zing-daemon
-            ext: zip
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            suffix: aarch64-windows
+            suffix: windows
             pkgs: -p zing -p zing-daemon
             ext: zip
           - os: macos-latest
@@ -136,17 +131,29 @@ jobs:
           }
           Compress-Archive -Path staging/* -DestinationPath "zing-$tag-${{ matrix.suffix }}-update.zip"
 
-      - name: Build NSIS installer (Windows)
+      - name: Install cargo-wix
+        if: matrix.ext == 'zip'
+        run: cargo install cargo-wix
+
+      - name: Copy binaries for WiX
         if: matrix.ext == 'zip'
         shell: pwsh
         run: |
-          choco install nsis -y --no-progress
+          $binDir = "target/${{ matrix.target }}/release"
+          New-Item -ItemType Directory -Force -Path target/release
+          Copy-Item "$binDir/zing.exe" target/release/zing.exe
+          Copy-Item "$binDir/zing-daemon.exe" target/release/zing-daemon.exe
+
+      - name: Build MSI installer
+        if: matrix.ext == 'zip'
+        run: cargo wix --nocapture
+
+      - name: Move MSI
+        if: matrix.ext == 'zip'
+        shell: pwsh
+        run: |
           $tag = "${{ github.ref_name }}"
-          $version = $tag.TrimStart('v')
-          (Get-Content packaging/nsis/installer.nsi) -replace '0\.[0-9]+\.[0-9]+', $version | Set-Content packaging/nsis/installer.nsi
-          $stagingDir = Join-Path $pwd "staging"
-          & "C:\Program Files (x86)\NSIS\makensis.exe" "/DSOURCE_DIR=$stagingDir" "/DARCH_SUFFIX=${{ matrix.suffix }}" packaging/nsis/installer.nsi
-          Move-Item "packaging/nsis/zing-$version-${{ matrix.suffix }}-installer.exe" "zing-$tag-${{ matrix.suffix }}-installer.exe"
+          Move-Item "target/wix/*.msi" "zing-$tag-${{ matrix.suffix }}.msi"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

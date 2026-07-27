@@ -97,8 +97,7 @@ pub async fn run_update() -> Result<()> {
         ("linux", "aarch64") => ("aarch64-linux", "tar.gz", false),
         ("macos", "x86_64") => ("x86_64-mac", "tar.gz", true),
         ("macos", "aarch64") => ("aarch64-mac", "tar.gz", true),
-        ("windows", "x86_64") => ("x86_64-windows", "zip", true),
-        ("windows", "aarch64") => ("aarch64-windows", "zip", true),
+        ("windows", "x86_64") | ("windows", "aarch64") => ("windows", "zip", true),
         _ => {
             println!("Update not supported on {os}-{arch}.");
             println!("Re-run install.sh: curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | sh");
