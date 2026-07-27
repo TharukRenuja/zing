@@ -1,6 +1,6 @@
 [package]
 name = "zing-ext"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Extensions for the zing downloader"
 authors = ["Tharuk Renuja"]
