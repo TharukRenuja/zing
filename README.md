@@ -8,38 +8,40 @@ zing https://example.com/file.zip
 
 ## Contents
 
-- [How it works](#how-it-works)
-- [Install](#install)
-    - [Install script (Linux/macOS)](#install-script-linuxmacos)
-    - [Download pre-built binary](#download-pre-built-binary)
-    - [Build from source](#build-from-source)
-- [Update](#update)
-- [Uninstall](#uninstall)
-    - [Using uninstall script](#using-uninstall-script)
-    - [Or manually](#or-manually)
-- [Quick start](#quick-start)
-- [Pipe mode](#pipe-mode)
-- [Resume](#resume)
+- [zing](#zing)
+  - [Contents](#contents)
+  - [How it works](#how-it-works)
+  - [Install](#install)
+      - [Install script (Linux/macOS)](#install-script-linuxmacos)
+      - [Download pre-built binary](#download-pre-built-binary)
+      - [Build from source](#build-from-source)
+  - [Update](#update)
+  - [Uninstall](#uninstall)
+      - [Using uninstall script](#using-uninstall-script)
+      - [Or manually](#or-manually)
+  - [Quick start](#quick-start)
+  - [Pipe mode](#pipe-mode)
+  - [Resume](#resume)
     - [Standalone resume](#standalone-resume)
     - [Daemon resume](#daemon-resume)
-- [Cookies \& Authentication](#cookies--authentication)
+  - [Cookies \& Authentication](#cookies--authentication)
     - [Cookie jars (Netscape format)](#cookie-jars-netscape-format)
     - [.netrc authentication](#netrc-authentication)
     - [Basic auth](#basic-auth)
-- [Event hooks](#event-hooks)
-- [Logging](#logging)
-- [Daemon](#daemon)
+  - [Event hooks](#event-hooks)
+  - [Logging](#logging)
+  - [Daemon](#daemon)
     - [Start / Stop / Restart](#start--stop--restart)
     - [Manage tasks](#manage-tasks)
-    - [Install systemd service](#install-systemd-service)
-- [Scheduled downloads](#scheduled-downloads)
-- [Configuration](#configuration)
-- [Completions](#completions)
-- [Features \& Comparison](#features--comparison)
+    - [Install systemd service (Unix only)](#install-systemd-service-unix-only)
+  - [Scheduled downloads](#scheduled-downloads)
+  - [Configuration](#configuration)
+  - [Completions](#completions)
+  - [Features \& Comparison](#features--comparison)
     - [Features](#features)
     - [Comparison](#comparison)
-- [Architecture](#architecture)
-- [Design](#design)
+  - [Architecture](#architecture)
+  - [Design](#design)
 
 ## How it works
 
@@ -64,10 +66,9 @@ Optionally sets up zing-daemon as a systemd service. Installs to `/usr/local/bin
 
 Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/releases/latest).
 
-- Linux: `zing-<tag>-{arch}-linux.tar.gz` (contains `zing` + `zing-daemon`)
-- macOS: `zing-<tag>-{arch}-mac.dmg` (fresh install) or `...-mac-update.tar.gz` (update)
-- Windows: `zing-<tag>-{arch}-windows-update.zip` (contains `zing.exe` + `zing-daemon.exe`)
-- Windows: `zing-<tag>-{arch}-windows-installer.exe` (NSIS installer, adds to PATH)
+- Linux: `zing-<tag>-{arch}-linux.tar.gz`
+- macOS: `zing-<tag>-{arch}-mac.dmg`
+- Windows: `zing-<tag>-{arch}-windows-installer.exe` 
 
 #### Build from source
 ```bash
@@ -272,6 +273,9 @@ zing -u "token:" https://example.com/api/download
 
 ## Event hooks
 
+<details>
+<summary>Run custom commands when downloads finish or fail</summary>
+
 Run custom commands when downloads finish or fail:
 
 ```
@@ -281,12 +285,19 @@ zing --on-download-error  "echo 'Failed: {}' >> ~/failures.log" https://example.
 
 `{}` is replaced with the file path.
 
+</details>
+
 ## Logging
+
+<details>
+<summary>Log to file instead of stderr</summary>
 
 ```
 # Log to file instead of stderr
 zing -l download.log https://example.com/file.zip
 ```
+
+</details>
 
 ## Daemon
 
@@ -405,6 +416,9 @@ Config file: `~/.config/zing/config.json` (Linux/macOS) or `%APPDATA%\zing\confi
 
 ## Completions
 
+<details>
+<summary>Generate shell completions</summary>
+
 ```bash
 # Generate shell completions
 zing completions bash
@@ -412,6 +426,8 @@ zing completions zsh
 zing completions fish
 zing completions powershell
 ```
+
+</details>
 
 ## Features & Comparison
 
