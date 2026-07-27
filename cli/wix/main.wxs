@@ -40,7 +40,7 @@
                     </Component>
 
                     <Directory Id='Bin' Name='bin'>
-                        <Component Id='Path' Guid='*' KeyPath='yes'>
+                        <Component Id='Path' Guid='8C526556-9121-4475-8025-131666465432' KeyPath='yes'>
                             <Environment
                                 Id='PATH'
                                 Name='PATH'
