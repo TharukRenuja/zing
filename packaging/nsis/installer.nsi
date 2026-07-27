@@ -177,15 +177,16 @@ Function StrStr
     StrCpy $2 $1 $3 $2
     ${If} $2 == ""
       StrCpy $0 ""
-      ${ExitFor}
+      Goto done
     ${EndIf}
     ${If} $2 == $0
       StrCpy $0 $1 "" $2
-      ${ExitFor}
+      Goto done
     ${EndIf}
     IntOp $2 $2 + 1
     Goto loop
 
+  done:
   Pop $3
   Pop $2
   Pop $1
@@ -213,15 +214,16 @@ Function un.StrStr
     StrCpy $2 $1 $3 $2
     ${If} $2 == ""
       StrCpy $0 ""
-      ${ExitFor}
+      Goto done
     ${EndIf}
     ${If} $2 == $0
       StrCpy $0 $1 "" $2
-      ${ExitFor}
+      Goto done
     ${EndIf}
     IntOp $2 $2 + 1
     Goto loop_u
 
+  done:
   Pop $3
   Pop $2
   Pop $1
