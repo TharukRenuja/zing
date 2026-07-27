@@ -68,7 +68,7 @@ Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/rel
 
 - Linux: `zing-<tag>-{arch}-linux.tar.gz`
 - macOS: `zing-<tag>-{arch}-mac.dmg`
-- Windows: `zing-<tag>-{arch}-windows-installer.exe` 
+- Windows: `zing-<tag>-{arch}-windows.msi` 
 
 #### Build from source
 ```bash
