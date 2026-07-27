@@ -149,6 +149,7 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
+          Copy-Item cli/wix/License.rtf License.rtf
           cargo wix --nocapture -p zing -o .
           $msi = Get-ChildItem -Filter "zing-*.msi" | Select-Object -First 1
           Rename-Item $msi.Name "zing-$tag-${{ matrix.suffix }}.msi"
