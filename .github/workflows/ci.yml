@@ -122,7 +122,7 @@ jobs:
           Compress-Archive -Path staging/* -DestinationPath "zing-$tag-${{ matrix.suffix }}.zip"
 
       - name: Build NSIS installer (Windows)
-        if: matrix.ext == 'zip' && matrix.target == 'x86_64-pc-windows-msvc'
+        if: matrix.ext == 'zip'
         shell: pwsh
         run: |
           choco install nsis -y --no-progress
@@ -130,8 +130,8 @@ jobs:
           $version = $tag.TrimStart('v')
           (Get-Content packaging/nsis/installer.nsi) -replace '0\.1\.3', $version | Set-Content packaging/nsis/installer.nsi
           $stagingDir = Join-Path $pwd "staging"
-          & "C:\Program Files (x86)\NSIS\makensis.exe" "/DSOURCE_DIR=$stagingDir" packaging/nsis/installer.nsi
-          Move-Item "zing-$version-x86_64-windows-installer.exe" "zing-$tag-x86_64-windows-installer.exe"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" "/DSOURCE_DIR=$stagingDir" "/DARCH_SUFFIX=${{ matrix.suffix }}" packaging/nsis/installer.nsi
+          Move-Item "zing-$version-${{ matrix.suffix }}-installer.exe" "zing-$tag-${{ matrix.suffix }}-installer.exe"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

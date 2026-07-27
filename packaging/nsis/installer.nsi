@@ -2,6 +2,7 @@
 !define PRODUCT_PUBLISHER "TharukRenuja"
 !define PRODUCT_VERSION "0.1.3"
 !define SOURCE_DIR "."
+!define ARCH_SUFFIX "x86_64-windows"
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
@@ -16,7 +17,7 @@
 !insertmacro MUI_LANGUAGE "English"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "zing-${PRODUCT_VERSION}-x86_64-windows-installer.exe"
+OutFile "zing-${PRODUCT_VERSION}-${ARCH_SUFFIX}-installer.exe"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "Software\${PRODUCT_PUBLISHER}\${PRODUCT_NAME}" "InstallDir"
 
