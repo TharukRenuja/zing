@@ -81,6 +81,7 @@ pub fn auth_file(addr: &str) -> PathBuf {
     }
     #[cfg(windows)]
     {
+        let _ = &addr;
         let appdata = std::env::var("APPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."));
