@@ -64,7 +64,27 @@
                                 Name='zing-daemon.exe'
                                 DiskId='1'
                                 Source='$(var.CargoTargetDir)\release\zing-daemon.exe'
-                                KeyPath='yes'/>
+                                KeyPath='yes'>
+                                <ServiceInstall
+                                    Id='ServiceInstaller'
+                                    Type='ownProcess'
+                                    Name='zing-daemon'
+                                    DisplayName='zing Download Daemon'
+                                    Description='Background service for segmented HTTP downloads'
+                                    Start='auto'
+                                    Account='NT AUTHORITY\LocalService'
+                                    ErrorControl='normal'
+                                    Interactive='no'>
+                                    <ServiceDependency Id='Tcpip'/>
+                                </ServiceInstall>
+                                <ServiceControl
+                                    Id='ServiceController'
+                                    Name='zing-daemon'
+                                    Start='install'
+                                    Stop='both'
+                                    Remove='uninstall'
+                                    Wait='yes'/>
+                            </File>
                         </Component>
                     </Directory>
                 </Directory>
@@ -96,7 +116,7 @@
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
         <Property Id='ARPHELPLINK' Value='https://github.com/TharukRenuja/zing'/>
-        <WixVariable Id='WixUILicenseRtf' Value='License.rtf'/>
+        <WixVariable Id='WixUILicenseRtf' Value='cli\wix\License.rtf'/>
 
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>

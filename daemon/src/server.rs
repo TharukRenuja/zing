@@ -4,12 +4,26 @@ use crate::task_manager::TaskManager;
 use std::sync::Arc;
 use zing_core::transport;
 
-pub async fn run(addr: &str, auth_token: String, manager: TaskManager) -> std::io::Result<()> {
+pub async fn run(
+    addr: &str,
+    auth_token: String,
+    manager: TaskManager,
+    stop_signal: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> std::io::Result<()> {
     let listener = transport::bind(addr).await?;
     tracing::info!("Listening on {addr}");
 
     let manager = Arc::new(manager);
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+    // Bridge external stop signal to internal shutdown channel
+    if let Some(stop) = stop_signal {
+        let tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            let _ = stop.await;
+            let _ = tx.send(());
+        });
+    }
 
     loop {
         tokio::select! {

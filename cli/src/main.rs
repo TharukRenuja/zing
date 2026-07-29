@@ -537,26 +537,9 @@ async fn run(args: Args) -> Result<()> {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     run_daemon_start().await
                 }
-                DaemonAction::Install => {
-                    #[cfg(unix)]
-                    return run_daemon_install().await;
-                    #[cfg(not(unix))]
-                    return Err(color_eyre::eyre::eyre!("Install is only supported on Unix"));
-                }
-                DaemonAction::Uninstall => {
-                    #[cfg(unix)]
-                    return run_daemon_uninstall().await;
-                    #[cfg(not(unix))]
-                    return Err(color_eyre::eyre::eyre!(
-                        "Uninstall is only supported on Unix"
-                    ));
-                }
-                DaemonAction::Status => {
-                    #[cfg(unix)]
-                    return run_daemon_status().await;
-                    #[cfg(not(unix))]
-                    return Err(color_eyre::eyre::eyre!("Status is only supported on Unix"));
-                }
+                DaemonAction::Install => run_daemon_install().await,
+                DaemonAction::Uninstall => run_daemon_uninstall().await,
+                DaemonAction::Status => run_daemon_status().await,
             };
         }
         Some(Commands::Schedule(ref sched)) => {
@@ -1094,10 +1077,17 @@ fn schedule_config_path() -> std::path::PathBuf {
         .join("schedule.json")
 }
 
+fn daemon_name() -> &'static str {
+    if cfg!(windows) { "zing-daemon.exe" } else { "zing-daemon" }
+}
+
 async fn run_daemon_start() -> Result<()> {
+    #[cfg(windows)]
+    return run_sc_command("start").await;
+
     let daemon_path = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(&p).join("zing-daemon"))
-        .unwrap_or_else(|_| PathBuf::from("zing-daemon"));
+        .map(|p| p.parent().unwrap_or(&p).join(daemon_name()))
+        .unwrap_or_else(|_| PathBuf::from(daemon_name()));
 
     tracing::info!("Starting zing daemon: {}", daemon_path.display());
     let child = std::process::Command::new(&daemon_path)
@@ -1108,6 +1098,9 @@ async fn run_daemon_start() -> Result<()> {
 }
 
 async fn run_daemon_stop() -> Result<()> {
+    #[cfg(windows)]
+    return run_sc_command("stop").await;
+
     match daemon_client::send_request("zing.shutdown", None).await {
         Ok(resp) => {
             tracing::info!(
@@ -1124,6 +1117,28 @@ async fn run_daemon_stop() -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+async fn run_sc_command(action: &str) -> Result<()> {
+    let output = tokio::process::Command::new("sc")
+        .args([action, "zing-daemon"])
+        .output()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("sc {action} failed: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() {
+        tracing::info!("sc {action}: OK");
+        if !stdout.trim().is_empty() {
+            println!("{}", stdout.trim());
+        }
+    } else {
+        tracing::error!("sc {action}: {}", stderr.trim());
+        return Err(color_eyre::eyre::eyre!("sc {action}: {}", stderr.trim()));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn daemon_service_path() -> PathBuf {
     dirs::config_dir()
@@ -1136,8 +1151,8 @@ fn daemon_service_path() -> PathBuf {
 #[cfg(unix)]
 fn daemon_service_content() -> String {
     let daemon_path = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(&p).join("zing-daemon"))
-        .unwrap_or_else(|_| PathBuf::from("zing-daemon"))
+        .map(|p| p.parent().unwrap_or(&p).join(daemon_name()))
+        .unwrap_or_else(|_| PathBuf::from(daemon_name()))
         .to_string_lossy()
         .to_string();
 
@@ -1175,7 +1190,6 @@ async fn run_daemon_install() -> Result<()> {
 
     tracing::info!("Wrote systemd user service: {}", svc_path.display());
 
-    // Try to enable/start the service
     let output = tokio::process::Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .output()
@@ -1221,7 +1235,6 @@ async fn run_daemon_install() -> Result<()> {
 async fn run_daemon_uninstall() -> Result<()> {
     let svc_path = daemon_service_path();
 
-    // Try to stop/disable
     let disable = tokio::process::Command::new("systemctl")
         .args(["--user", "disable", "--now", "zing-daemon.service"])
         .output()
@@ -1249,7 +1262,6 @@ async fn run_daemon_uninstall() -> Result<()> {
         tracing::info!("Removed service file: {}", svc_path.display());
     }
 
-    // daemon-reload
     let _ = tokio::process::Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .output()
@@ -1286,6 +1298,25 @@ async fn run_daemon_status() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(not(unix))]
+async fn run_daemon_install() -> Result<()> {
+    tracing::info!("Daemon is installed as a Windows service by the MSI installer.");
+    tracing::info!("To reinstall, run the MSI installer again.");
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn run_daemon_uninstall() -> Result<()> {
+    tracing::info!("Daemon is uninstalled by the MSI uninstaller.");
+    tracing::info!("Use 'Programs and Features' or the MSI uninstaller.");
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn run_daemon_status() -> Result<()> {
+    run_sc_command("query").await
 }
 
 async fn run_schedule(_args: &Args, sched: &args::ScheduleArgs) -> Result<()> {

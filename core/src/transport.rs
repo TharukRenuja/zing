@@ -1,5 +1,12 @@
 use std::path::PathBuf;
 
+#[cfg(windows)]
+fn program_data_dir() -> PathBuf {
+    std::env::var("PROGRAMDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(r"C:\ProgramData"))
+}
+
 #[cfg(unix)]
 pub type DaemonListener = tokio::net::UnixListener;
 #[cfg(windows)]
@@ -37,10 +44,7 @@ pub fn default_addr() -> String {
     }
     #[cfg(windows)]
     {
-        let appdata = std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
-        let port_file = appdata.join("zing").join("daemon.port");
+        let port_file = program_data_dir().join("zing").join("daemon.port");
         std::fs::read_to_string(&port_file)
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "127.0.0.1:0".to_string())
@@ -61,10 +65,7 @@ pub async fn bind(addr: &str) -> std::io::Result<DaemonListener> {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         let listener = tokio::net::TcpListener::bind(socket_addr).await?;
         let actual = listener.local_addr()?;
-        let appdata = std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
-        let port_dir = appdata.join("zing");
+        let port_dir = program_data_dir().join("zing");
         let _ = std::fs::create_dir_all(&port_dir);
         let port_file = port_dir.join("daemon.port");
         let _ = std::fs::write(&port_file, format!("127.0.0.1:{}", actual.port()));
@@ -82,10 +83,7 @@ pub fn auth_file(addr: &str) -> PathBuf {
     #[cfg(windows)]
     {
         let _ = &addr;
-        let appdata = std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
-        appdata.join("zing").join("auth.token")
+        program_data_dir().join("zing").join("auth.token")
     }
 }
 
