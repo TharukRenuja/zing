@@ -115,7 +115,6 @@
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
         <Property Id='ARPHELPLINK' Value='https://github.com/TharukRenuja/zing'/>
-        <WixVariable Id='WixUILicenseRtf' Value='cli\wix\License.rtf'/>
 
         <UI>
             <UIRef Id='WixUI_FeatureTree'/>

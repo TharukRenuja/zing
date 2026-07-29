@@ -15,13 +15,16 @@ fn main() {
     #[cfg(windows)]
     {
         let args: Vec<String> = std::env::args().collect();
-        if args.get(1).map(|s| s == "--service").unwrap_or(false) {
-            windows_service::service_dispatcher::start("zing-daemon", ffi_service_main)
-                .expect("Failed to start service dispatcher");
+        if args.get(1).map(|s| s == "--console").unwrap_or(false) {
+            run_daemon_console();
             return;
         }
+        windows_service::service_dispatcher::start("zing-daemon", ffi_service_main)
+            .expect("Failed to start service dispatcher");
+        return;
     }
 
+    #[cfg(not(windows))]
     run_daemon_console();
 }
 

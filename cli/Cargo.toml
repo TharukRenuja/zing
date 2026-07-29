@@ -1,8 +1,8 @@
 [package.metadata.wix]
 path-guid = "637329ae-96ef-4783-808f-1ea9b93ac8ae"
 upgrade-guid = "9469988e-7729-41cc-bad7-f5f0debe607f"
-license = "cli/wix/License.rtf"
-eula = "cli/wix/License.rtf"
+license = "wix/License.rtf"
+eula = "wix/License.rtf"
 
 [package]
 name = "zing"
