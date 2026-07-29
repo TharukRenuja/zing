@@ -82,10 +82,12 @@ pub async fn run_update() -> Result<()> {
     // Check write permission before downloading
     let probe = exe_dir.join(".zing-update-probe");
     if std::fs::write(&probe, b"").is_err() {
-        bail!(
-            "No write permission to {}. Run with sudo: sudo zing update",
-            exe_dir.display()
-        );
+        let hint = if cfg!(windows) {
+            "Reopen terminal as Administrator"
+        } else {
+            "Run with sudo: sudo zing update"
+        };
+        bail!("No write permission to {}. {}", exe_dir.display(), hint);
     }
     let _ = std::fs::remove_file(&probe);
 

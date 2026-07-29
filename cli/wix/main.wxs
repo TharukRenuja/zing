@@ -72,7 +72,7 @@
                                 DisplayName='zing Download Daemon'
                                 Description='Background service for segmented HTTP downloads'
                                 Start='auto'
-                                Account='NT AUTHORITY\LocalService'
+                                Account='NT AUTHORITY\LocalSystem'
                                 ErrorControl='normal'
                                 Interactive='no'>
                                 <ServiceDependency Id='Tcpip'/>
