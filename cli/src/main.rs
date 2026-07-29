@@ -14,6 +14,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+#[cfg(not(windows))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -1077,6 +1078,7 @@ fn schedule_config_path() -> std::path::PathBuf {
         .join("schedule.json")
 }
 
+#[cfg(not(windows))]
 fn daemon_name() -> &'static str {
     if cfg!(windows) {
         "zing-daemon.exe"
