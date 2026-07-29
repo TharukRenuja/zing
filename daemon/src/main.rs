@@ -8,6 +8,9 @@ use task_manager::TaskManager;
 use tracing_subscriber::EnvFilter;
 use zing_core::transport;
 
+#[cfg(windows)]
+windows_service::define_windows_service!(ffi_service_main, my_service_main);
+
 fn main() {
     #[cfg(windows)]
     {
@@ -23,24 +26,37 @@ fn main() {
 }
 
 #[cfg(windows)]
-fn ffi_service_main(_arguments: Vec<std::ffi::OsString>) {
+fn my_service_main(_arguments: Vec<std::ffi::OsString>) {
+    use std::time::Duration;
+    use windows_service::service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+        ServiceType,
+    };
+    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
     let event_handler = move |control_event| match control_event {
-        windows_service::service::ServiceControl::Stop
-        | windows_service::service::ServiceControl::Shutdown => {
+        ServiceControl::Stop | ServiceControl::Shutdown => {
             let _ = shutdown_tx.send(());
-            windows_service::service_control::ServiceControlHandlerResult::NoError
+            ServiceControlHandlerResult::NoError
         }
-        _ => windows_service::service_control::ServiceControlHandlerResult::NotImplemented,
+        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        _ => ServiceControlHandlerResult::NotImplemented,
     };
 
-    let status_handle =
-        windows_service::service_control_handler::register("zing-daemon", event_handler)
-            .expect("Failed to register service control handler");
-    status_handle
-        .set_service_status(windows_service::service::ServiceState::Running)
-        .expect("Failed to set service status");
+    let status_handle = service_control_handler::register("zing-daemon", event_handler)
+        .expect("Failed to register service control handler");
+
+    let _ = status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    });
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -58,7 +74,15 @@ fn ffi_service_main(_arguments: Vec<std::ffi::OsString>) {
         run_daemon(Some(service_stop_rx)).await;
     });
 
-    let _ = status_handle.set_service_status(windows_service::service::ServiceState::Stopped);
+    let _ = status_handle.set_service_status(ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    });
 }
 
 fn setup_tracing() {

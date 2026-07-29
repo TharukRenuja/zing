@@ -1089,36 +1089,42 @@ async fn run_daemon_start() -> Result<()> {
     #[cfg(windows)]
     return run_sc_command("start").await;
 
-    let daemon_path = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(&p).join(daemon_name()))
-        .unwrap_or_else(|_| PathBuf::from(daemon_name()));
+    #[cfg(not(windows))]
+    {
+        let daemon_path = std::env::current_exe()
+            .map(|p| p.parent().unwrap_or(&p).join(daemon_name()))
+            .unwrap_or_else(|_| PathBuf::from(daemon_name()));
 
-    tracing::info!("Starting zing daemon: {}", daemon_path.display());
-    let child = std::process::Command::new(&daemon_path)
-        .spawn()
-        .map_err(|e| color_eyre::eyre::eyre!("Failed to start daemon: {e}"))?;
-    tracing::info!("Daemon started with PID {}", child.id());
-    Ok(())
+        tracing::info!("Starting zing daemon: {}", daemon_path.display());
+        let child = std::process::Command::new(&daemon_path)
+            .spawn()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to start daemon: {e}"))?;
+        tracing::info!("Daemon started with PID {}", child.id());
+        Ok(())
+    }
 }
 
 async fn run_daemon_stop() -> Result<()> {
     #[cfg(windows)]
     return run_sc_command("stop").await;
 
-    match daemon_client::send_request("zing.shutdown", None).await {
-        Ok(resp) => {
-            tracing::info!(
-                "Daemon: {}",
-                resp.get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("stopped")
-            );
+    #[cfg(not(windows))]
+    {
+        match daemon_client::send_request("zing.shutdown", None).await {
+            Ok(resp) => {
+                tracing::info!(
+                    "Daemon: {}",
+                    resp.get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("stopped")
+                );
+            }
+            Err(e) => {
+                tracing::error!("Failed to stop daemon: {e}");
+            }
         }
-        Err(e) => {
-            tracing::error!("Failed to stop daemon: {e}");
-        }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(windows)]
