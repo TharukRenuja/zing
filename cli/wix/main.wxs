@@ -11,7 +11,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='zing'
+            Description='Simple, modern, cross-platform HTTP downloader with adaptive connection management and concurrent segmented downloads.'
             Manufacturer='TharukRenuja'
             InstallerVersion='450'
             Languages='1033'
