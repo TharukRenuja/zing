@@ -1078,7 +1078,11 @@ fn schedule_config_path() -> std::path::PathBuf {
 }
 
 fn daemon_name() -> &'static str {
-    if cfg!(windows) { "zing-daemon.exe" } else { "zing-daemon" }
+    if cfg!(windows) {
+        "zing-daemon.exe"
+    } else {
+        "zing-daemon"
+    }
 }
 
 async fn run_daemon_start() -> Result<()> {

@@ -26,15 +26,13 @@ fn main() {
 fn ffi_service_main(_arguments: Vec<std::ffi::OsString>) {
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
 
-    let event_handler = move |control_event| {
-        match control_event {
-            windows_service::service::ServiceControl::Stop
-            | windows_service::service::ServiceControl::Shutdown => {
-                let _ = shutdown_tx.send(());
-                windows_service::service_control::ServiceControlHandlerResult::NoError
-            }
-            _ => windows_service::service_control::ServiceControlHandlerResult::NotImplemented,
+    let event_handler = move |control_event| match control_event {
+        windows_service::service::ServiceControl::Stop
+        | windows_service::service::ServiceControl::Shutdown => {
+            let _ = shutdown_tx.send(());
+            windows_service::service_control::ServiceControlHandlerResult::NoError
         }
+        _ => windows_service::service_control::ServiceControlHandlerResult::NotImplemented,
     };
 
     let status_handle =
@@ -98,8 +96,7 @@ async fn run_daemon(stop_signal: Option<tokio::sync::oneshot::Receiver<()>>) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600));
         }
     }
 
