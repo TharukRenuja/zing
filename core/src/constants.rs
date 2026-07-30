@@ -31,3 +31,9 @@ pub const RETRY_BACKOFF_MIN_MS: u64 = 500;
 
 /// Maximum retry backoff delay.
 pub const RETRY_BACKOFF_MAX_MS: u64 = 10_000;
+
+/// Default low speed limit in bytes/sec (0 = disabled).
+pub const LOW_SPEED_LIMIT: u64 = 0;
+
+/// Default low speed time in seconds.
+pub const LOW_SPEED_TIME: u64 = 30;

@@ -29,6 +29,9 @@ struct SharedState {
     pub to_stdout: bool,
     pub retry_count: u32,
     pub retry_wait_ms: u64,
+    pub low_speed_limit: u64,
+    pub low_speed_time: u64,
+    pub save_interval_secs: u64,
     pub segment_mgr: Mutex<SegmentManager>,
     pub file: std::sync::Mutex<Option<Arc<std::fs::File>>>,
     pub bus: EventBus,
@@ -113,6 +116,9 @@ impl DownloadTask {
         use_cd: bool,
         cookie_jar: Option<Arc<ZingCookieStore>>,
         save_cookies_path: Option<String>,
+        low_speed_limit: u64,
+        low_speed_time: u64,
+        save_interval_secs: u64,
     ) -> Self {
         let pool = ConnectionPool::new(
             insecure,
@@ -146,6 +152,9 @@ impl DownloadTask {
                 to_stdout,
                 retry_count,
                 retry_wait_ms,
+                low_speed_limit,
+                low_speed_time,
+                save_interval_secs,
                 segment_mgr: Mutex::new(SegmentManager::new(max_connections)),
                 file: std::sync::Mutex::new(None),
                 bus,
@@ -371,6 +380,9 @@ impl DownloadTask {
                 .await?;
             f.set_len(total_size).await?;
             let std_file: std::fs::File = f.into_std().await;
+            if let Err(e) = util::preallocate(&std_file, total_size) {
+                tracing::warn!("Pre-allocation failed (non-fatal): {e}");
+            }
             *self.state.file.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(std_file));
             break;
         }
@@ -457,12 +469,14 @@ impl DownloadTask {
         let state_mon = Arc::clone(&self.state);
         let control_path = ControlFile::control_path(Path::new(&filename));
         let control_path_mon = control_path.clone();
-        // Periodic save task (every 5 seconds)
+        // Periodic save task
+        let save_interval = self.state.save_interval_secs;
         let _periodic_save = {
             let state = Arc::clone(&self.state);
             let cp = control_path.clone();
             tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(save_interval));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     interval.tick().await;
@@ -827,6 +841,11 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
         std::time::Duration::from_secs(10),
     );
 
+    let low_speed_limit = state.low_speed_limit;
+    let low_speed_time = state.low_speed_time;
+    let mut last_progress = Instant::now();
+    let mut low_speed_warned = false;
+
     loop {
         if state.done.load(Ordering::Acquire) {
             return;
@@ -852,8 +871,28 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
         }
 
         match download_range(&state, conn_id, offset, length).await {
-            Ok(_) => {
+            Ok(written) => {
                 retry.reset();
+                if written > 0 {
+                    last_progress = Instant::now();
+                    low_speed_warned = false;
+                } else if low_speed_limit > 0 {
+                    let idle = last_progress.elapsed();
+                    if idle > std::time::Duration::from_secs(low_speed_time) {
+                        tracing::warn!(
+                            "Conn {conn_id}: low-speed timeout ({} idle), rotating mirror",
+                            humantime_idle(idle)
+                        );
+                        if state.rotate_url().await {
+                            retry.reset();
+                            continue;
+                        }
+                        return;
+                    } else if !low_speed_warned && idle > std::time::Duration::from_secs(10) {
+                        tracing::warn!("Conn {conn_id}: no progress for {}", humantime_idle(idle));
+                        low_speed_warned = true;
+                    }
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
             Err(e) => {
@@ -1007,6 +1046,15 @@ async fn download_range(
     }
 
     Ok(written)
+}
+
+fn humantime_idle(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{}s", secs / 60, secs % 60)
+    }
 }
 
 #[cfg(test)]

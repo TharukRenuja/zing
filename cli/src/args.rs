@@ -158,6 +158,27 @@ pub struct Args {
     pub max_time: u64,
 
     #[arg(
+        long = "low-speed-limit",
+        default_value = "0",
+        help = "Low speed limit in bytes/sec (abort if below this, 0 = disabled)"
+    )]
+    pub low_speed_limit: u64,
+
+    #[arg(
+        long = "low-speed-time",
+        default_value = "30",
+        help = "Time in seconds to wait before aborting a slow connection"
+    )]
+    pub low_speed_time: u64,
+
+    #[arg(
+        long = "save-interval",
+        default_value = "5",
+        help = "Control file save interval in seconds"
+    )]
+    pub save_interval: u64,
+
+    #[arg(
         long = "input-file",
         short = 'i',
         help = "Read URLs from file (one per line, # for comments)"

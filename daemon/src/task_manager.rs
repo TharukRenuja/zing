@@ -23,6 +23,11 @@ pub struct SessionEntry {
     pub headers: Vec<(String, String)>,
     pub max_filesize: u64,
     pub checksum: Option<String>,
+    pub low_speed_limit: u64,
+    pub low_speed_time: u64,
+    pub save_interval_secs: u64,
+    pub on_download_complete: Option<String>,
+    pub on_download_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +49,11 @@ pub struct TaskInfo {
     pub headers: Vec<(String, String)>,
     pub max_filesize: u64,
     pub checksum: Option<String>,
+    pub low_speed_limit: u64,
+    pub low_speed_time: u64,
+    pub save_interval_secs: u64,
+    pub on_download_complete: Option<String>,
+    pub on_download_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +120,11 @@ impl TaskManager {
                 headers: t.headers.clone(),
                 max_filesize: t.max_filesize,
                 checksum: t.checksum.clone(),
+                low_speed_limit: t.low_speed_limit,
+                low_speed_time: t.low_speed_time,
+                save_interval_secs: t.save_interval_secs,
+                on_download_complete: t.on_download_complete.clone(),
+                on_download_error: t.on_download_error.clone(),
             })
             .collect();
         if let Ok(json) = serde_json::to_string_pretty(&entries) {
@@ -140,6 +155,11 @@ impl TaskManager {
         headers: Vec<(String, String)>,
         max_filesize: u64,
         checksum: Option<String>,
+        low_speed_limit: u64,
+        low_speed_time: u64,
+        save_interval_secs: u64,
+        on_download_complete: Option<String>,
+        on_download_error: Option<String>,
     ) -> TaskId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -161,6 +181,11 @@ impl TaskManager {
             headers: headers.clone(),
             max_filesize,
             checksum: checksum.clone(),
+            low_speed_limit,
+            low_speed_time,
+            save_interval_secs,
+            on_download_complete: on_download_complete.clone(),
+            on_download_error: on_download_error.clone(),
         };
 
         {
@@ -183,6 +208,8 @@ impl TaskManager {
         let filename = filename.to_string();
         let checksum2 = checksum.clone();
         let (cancel_tx, shutdown_rx) = broadcast::channel(16);
+        let hook_complete = on_download_complete.clone();
+        let hook_error = on_download_error.clone();
 
         {
             let mut cancel_map = self.cancel_txs.lock().await;
@@ -244,6 +271,9 @@ impl TaskManager {
                 true,
                 None,
                 None,
+                low_speed_limit,
+                low_speed_time,
+                save_interval_secs,
             );
 
             {
@@ -255,9 +285,9 @@ impl TaskManager {
 
             let result = task.run_with_shutdown(shutdown_rx).await;
 
-            {
+            let was_success = {
                 let mut tasks = tasks_arc2.lock().await;
-                match result {
+                match &result {
                     Ok(()) => {
                         if let Some(t) = tasks.get_mut(&id) {
                             if t.status != TaskStatus::Paused {
@@ -265,26 +295,36 @@ impl TaskManager {
                                 if let Some(ref chk) = checksum2 {
                                     let path = std::path::Path::new(&t.filename);
                                     match zing_ext::checksum::verify_file(path, chk) {
-                                        Ok(true) => tracing::info!("Checksum: OK ({chk})"),
+                                        Ok(true) => {
+                                            tracing::info!("Checksum: OK ({chk})");
+                                        }
                                         Ok(false) => {
                                             let err = format!("Checksum mismatch: expected {chk}");
                                             t.status = TaskStatus::Failed(err.clone());
                                             bus.emit(EngineEvent::TaskFailed { id, error: err });
-                                            return;
                                         }
                                         Err(e) => {
                                             tracing::warn!("Checksum verification skipped: {e}");
                                         }
                                     }
                                 }
-                                t.downloaded = t.total_bytes.unwrap_or(t.downloaded);
-                                t.status = TaskStatus::Completed;
-                                bus.emit(EngineEvent::TaskCompleted {
-                                    id,
-                                    total_bytes: t.downloaded,
-                                    duration: std::time::Duration::ZERO,
-                                });
+                                if matches!(t.status, TaskStatus::Failed(_)) {
+                                    false
+                                } else {
+                                    t.downloaded = t.total_bytes.unwrap_or(t.downloaded);
+                                    t.status = TaskStatus::Completed;
+                                    bus.emit(EngineEvent::TaskCompleted {
+                                        id,
+                                        total_bytes: t.downloaded,
+                                        duration: std::time::Duration::ZERO,
+                                    });
+                                    true
+                                }
+                            } else {
+                                true
                             }
+                        } else {
+                            true
                         }
                     }
                     Err(e) => {
@@ -298,6 +338,23 @@ impl TaskManager {
                             id,
                             error: format!("{e}"),
                         });
+                        false
+                    }
+                }
+            };
+
+            // Execute hooks
+            {
+                let tasks = tasks_arc2.lock().await;
+                let filename = tasks.get(&id).map(|t| t.filename.clone());
+                drop(tasks);
+                if let Some(ref fname) = filename {
+                    if was_success {
+                        if let Some(ref cmd) = hook_complete {
+                            run_hook(cmd, fname);
+                        }
+                    } else if let Some(ref cmd) = hook_error {
+                        run_hook(cmd, fname);
                     }
                 }
             }
@@ -378,6 +435,11 @@ impl TaskManager {
         let headers = task.headers.clone();
         let max_filesize = task.max_filesize;
         let checksum = task.checksum.clone();
+        let low_speed_limit = task.low_speed_limit;
+        let low_speed_time = task.low_speed_time;
+        let save_interval_secs = task.save_interval_secs;
+        let on_download_complete = task.on_download_complete.clone();
+        let on_download_error = task.on_download_error.clone();
         drop(tasks);
 
         let new_id = self
@@ -394,6 +456,11 @@ impl TaskManager {
                 headers,
                 max_filesize,
                 checksum,
+                low_speed_limit,
+                low_speed_time,
+                save_interval_secs,
+                on_download_complete,
+                on_download_error,
             )
             .await;
 
@@ -426,6 +493,19 @@ impl Default for TaskManager {
     }
 }
 
+fn run_hook(cmd: &str, filepath: &str) {
+    let expanded = cmd.replace("{}", filepath);
+    if let Ok(mut child) = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&expanded)
+        .spawn()
+    {
+        let _ = child.wait();
+    } else {
+        tracing::warn!("Failed to run hook command: {cmd}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,6 +526,11 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
+                0,
+                30,
+                5,
+                None,
                 None,
             )
             .await;
@@ -498,6 +583,11 @@ mod tests {
                 vec![],
                 0,
                 None,
+                0,
+                30,
+                5,
+                None,
+                None,
             )
             .await;
 
@@ -535,6 +625,11 @@ mod tests {
                 vec![],
                 0,
                 None,
+                0,
+                30,
+                5,
+                None,
+                None,
             )
             .await;
 
@@ -561,6 +656,11 @@ mod tests {
                 vec![],
                 0,
                 None,
+                0,
+                30,
+                5,
+                None,
+                None,
             )
             .await;
         let id2 = mgr
@@ -576,6 +676,11 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
+                0,
+                30,
+                5,
+                None,
                 None,
             )
             .await;
@@ -603,6 +708,11 @@ mod tests {
                 vec![],
                 0,
                 None,
+                0,
+                30,
+                5,
+                None,
+                None,
             )
             .await;
         let id2 = mgr
@@ -618,6 +728,11 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
+                0,
+                30,
+                5,
+                None,
                 None,
             )
             .await;
@@ -647,6 +762,11 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
+                0,
+                30,
+                5,
+                None,
                 None,
             )
             .await;

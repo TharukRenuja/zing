@@ -147,6 +147,11 @@ async fn run_daemon(stop_signal: Option<tokio::sync::oneshot::Receiver<()>>) {
                     entry.headers,
                     entry.max_filesize,
                     entry.checksum,
+                    entry.low_speed_limit,
+                    entry.low_speed_time,
+                    entry.save_interval_secs,
+                    entry.on_download_complete,
+                    entry.on_download_error,
                 )
                 .await;
         }

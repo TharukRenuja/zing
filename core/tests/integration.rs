@@ -85,6 +85,9 @@ async fn test_full_download() {
         true,
         None,
         None,
+        0,
+        30,
+        5,
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;
@@ -156,6 +159,9 @@ async fn test_resume_download() {
         true,
         None,
         None,
+        0,
+        30,
+        5,
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;

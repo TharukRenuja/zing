@@ -273,6 +273,28 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .and_then(|v| v.as_str().map(String::from))
         .filter(|s| !s.is_empty());
 
+    let low_speed_limit = map
+        .remove("low_speed_limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let low_speed_time = map
+        .remove("low_speed_time")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30);
+
+    let save_interval_secs = map
+        .remove("save_interval_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5);
+
+    let on_download_complete = map
+        .remove("on_download_complete")
+        .and_then(|v| v.as_str().map(String::from));
+    let on_download_error = map
+        .remove("on_download_error")
+        .and_then(|v| v.as_str().map(String::from));
+
     let id = manager
         .add_task(
             &url,
@@ -287,6 +309,11 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
             headers,
             max_filesize,
             checksum,
+            low_speed_limit,
+            low_speed_time,
+            save_interval_secs,
+            on_download_complete,
+            on_download_error,
         )
         .await;
 
@@ -524,6 +551,11 @@ mod tests {
             vec![],
             0,
             None,
+            0,
+            30,
+            5,
+            None,
+            None,
         )
         .await;
 
@@ -550,6 +582,11 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
+                0,
+                30,
+                5,
+                None,
                 None,
             )
             .await;
@@ -589,6 +626,11 @@ mod tests {
                 vec![],
                 0,
                 None,
+                0,
+                30,
+                5,
+                None,
+                None,
             )
             .await;
 
@@ -615,6 +657,11 @@ mod tests {
                 None,
                 vec![],
                 0,
+                None,
+                0,
+                30,
+                5,
+                None,
                 None,
             )
             .await;

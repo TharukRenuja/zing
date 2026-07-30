@@ -673,6 +673,11 @@ async fn run(args: Args) -> Result<()> {
                 "headers": daemon_headers,
                 "checksum": args.checksum,
                 "method": args.method,
+                "low_speed_limit": args.low_speed_limit,
+                "low_speed_time": args.low_speed_time,
+                "save_interval_secs": args.save_interval,
+                "on_download_complete": args.on_download_complete,
+                "on_download_error": args.on_download_error,
             });
             match daemon_client::send_request("zing.addUri", Some(params)).await {
                 Ok(resp) => {
@@ -728,13 +733,26 @@ async fn run(args: Args) -> Result<()> {
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let quit_requested = Arc::new(AtomicBool::new(false));
     let resume_requested = Arc::new(AtomicBool::new(false));
+    let cookie_jar_sig = cookie_jar.clone();
+    let save_cookies_path_sig = args.save_cookies.clone();
+
+    fn save_cookies_on_interrupt(jar: &Option<Arc<ZingCookieStore>>, path: &Option<String>) {
+        if let (Some(ref jar), Some(ref path)) = (jar, path) {
+            if let Err(e) = jar.save_netscape(path) {
+                tracing::error!("Failed to save cookies on interrupt: {e}");
+            }
+        }
+    }
 
     // Ctrl+C: quit (clean up control files)
     {
         let tx = shutdown_tx.clone();
         let quit = Arc::clone(&quit_requested);
+        let jar = cookie_jar_sig.clone();
+        let save_path = save_cookies_path_sig.clone();
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
+            save_cookies_on_interrupt(&jar, &save_path);
             quit.store(true, Ordering::Release);
             tracing::info!("Ctrl+C received, shutting down...");
             let _ = tx.send(());
@@ -746,11 +764,14 @@ async fn run(args: Args) -> Result<()> {
     {
         let tx = shutdown_tx.clone();
         let quit = Arc::clone(&quit_requested);
+        let jar = cookie_jar.clone();
+        let save_path = args.save_cookies.clone();
         tokio::spawn(async move {
             let mut sigterm =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
                     .expect("sigterm handler");
             sigterm.recv().await;
+            save_cookies_on_interrupt(&jar, &save_path);
             quit.store(true, Ordering::Release);
             tracing::info!("SIGTERM received, shutting down...");
             let _ = tx.send(());
@@ -936,6 +957,9 @@ async fn run(args: Args) -> Result<()> {
         let retry_wait = args.retry_wait;
         let connect_timeout = args.connect_timeout;
         let max_time = args.max_time;
+        let low_speed_limit = args.low_speed_limit;
+        let low_speed_time = args.low_speed_time;
+        let save_interval = args.save_interval;
 
         join_set.spawn(async move {
             if let Some(ref s) = sem {
@@ -982,6 +1006,9 @@ async fn run(args: Args) -> Result<()> {
                     use_cd,
                     jar.clone(),
                     save_cookies.clone(),
+                    low_speed_limit,
+                    low_speed_time,
+                    save_interval,
                 );
 
                 let task_shutdown = shutdown_tx.subscribe();

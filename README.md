@@ -185,6 +185,12 @@ zing --progress json https://example.com/file.zip
 
 # Log to file instead of stderr
 zing -l download.log https://example.com/file.zip
+
+# Abort slow connections (below 1KB/s for 60s, then try mirror)
+zing --low-speed-limit 1024 --low-speed-time 60 https://example.com/file.zip
+
+# Control file save interval (default 5s)
+zing --save-interval 10 https://example.com/large-file.zip
 ```
 
 ## Pipe mode
@@ -465,6 +471,11 @@ zing completions powershell
 - **Auto-file-renaming** (`--auto-file-renaming`) and **overwrite** control (`--allow-overwrite`)
 - **Dry-run** (`--dry-run`) to preview downloads
 - **Log to file** (`-l`/`--log`) instead of stderr
+- **Low-speed abort** (`--low-speed-limit`, `--low-speed-time`) to detect stuck connections and fail over to mirrors
+- **Configurable save interval** (`--save-interval`) to tune control-file persistence frequency
+- **Native fallocate pre-allocation** on Linux to reserve disk space before downloading
+- **Cookie save on interrupt** — cookies persist even on Ctrl+C/SIGTERM
+- **Daemon event hooks** — `--on-download-complete`/`--on-download-error` work in daemon mode too
 - **Event hooks** (`--on-download-complete`, `--on-download-error`) for custom post-download actions
 - **Update command** (`zing update`) to automatically upgrade to the latest release
 - **Shell completions** (`zing completions <shell>`) for bash, zsh, fish, and powershell
@@ -498,6 +509,10 @@ zing completions powershell
 | Content-Disposition | Yes | Yes | No | Yes | No |
 | Auto-file-renaming | Yes | No | No | No | No |
 | Dry-run | Yes | No | Yes | Yes | No |
+| Low-speed abort | Configurable limit+timeout | `--lowest-speed-limit` | No | No | No |
+| Disk pre-allocation | fallocate/ftruncate | falloc/prealloc/trunc | No | No | No |
+| Cookie save on interrupt | Yes | No | Yes (--cookie-jar) | No | No |
+| Daemon event hooks | on-complete & on-error | on-complete/error/start/pause | No | No | No |
 | Event hooks | on-complete / on-error | Yes | No | No | No |
 | User-Agent override | Yes | Yes | Yes | Yes | Yes |
 

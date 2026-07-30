@@ -248,6 +248,11 @@ impl Scheduler {
                             parse_headers(&entry.headers),
                             entry.max_filesize,
                             entry.checksum.clone(),
+                            0,
+                            30,
+                            5,
+                            None,
+                            None,
                         )
                         .await;
                 }
