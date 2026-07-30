@@ -22,36 +22,9 @@ pub fn preallocate(file: &File, len: u64) -> io::Result<()> {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::fd::AsRawFd;
-        let mut store = libc::fp_allocstore {
-            po_alloc: len as u64,
-        };
-        let mut spec = libc::fstore {
-            fst_flags: libc::F_ALLOCATECONTIG,
-            fst_posmode: libc::F_PEOFPOSMODE,
-            fst_offset: 0,
-            fst_length: len as i64,
-            fst_bytesalloc: 0,
-        };
-        let ret = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_PREALLOCATE, &spec) };
-        if ret == 0 {
-            return file.set_len(len);
-        }
-        // Try non-contiguous allocation
-        spec.fst_flags = libc::F_ALLOCATEALL;
-        let ret = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_PREALLOCATE, &spec) };
-        if ret == 0 {
-            return file.set_len(len);
-        }
-        file.set_len(len)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = &file;
-        let _ = len;
         file.set_len(len)
     }
 }
