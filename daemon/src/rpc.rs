@@ -295,6 +295,15 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .remove("on_download_error")
         .and_then(|v| v.as_str().map(String::from));
 
+    let end_game = map
+        .remove("end_game")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let throttle_reprobe = map
+        .remove("throttle_reprobe")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
     let id = manager
         .add_task(
             &url,
@@ -314,6 +323,8 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
             save_interval_secs,
             on_download_complete,
             on_download_error,
+            end_game,
+            throttle_reprobe,
         )
         .await;
 
@@ -556,6 +567,8 @@ mod tests {
             5,
             None,
             None,
+            true,
+            true,
         )
         .await;
 
@@ -588,6 +601,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
 
@@ -631,6 +646,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
 
@@ -663,6 +680,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
 

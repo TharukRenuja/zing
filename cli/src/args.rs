@@ -240,6 +240,30 @@ pub struct Args {
     pub allow_overwrite: bool,
 
     #[arg(
+        long = "end-game",
+        help = "Enable end-game mode (all connections race for last blocks)"
+    )]
+    pub end_game: bool,
+    #[arg(
+        long = "no-end-game",
+        help = "Disable end-game mode",
+        conflicts_with = "end_game"
+    )]
+    pub no_end_game: bool,
+
+    #[arg(
+        long = "throttle-reprobe",
+        help = "Enable throttling re-probe (restart download if speed drops too low)"
+    )]
+    pub throttle_reprobe: bool,
+    #[arg(
+        long = "no-throttle-reprobe",
+        help = "Disable throttling re-probe",
+        conflicts_with = "throttle_reprobe"
+    )]
+    pub no_throttle_reprobe: bool,
+
+    #[arg(
         long = "content-disposition",
         short = 'C',
         help = "Use server-provided filename from Content-Disposition"

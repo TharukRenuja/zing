@@ -28,6 +28,14 @@ pub struct SessionEntry {
     pub save_interval_secs: u64,
     pub on_download_complete: Option<String>,
     pub on_download_error: Option<String>,
+    #[serde(default = "default_true")]
+    pub end_game: bool,
+    #[serde(default = "default_true")]
+    pub throttle_reprobe: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +62,8 @@ pub struct TaskInfo {
     pub save_interval_secs: u64,
     pub on_download_complete: Option<String>,
     pub on_download_error: Option<String>,
+    pub end_game: bool,
+    pub throttle_reprobe: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +135,8 @@ impl TaskManager {
                 save_interval_secs: t.save_interval_secs,
                 on_download_complete: t.on_download_complete.clone(),
                 on_download_error: t.on_download_error.clone(),
+                end_game: t.end_game,
+                throttle_reprobe: t.throttle_reprobe,
             })
             .collect();
         if let Ok(json) = serde_json::to_string_pretty(&entries) {
@@ -160,6 +172,8 @@ impl TaskManager {
         save_interval_secs: u64,
         on_download_complete: Option<String>,
         on_download_error: Option<String>,
+        end_game: bool,
+        throttle_reprobe: bool,
     ) -> TaskId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -186,6 +200,8 @@ impl TaskManager {
             save_interval_secs,
             on_download_complete: on_download_complete.clone(),
             on_download_error: on_download_error.clone(),
+            end_game,
+            throttle_reprobe,
         };
 
         {
@@ -278,6 +294,8 @@ impl TaskManager {
                 None,  // cert_path
                 None,  // cert_key_path
                 false, // digest_auth
+                end_game,
+                throttle_reprobe,
             );
 
             {
@@ -444,6 +462,8 @@ impl TaskManager {
         let save_interval_secs = task.save_interval_secs;
         let on_download_complete = task.on_download_complete.clone();
         let on_download_error = task.on_download_error.clone();
+        let end_game = task.end_game;
+        let throttle_reprobe = task.throttle_reprobe;
         drop(tasks);
 
         let new_id = self
@@ -465,6 +485,8 @@ impl TaskManager {
                 save_interval_secs,
                 on_download_complete,
                 on_download_error,
+                end_game,
+                throttle_reprobe,
             )
             .await;
 
@@ -536,6 +558,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
 
@@ -592,6 +616,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
 
@@ -634,6 +660,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
 
@@ -665,6 +693,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
         let id2 = mgr
@@ -686,6 +716,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
 
@@ -717,6 +749,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
         let id2 = mgr
@@ -738,6 +772,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
         assert!(id2 > id1, "task IDs should increment");
@@ -772,6 +808,8 @@ mod tests {
                 5,
                 None,
                 None,
+                true,
+                true,
             )
             .await;
 

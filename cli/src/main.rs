@@ -971,6 +971,21 @@ async fn run(args: Args) -> Result<()> {
         let digest = args.digest;
         let user_creds = args.user.clone();
 
+        let endgame_enabled = if args.end_game {
+            true
+        } else if args.no_end_game {
+            false
+        } else {
+            cfg.end_game.unwrap_or(true)
+        };
+        let throttle_reprobe_enabled = if args.throttle_reprobe {
+            true
+        } else if args.no_throttle_reprobe {
+            false
+        } else {
+            cfg.throttle_reprobe.unwrap_or(true)
+        };
+
         join_set.spawn(async move {
             if let Some(ref s) = sem {
                 let _permit = s.acquire().await.expect("semaphore");
@@ -1023,6 +1038,8 @@ async fn run(args: Args) -> Result<()> {
                     cert_path.clone(),
                     cert_key_path.clone(),
                     digest,
+                    endgame_enabled,
+                    throttle_reprobe_enabled,
                 );
                 if digest {
                     if let Some(ref creds) = user_creds {
@@ -1615,10 +1632,22 @@ async fn run_config_edit() -> Result<()> {
     println!("  prompt_location:           {}", cfg.prompt_location);
     println!(
         "  update_check_interval_days: {}",
-        cfg.update_check_interval_days
-            .map(|d| d.to_string())
-            .unwrap_or_else(|| "disabled".to_string())
+        match cfg.update_check_interval_days {
+            Some(0) => "always".to_string(),
+            Some(d) => format!("every {d} days"),
+            None => "disabled".to_string(),
+        }
     );
+    let end_game_str = cfg
+        .end_game
+        .map(|v| if v { "enabled" } else { "disabled" })
+        .unwrap_or("default (enabled)");
+    println!("  end_game:                 {end_game_str}");
+    let throttle_str = cfg
+        .throttle_reprobe
+        .map(|v| if v { "enabled" } else { "disabled" })
+        .unwrap_or("default (enabled)");
+    println!("  throttle_reprobe:         {throttle_str}");
 
     use dialoguer::{theme::ColorfulTheme, Input, Select};
 
@@ -1654,13 +1683,14 @@ async fn run_config_edit() -> Result<()> {
     cfg.prompt_location = prompt_idx == 0;
 
     let update_options = &[
+        "Always",
         "Every 3 days",
         "Every 7 days",
         "Every 14 days",
         "Every 30 days",
         "Never",
     ];
-    let update_values: [Option<u64>; 5] = [Some(3), Some(7), Some(14), Some(30), None];
+    let update_values: [Option<u64>; 6] = [Some(0), Some(3), Some(7), Some(14), Some(30), None];
     let default_update_idx = update_values
         .iter()
         .position(|&v| v == cfg.update_check_interval_days)
@@ -1671,6 +1701,26 @@ async fn run_config_edit() -> Result<()> {
         .items(update_options)
         .interact()?;
     cfg.update_check_interval_days = update_values[update_idx];
+
+    let endgame_idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("End-game mode (race for last blocks)?")
+        .default(match cfg.end_game {
+            Some(false) => 1,
+            _ => 0,
+        })
+        .items(&["Yes (default)", "No"])
+        .interact()?;
+    cfg.end_game = Some(endgame_idx == 0);
+
+    let throttle_idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Throttle re-probe (restart if speed drops)?")
+        .default(match cfg.throttle_reprobe {
+            Some(false) => 1,
+            _ => 0,
+        })
+        .items(&["Yes (default)", "No"])
+        .interact()?;
+    cfg.throttle_reprobe = Some(throttle_idx == 0);
 
     if let Err(e) = cfg.save() {
         eprintln!("Failed to save config: {e}");

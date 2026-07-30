@@ -253,6 +253,8 @@ impl Scheduler {
                             5,
                             None,
                             None,
+                            true,
+                            true,
                         )
                         .await;
                 }

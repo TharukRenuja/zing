@@ -8,6 +8,10 @@ pub struct Config {
     pub prompt_location: bool,
     #[serde(default = "default_update_interval")]
     pub update_check_interval_days: Option<u64>,
+    #[serde(default)]
+    pub end_game: Option<bool>,
+    #[serde(default)]
+    pub throttle_reprobe: Option<bool>,
 }
 
 fn default_update_interval() -> Option<u64> {

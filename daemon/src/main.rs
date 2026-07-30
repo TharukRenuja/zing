@@ -152,6 +152,8 @@ async fn run_daemon(stop_signal: Option<tokio::sync::oneshot::Receiver<()>>) {
                     entry.save_interval_secs,
                     entry.on_download_complete,
                     entry.on_download_error,
+                    entry.end_game,
+                    entry.throttle_reprobe,
                 )
                 .await;
         }

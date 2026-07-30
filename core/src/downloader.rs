@@ -14,6 +14,7 @@ use crate::storage::control::BlockBitfield;
 use crate::storage::ControlFile;
 use crate::util;
 use anyhow::{bail, Result};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -52,6 +53,9 @@ struct SharedState {
     pub block_bitfield: tokio::sync::Mutex<BlockBitfield>,
     pub chunk_hashes: Option<ChunkHashes>,
     pub endgame: AtomicBool,
+    pub endgame_enabled: bool,
+    pub throttle_reprobe_enabled: bool,
+    pub claimed_blocks: tokio::sync::Mutex<HashSet<u32>>,
     pub digest_auth: bool,
     pub auth_credentials: tokio::sync::Mutex<Option<(String, String)>>,
 }
@@ -137,6 +141,8 @@ impl DownloadTask {
         cert_path: Option<String>,
         cert_key_path: Option<String>,
         digest_auth: bool,
+        endgame_enabled: bool,
+        throttle_reprobe_enabled: bool,
     ) -> Self {
         // Happy Eyeballs DNS resolution: resolve the URL hostname with IPv6
         // preference so the HTTP client tries IPv6 first, then IPv4.
@@ -213,6 +219,9 @@ impl DownloadTask {
                 )),
                 chunk_hashes,
                 endgame: AtomicBool::new(false),
+                endgame_enabled,
+                throttle_reprobe_enabled,
+                claimed_blocks: tokio::sync::Mutex::new(HashSet::new()),
                 digest_auth,
                 auth_credentials: tokio::sync::Mutex::new(None),
             }),
@@ -631,7 +640,11 @@ impl DownloadTask {
                 };
                 let min_speed = constants::MIN_THROTTLE_SPEED;
 
-                if threshold > min_speed && speed_u64 > 0 && speed_u64 < threshold {
+                if state_mon.throttle_reprobe_enabled
+                    && threshold > min_speed
+                    && speed_u64 > 0
+                    && speed_u64 < threshold
+                {
                     let _ = throttle_start.get_or_insert_with(Instant::now);
                     if let Some(t_start) = throttle_start {
                         if t_start.elapsed() > std::time::Duration::from_secs(5) {
@@ -731,7 +744,7 @@ impl DownloadTask {
 
                 // End-game detection: if few blocks remain, switch to end-game
                 // mode where all connections race for the remaining blocks.
-                if !state_mon.endgame.load(Ordering::Relaxed) {
+                if state_mon.endgame_enabled && !state_mon.endgame.load(Ordering::Relaxed) {
                     let remaining = {
                         let bf = state_mon.block_bitfield.lock().await;
                         bf.remaining_blocks()
@@ -1305,10 +1318,8 @@ async fn process_range_response(
 }
 
 /// End-game loop: race with other connections for the last few blocks.
-/// Each connection repeatedly claims a single incomplete block, downloads it
-/// with a dedicated HTTP range request, and writes it to disk.  Multiple
-/// connections may request the same block simultaneously; the first to finish
-/// marks it complete and subsequent completions skip the write.
+/// Each connection atomically claims a block index before downloading,
+/// preventing redundant requests for the same block.
 async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
     let block_size = crate::storage::control::BLOCK_SIZE;
     loop {
@@ -1329,15 +1340,28 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
             }
         };
 
+        // Atomically claim this block — skip if another connection
+        // already claimed it.
+        {
+            let mut claimed = state.claimed_blocks.lock().await;
+            if !claimed.insert(block_idx) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                continue;
+            }
+        }
+
         let offset = block_idx as u64 * block_size;
         let length = block_size.min(total_size - offset);
 
-        match download_endgame_block(&state, conn_id, block_idx, offset, length).await {
+        let result = download_endgame_block(&state, conn_id, block_idx, offset, length).await;
+        // Release the claim regardless of outcome
+        state.claimed_blocks.lock().await.remove(&block_idx);
+
+        match result {
             Ok(written) => {
                 if written > 0 {
                     state.total_downloaded.fetch_add(written, Ordering::Relaxed);
                 }
-                // Brief yield so other connections can make progress
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
             Err(e) => {
@@ -1346,8 +1370,6 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
                         "Conn {conn_id}: end-game permanent error {e}, \
                          another connection will retry this block"
                     );
-                    // Don't return — other connections may still need help.
-                    // Just skip this block and try the next one.
                     continue;
                 }
                 tracing::warn!("Conn {conn_id}: end-game error {e}, retrying");

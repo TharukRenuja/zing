@@ -17,25 +17,30 @@ struct UpdateCache {
 
 #[allow(dead_code)]
 pub async fn check_for_update(cfg: &Config) -> Option<String> {
-    let interval_days = cfg.update_check_interval_days.unwrap_or(7);
-    if interval_days == 0 {
-        return None;
-    }
+    let interval_days = match cfg.update_check_interval_days {
+        None => return None, // disabled
+        Some(0) => 0,        // always check (skip cache)
+        Some(n) => n,        // check every n days
+    };
 
     let cache_path = cache_path();
     let cache = load_cache(&cache_path);
-    if let Some(ref c) = cache {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let elapsed_days = (now - c.checked_at) / 86400;
-        if elapsed_days < interval_days {
-            let current = current_version();
-            if version_cmp(&c.latest_version, &current) == Ordering::Greater {
-                return Some(c.latest_version.clone());
+
+    // Skip cache when interval is 0 (always)
+    if interval_days > 0 {
+        if let Some(ref c) = cache {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let elapsed_days = (now - c.checked_at) / 86400;
+            if elapsed_days < interval_days {
+                let current = current_version();
+                if version_cmp(&c.latest_version, &current) == Ordering::Greater {
+                    return Some(c.latest_version.clone());
+                }
+                return None;
             }
-            return None;
         }
     }
 
