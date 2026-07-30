@@ -191,6 +191,15 @@ zing --low-speed-limit 1024 --low-speed-time 60 https://example.com/file.zip
 
 # Control file save interval (default 5s)
 zing --save-interval 10 https://example.com/large-file.zip
+
+# Digest authentication (RFC 7616 MD5-sess)
+zing --digest -u user:pass https://example.com/private.zip
+
+# TLS client certificate
+zing --cert client.pem --cert-key client-key.pem https://example.com/secure.zip
+
+# Force standalone mode (skip daemon even if running)
+zing --standalone https://example.com/file.zip
 ```
 
 ## Pipe mode
@@ -283,6 +292,18 @@ zing -u user:pass https://example.com/private.zip
 zing -u "token:" https://example.com/api/download
 ```
 
+### Digest auth
+```
+zing --digest -u user:pass https://example.com/private.zip
+# Uses MD5-sess digest authentication (RFC 7616) instead of Basic auth
+```
+
+### TLS client certificates
+```
+zing --cert client.pem https://example.com/private.zip
+zing --cert client.pem --cert-key client-key.pem https://example.com/private.zip
+```
+
 </details>
 
 ## Event hooks
@@ -318,7 +339,7 @@ zing -l download.log https://example.com/file.zip
 <details>
 <summary>Background daemon with task management</summary>
 
-The daemon runs downloads in the background so they continue even after you close the terminal. Any `zing download` command automatically detects the daemon and proxies through it.
+The daemon runs downloads in the background so they continue even after you close the terminal. Any `zing download` command automatically detects the daemon and proxies through it. Use `--standalone` to force direct download even when the daemon is running.
 
 ### Start / Stop / Restart
 
@@ -448,6 +469,11 @@ zing completions powershell
 ### Features
 
 - **Smart downloads** with automatic speed adjustment
+- **End-game mode** — remaining connections race for the last few blocks to minimize tail latency
+- **Happy Eyeballs DNS** — resolves hostnames with IPv6 preference for faster dual-stack connections
+- **Write cache / delayed writes** — buffers sequential data and flushes in full-block writes for fewer syscalls
+- **Metalink per-block hash validation** — validates each block against chunk hashes during download
+- **Mirror pre-probing** — probes all mirrors by RTT before selecting the fastest connection
 - **Fast disk writing** for better performance
 - **Supports the fastest web protocols** (HTTP/1.1, HTTP/2, HTTP/3)
 - **Automatic server testing** to find the best download method
@@ -479,6 +505,9 @@ zing completions powershell
 - **Event hooks** (`--on-download-complete`, `--on-download-error`) for custom post-download actions
 - **Update command** (`zing update`) to automatically upgrade to the latest release
 - **Shell completions** (`zing completions <shell>`) for bash, zsh, fish, and powershell
+- **Digest auth** (`--digest`) for MD5-sess HTTP Digest authentication (RFC 7616)
+- **TLS client certificates** (`--cert` / `--cert-key`) for mutual TLS authentication
+- **Standalone mode** (`--standalone`) to bypass the daemon and download directly
 
 ### Comparison
 
@@ -515,6 +544,13 @@ zing completions powershell
 | Daemon event hooks | on-complete & on-error | on-complete/error/start/pause | No | No | No |
 | Event hooks | on-complete / on-error | Yes | No | No | No |
 | User-Agent override | Yes | Yes | Yes | Yes | Yes |
+| Digest auth (RFC 7616) | Yes | Yes | Yes | No | No |
+| TLS client cert | Yes | Yes (`--cert`) | Yes (`--cert`) | No | No |
+| End-game mode | Yes | No | No | No | No |
+| Write cache / delayed writes | Yes | No | No | No | No |
+| Mirror pre-probing (RTT) | Yes | No | No | No | No |
+| Happy Eyeballs DNS (IPv6-first) | Yes | No | Yes | No | No |
+| Per-block hash validation | Yes | Metalink only | No | No | No |
 
 </details>
 

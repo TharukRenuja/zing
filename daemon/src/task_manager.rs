@@ -274,6 +274,10 @@ impl TaskManager {
                 low_speed_limit,
                 low_speed_time,
                 save_interval_secs,
+                None,  // chunk_hashes — not supported in daemon mode
+                None,  // cert_path
+                None,  // cert_key_path
+                false, // digest_auth
             );
 
             {

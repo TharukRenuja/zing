@@ -1,3 +1,4 @@
+use crate::connection::happy_eyeballs::resolve_host;
 use crate::connection::ConnectionPool;
 use crate::constants;
 use crate::cookie_store::ZingCookieStore;
@@ -19,11 +20,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
+use zing_ext::metalink::ChunkHashes;
 
 struct SharedState {
     pub id: TaskId,
     pub url: Mutex<String>,
-    pub mirrors: Vec<String>,
+    pub mirrors: tokio::sync::Mutex<Vec<String>>,
     pub filename: Mutex<String>,
     pub is_auto_name: bool,
     pub to_stdout: bool,
@@ -48,28 +50,35 @@ struct SharedState {
     pub cookie_jar: Option<Arc<ZingCookieStore>>,
     pub save_cookies_path: Option<String>,
     pub block_bitfield: tokio::sync::Mutex<BlockBitfield>,
+    pub chunk_hashes: Option<ChunkHashes>,
+    pub endgame: AtomicBool,
+    pub digest_auth: bool,
+    pub auth_credentials: tokio::sync::Mutex<Option<(String, String)>>,
 }
 
 impl SharedState {
     /// Rotate to the next mirror URL on failure. Returns true if a mirror was selected.
     async fn rotate_url(&self) -> bool {
         let current = self.url.lock().await.clone();
-        if let Some(pos) = self.mirrors.iter().position(|m| *m == current) {
-            let next = (pos + 1) % (self.mirrors.len() + 1);
+        let mirrors = self.mirrors.lock().await;
+        if let Some(pos) = mirrors.iter().position(|m| *m == current) {
+            let next = (pos + 1) % (mirrors.len() + 1);
             if next == 0 {
                 // back to primary
                 tracing::warn!("All mirrors exhausted, giving up");
                 return false;
             }
-            let mirror = &self.mirrors[next - 1];
+            let mirror = mirrors[next - 1].clone();
+            drop(mirrors);
             tracing::info!("Failing over to mirror: {mirror}");
-            *self.url.lock().await = mirror.clone();
+            *self.url.lock().await = mirror;
             return true;
         }
         // current URL is primary (not in mirrors list)
-        if let Some(first) = self.mirrors.first() {
+        if let Some(first) = mirrors.first().cloned() {
+            drop(mirrors);
             tracing::info!("Failing over to mirror: {first}");
-            *self.url.lock().await = first.clone();
+            *self.url.lock().await = first;
             true
         } else {
             false
@@ -92,6 +101,11 @@ pub struct DownloadTask {
 }
 
 impl DownloadTask {
+    pub async fn set_auth_credentials(&self, username: &str, password: &str) {
+        *self.state.auth_credentials.lock().await =
+            Some((username.to_string(), password.to_string()));
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: TaskId,
@@ -119,7 +133,27 @@ impl DownloadTask {
         low_speed_limit: u64,
         low_speed_time: u64,
         save_interval_secs: u64,
+        chunk_hashes: Option<ChunkHashes>,
+        cert_path: Option<String>,
+        cert_key_path: Option<String>,
+        digest_auth: bool,
     ) -> Self {
+        // Happy Eyeballs DNS resolution: resolve the URL hostname with IPv6
+        // preference so the HTTP client tries IPv6 first, then IPv4.
+        let dns_overrides = {
+            let parsed = url::Url::parse(url);
+            parsed.ok().and_then(|u| {
+                let host = u.host_str()?.to_string();
+                let port = u.port_or_known_default().unwrap_or(80);
+                let addrs = resolve_host(&host, port);
+                if addrs.is_empty() {
+                    None
+                } else {
+                    Some(vec![(host.to_ascii_lowercase(), addrs)])
+                }
+            })
+        };
+
         let pool = ConnectionPool::new(
             insecure,
             proxy_url.as_deref(),
@@ -127,6 +161,9 @@ impl DownloadTask {
             max_time_secs,
             user_agent.as_deref(),
             cookie_jar.clone(),
+            cert_path.as_deref(),
+            cert_key_path.as_deref(),
+            dns_overrides.as_deref().unwrap_or(&[]),
         )
         .with_event_bus(bus.clone())
         .with_headers(headers);
@@ -146,7 +183,7 @@ impl DownloadTask {
             state: Arc::new(SharedState {
                 id,
                 url: Mutex::new(url.to_string()),
-                mirrors,
+                mirrors: tokio::sync::Mutex::new(mirrors),
                 filename: Mutex::new(filename.to_string()),
                 is_auto_name,
                 to_stdout,
@@ -174,6 +211,10 @@ impl DownloadTask {
                     0,
                     crate::storage::control::BLOCK_SIZE,
                 )),
+                chunk_hashes,
+                endgame: AtomicBool::new(false),
+                digest_auth,
+                auth_credentials: tokio::sync::Mutex::new(None),
             }),
         }
     }
@@ -248,6 +289,24 @@ impl DownloadTask {
             Ordering::Relaxed,
         );
 
+        // Mirror probing: if mirrors are configured, probe them all and sort by RTT
+        {
+            let mirrors = self.state.mirrors.lock().await;
+            let has_mirrors = !mirrors.is_empty();
+            drop(mirrors);
+            if has_mirrors {
+                let mirrors_guard = self.state.mirrors.lock().await;
+                let mut all_urls = vec![current_url.clone()];
+                all_urls.extend(mirrors_guard.clone());
+                drop(mirrors_guard);
+                let sorted = crate::probe::probe_mirrors(&self.state.pool, &all_urls).await;
+                if sorted.len() > 1 {
+                    *self.state.url.lock().await = sorted[0].clone();
+                    *self.state.mirrors.lock().await = sorted[1..].to_vec();
+                }
+            }
+        }
+
         // Max filesize check
         if self.state.max_filesize > 0 {
             if let Some(size) = profile.total_size {
@@ -308,10 +367,11 @@ impl DownloadTask {
         }
 
         let total_size = profile.total_size;
+        let effective_url = self.state.url.lock().await.clone();
 
         tracing::info!(
             "Probe: {} RTT={}ms {} streams protocol={} ranges={}",
-            current_url,
+            effective_url,
             profile.rtt.as_millis(),
             profile.recommended_connections,
             profile.protocol,
@@ -373,6 +433,7 @@ impl DownloadTask {
             }
 
             let f = tokio::fs::OpenOptions::new()
+                .read(true)
                 .write(true)
                 .create(true)
                 .truncate(resume.is_none())
@@ -668,6 +729,27 @@ impl DownloadTask {
                     tokio::spawn(async move { run_connection(s, new_id).await });
                 }
 
+                // End-game detection: if few blocks remain, switch to end-game
+                // mode where all connections race for the remaining blocks.
+                if !state_mon.endgame.load(Ordering::Relaxed) {
+                    let remaining = {
+                        let bf = state_mon.block_bitfield.lock().await;
+                        bf.remaining_blocks()
+                    };
+                    let num_conns = {
+                        let mgr = state_mon.segment_mgr.lock().await;
+                        mgr.connections.len() as u32
+                    };
+                    let threshold =
+                        constants::ENDGAME_BLOCK_THRESHOLD.min(num_conns.saturating_mul(2));
+                    if remaining > 0 && remaining <= threshold {
+                        state_mon.endgame.store(true, Ordering::Release);
+                        tracing::info!(
+                            "End-game mode: {remaining} blocks remaining across {num_conns} connections"
+                        );
+                    }
+                }
+
                 tokio::time::sleep(std::time::Duration::from_millis(constants::MONITOR_TICK_MS))
                     .await;
             }
@@ -832,6 +914,7 @@ fn is_retryable_error(e: &anyhow::Error) -> bool {
         || msg.contains("HTTP 502")
         || msg.contains("HTTP 503")
         || msg.contains("HTTP 504")
+        || msg.contains("hash mismatch")
 }
 
 async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
@@ -859,6 +942,10 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
                     if mgr.claim_pending_segment(conn_id) {
                         let s = mgr.active_segment_for(conn_id).unwrap();
                         (s.offset + s.downloaded, s.remaining())
+                    } else if state.endgame.load(Ordering::Acquire) {
+                        drop(mgr);
+                        run_endgame(state, conn_id).await;
+                        return;
                     } else {
                         return;
                     }
@@ -933,18 +1020,84 @@ async fn download_range(
     if status == 416 {
         return Ok(0);
     }
+
+    // Handle 401 with Digest authentication
+    if status == 401 && state.digest_auth {
+        if let Some(challenge) = resp
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+        {
+            if challenge.to_lowercase().starts_with("digest") {
+                let creds = state.auth_credentials.lock().await.clone();
+                if let Some((username, password)) = creds {
+                    let url_str = state.url.lock().await.clone();
+                    if let Some(auth_header) = zing_ext::digest_auth::compute_digest_auth(
+                        challenge, &username, &password, "GET", &url_str,
+                    ) {
+                        tracing::info!("Conn {conn_id}: retrying with Digest auth");
+                        let end = offset + length - 1;
+                        let http_resp = state
+                            .pool
+                            .client()
+                            .get(&url_str)
+                            .header("Range", format!("bytes={offset}-{end}"))
+                            .header("Authorization", &auth_header)
+                            .send()
+                            .await?;
+                        let status2 = http_resp.status();
+                        if status2 == 416 {
+                            return Ok(0);
+                        }
+                        if status2 != 206 && status2 != 200 {
+                            bail!("HTTP {status2} (digest auth)");
+                        }
+                        return process_range_response(state, conn_id, offset, length, http_resp)
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
     if status != 206 && status != 200 {
         bail!("HTTP {status}");
     }
 
+    process_range_response(state, conn_id, offset, length, resp.into_inner()).await
+}
+
+/// Process a successful HTTP range response: stream the body to disk,
+/// update progress, mark blocks complete, and validate hashes.
+async fn process_range_response(
+    state: &Arc<SharedState>,
+    conn_id: usize,
+    offset: u64,
+    length: u64,
+    resp: reqwest::Response,
+) -> Result<u64> {
+    let is_200_with_offset = resp.status() == 200 && offset > 0;
+
     use futures::StreamExt;
-    let mut stream = resp.into_inner().bytes_stream();
+    let mut stream = resp.bytes_stream();
     let mut written: u64 = 0;
     let mut pos = offset;
+    let mut write_buf: Vec<u8> = Vec::with_capacity(crate::storage::control::BLOCK_SIZE as usize);
+    let mut buf_start: u64 = pos;
+
+    /// Flush the write buffer to disk at `buf_start`.
+    macro_rules! flush_buf {
+        ($file:expr, $buf:expr, $start:expr) => {
+            if !$buf.is_empty() {
+                util::write_at($file, &$buf, $start)?;
+                $buf.clear();
+            }
+        };
+    }
 
     // Server returned 200 instead of 206 — it ignored the Range header and
     // sent the full body. Skip bytes until we reach our segment offset.
-    if status == 200 && offset > 0 {
+    if is_200_with_offset {
         let mut skipped = 0u64;
         while skipped < offset {
             let chunk = match tokio::time::timeout(
@@ -1011,11 +1164,46 @@ async fn download_range(
             if let Some(ref limiter) = state.rate_limiter {
                 limiter.consume(write_size).await;
             }
-            if let Ok(guard) = state.file.lock() {
-                if let Some(ref file) = *guard {
-                    util::write_at(file, write_data, pos)?;
+
+            // Buffer writes and flush when we have a full block or
+            // the buffer would cross a block boundary.
+            let block_size = crate::storage::control::BLOCK_SIZE;
+            let buf_end = buf_start + write_buf.len() as u64;
+            let would_cross = (buf_start / block_size) != ((pos + write_size - 1) / block_size)
+                || (buf_end / block_size) != ((pos + write_size - 1) / block_size);
+            let buf_full = write_buf.len() as u64 + write_size >= block_size;
+
+            if would_cross || buf_full {
+                // Fill remaining space, then flush
+                let space = block_size - write_buf.len() as u64;
+                let to_buf = write_size.min(space);
+                write_buf.extend_from_slice(&write_data[..to_buf as usize]);
+
+                {
+                    if let Ok(guard) = state.file.lock() {
+                        if let Some(ref file) = *guard {
+                            flush_buf!(file, write_buf, buf_start);
+                        }
+                    }
                 }
+                buf_start = pos + to_buf;
+
+                // Write remaining data directly (full block write)
+                let remaining = write_size - to_buf;
+                if remaining > 0 {
+                    let direct_data = &write_data[to_buf as usize..];
+                    if let Ok(guard) = state.file.lock() {
+                        if let Some(ref file) = *guard {
+                            util::write_at(file, direct_data, buf_start)?;
+                        }
+                    }
+                    // Buffer starts after the direct write
+                    buf_start = pos + write_size;
+                }
+            } else {
+                write_buf.extend_from_slice(write_data);
             }
+
             written += write_size;
             pos += write_size;
 
@@ -1028,9 +1216,10 @@ async fn download_range(
                 .fetch_add(write_size, Ordering::Relaxed);
 
             // Mark completed blocks in bitfield
+            let block_size = crate::storage::control::BLOCK_SIZE;
             let end_pos = pos;
-            let start_block = (pos - write_size) / crate::storage::control::BLOCK_SIZE;
-            let end_block = (end_pos - 1) / crate::storage::control::BLOCK_SIZE;
+            let start_block = (pos - write_size) / block_size;
+            let end_block = (end_pos - 1) / block_size;
             if start_block <= end_block {
                 let mut bf = state.block_bitfield.lock().await;
                 for b in start_block as u32..=end_block as u32 {
@@ -1042,6 +1231,254 @@ async fn download_range(
             if let Some(ref limiter) = state.rate_limiter {
                 limiter.consume(chunk_len).await;
             }
+        }
+    }
+
+    // Flush any remaining buffered data before hash validation
+    {
+        if let Ok(guard) = state.file.lock() {
+            if let Some(ref file) = *guard {
+                flush_buf!(file, write_buf, buf_start);
+            }
+        }
+    }
+
+    // Per-block hash validation against Metalink chunk hashes.
+    // We read the blocks from the file (sync) first, then update bitfield (async)
+    // to avoid holding a std::sync::MutexGuard across .await.
+    if let Some(ref chunk_hashes) = state.chunk_hashes {
+        let block_size = crate::storage::control::BLOCK_SIZE;
+        if written > 0 && chunk_hashes.piece_length == block_size && !chunk_hashes.hashes.is_empty()
+        {
+            let first_block = offset / block_size;
+            let end_block = (offset + written) / block_size;
+            if end_block > first_block {
+                let kind = chunk_hashes.algorithm.to_hash_kind();
+                let mut mismatches: Vec<(u32, String, String)> = Vec::new();
+                {
+                    if let Ok(guard) = state.file.lock() {
+                        if let Some(ref file) = *guard {
+                            let mut buf = vec![0u8; block_size as usize];
+                            for block_idx in first_block..end_block {
+                                let expected_hex = match chunk_hashes.hashes.get(block_idx as usize)
+                                {
+                                    Some(h) => h,
+                                    None => continue,
+                                };
+                                let file_off = block_idx * block_size;
+                                let n = match util::read_at(file, &mut buf, file_off) {
+                                    Ok(n) => n,
+                                    Err(e) => {
+                                        bail!("Failed to read block {block_idx}: {e}");
+                                    }
+                                };
+                                let computed = zing_ext::checksum::hash_bytes(&buf[..n], &kind);
+                                if !computed.eq_ignore_ascii_case(expected_hex) {
+                                    mismatches.push((
+                                        block_idx as u32,
+                                        expected_hex.clone(),
+                                        computed,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                // file lock dropped here
+                if !mismatches.is_empty() {
+                    let mut bf = state.block_bitfield.lock().await;
+                    for &(block_idx, ..) in &mismatches {
+                        bf.mark_incomplete(block_idx);
+                    }
+                    drop(bf);
+                    let (first_bad, exp, got) = mismatches.into_iter().next().unwrap();
+                    bail!(
+                        "Hash mismatch for block {first_bad}: \
+                         expected {exp}, got {got}"
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(written)
+}
+
+/// End-game loop: race with other connections for the last few blocks.
+/// Each connection repeatedly claims a single incomplete block, downloads it
+/// with a dedicated HTTP range request, and writes it to disk.  Multiple
+/// connections may request the same block simultaneously; the first to finish
+/// marks it complete and subsequent completions skip the write.
+async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
+    let block_size = crate::storage::control::BLOCK_SIZE;
+    loop {
+        if state.done.load(Ordering::Acquire) {
+            return;
+        }
+
+        let (total_size, block_idx) = {
+            let bf = state.block_bitfield.lock().await;
+            if bf.all_complete() {
+                return;
+            }
+            let total_size = bf.total_size;
+            let idx = (0..bf.num_blocks).find(|&i| !bf.is_complete(i));
+            match idx {
+                Some(i) => (total_size, i),
+                None => return,
+            }
+        };
+
+        let offset = block_idx as u64 * block_size;
+        let length = block_size.min(total_size - offset);
+
+        match download_endgame_block(&state, conn_id, block_idx, offset, length).await {
+            Ok(written) => {
+                if written > 0 {
+                    state.total_downloaded.fetch_add(written, Ordering::Relaxed);
+                }
+                // Brief yield so other connections can make progress
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(e) => {
+                if !is_retryable_error(&e) {
+                    tracing::warn!(
+                        "Conn {conn_id}: end-game permanent error {e}, \
+                         another connection will retry this block"
+                    );
+                    // Don't return — other connections may still need help.
+                    // Just skip this block and try the next one.
+                    continue;
+                }
+                tracing::warn!("Conn {conn_id}: end-game error {e}, retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// Download a single block for end-game mode.
+///
+/// Unlike `download_range`, this function:
+/// - Does not track segment progress (no `SegmentManager` involvement)
+/// - Checks the bitfield before each write to skip already-completed blocks
+/// - Marks the block complete atomically after a successful write
+/// - Validates against Metalink chunk hashes if available
+async fn download_endgame_block(
+    state: &Arc<SharedState>,
+    conn_id: usize,
+    block_idx: u32,
+    offset: u64,
+    length: u64,
+) -> Result<u64> {
+    let end = offset + length - 1;
+    tracing::trace!("Conn {conn_id} (end-game): Range bytes {offset}-{end}");
+
+    let download_url = state.url.lock().await.clone();
+    let resp = state
+        .pool
+        .get_range(&download_url, offset, length, state.id)
+        .await?;
+
+    let status = resp.status();
+    if status == 416 {
+        return Ok(0);
+    }
+    if status != 206 && status != 200 {
+        bail!("HTTP {status}");
+    }
+
+    use futures::StreamExt;
+    let mut stream = resp.into_inner().bytes_stream();
+    let mut written: u64 = 0;
+
+    loop {
+        let data = match tokio::time::timeout(
+            std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
+            stream.next(),
+        )
+        .await
+        {
+            Ok(Some(Ok(d))) => d,
+            Ok(Some(Err(e))) => return Err(e.into()),
+            Ok(None) => break,
+            Err(_) => bail!("read timeout ({}s)", constants::READ_TIMEOUT_SECS),
+        };
+
+        let write_size = data.len() as u64;
+        if write_size == 0 {
+            continue;
+        }
+
+        // Check if this block was already completed by another connection
+        {
+            let bf = state.block_bitfield.lock().await;
+            if bf.is_complete(block_idx) {
+                return Ok(written);
+            }
+        }
+
+        // Rate limit
+        if let Some(ref limiter) = state.rate_limiter {
+            limiter.consume(write_size).await;
+        }
+
+        // Write to disk
+        if let Ok(guard) = state.file.lock() {
+            if let Some(ref file) = *guard {
+                util::write_at(file, &data[..write_size as usize], offset + written)?;
+            }
+        }
+        written += write_size;
+    }
+
+    // Atomically mark the block complete (only if still incomplete)
+    if written > 0 {
+        let mut bf = state.block_bitfield.lock().await;
+        if !bf.is_complete(block_idx) {
+            bf.mark_complete(block_idx);
+        }
+        drop(bf);
+
+        // Per-block hash validation against Metalink chunk hashes
+        if let Some(ref chunk_hashes) = state.chunk_hashes {
+            let block_size = crate::storage::control::BLOCK_SIZE;
+            if chunk_hashes.piece_length == block_size {
+                if let Some(expected_hex) = chunk_hashes.hashes.get(block_idx as usize) {
+                    let kind = chunk_hashes.algorithm.to_hash_kind();
+                    let computed = {
+                        let guard = state.file.lock().unwrap_or_else(|e| e.into_inner());
+                        guard.as_ref().and_then(|file| {
+                            let mut buf = vec![0u8; block_size as usize];
+                            match util::read_at(file, &mut buf, offset) {
+                                Ok(n) => Some(zing_ext::checksum::hash_bytes(&buf[..n], &kind)),
+                                Err(_) => None,
+                            }
+                        })
+                    };
+                    // file lock dropped
+                    match computed {
+                        Some(computed) if !computed.eq_ignore_ascii_case(expected_hex) => {
+                            state.block_bitfield.lock().await.mark_incomplete(block_idx);
+                            bail!(
+                                "Hash mismatch for block {block_idx}: \
+                                 expected {expected_hex}, got {computed}"
+                            );
+                        }
+                        Some(_) => {} // match OK
+                        None => {
+                            state.block_bitfield.lock().await.mark_incomplete(block_idx);
+                            bail!("Failed to read block {block_idx} for hash verification");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update segment manager progress so the monitor sees progress
+        {
+            let mut mgr = state.segment_mgr.lock().await;
+            mgr.update_progress(conn_id, written);
         }
     }
 
@@ -1109,5 +1546,61 @@ mod tests {
 
         bf.mark_complete(1);
         assert!(bf.all_complete());
+    }
+
+    #[tokio::test]
+    async fn test_block_bitfield_remaining_blocks() {
+        let mut bf = BlockBitfield::new(65536 * 4, 65536);
+        assert_eq!(bf.remaining_blocks(), 4);
+
+        bf.mark_complete(0);
+        assert_eq!(bf.remaining_blocks(), 3);
+
+        bf.mark_complete(1);
+        bf.mark_complete(2);
+        bf.mark_complete(3);
+        assert_eq!(bf.remaining_blocks(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_endgame_missing_block_iteration() {
+        // Simulate the core logic of run_endgame:
+        // connections race for the last few blocks, marking them complete
+        let mut bf = BlockBitfield::new(65536 * 4, 65536);
+        assert!(!bf.all_complete());
+
+        // Simulate two connections racing for blocks
+        let blocks_remaining: Vec<u32> =
+            (0..bf.num_blocks).filter(|&i| !bf.is_complete(i)).collect();
+        assert_eq!(blocks_remaining.len(), 4);
+
+        // Simulate connection 0 taking block 0
+        bf.mark_complete(0);
+        // Simulate connection 1 taking block 1 (racing)
+        bf.mark_complete(1);
+        // Connection 1 tries block 0 but it's already done
+        assert!(bf.is_complete(0));
+
+        // Finish the rest
+        bf.mark_complete(2);
+        bf.mark_complete(3);
+        assert!(bf.all_complete());
+    }
+
+    #[tokio::test]
+    async fn test_endgame_threshold_computation() {
+        // Test the threshold logic used in the monitor loop
+        let endgame_threshold = 8u32;
+        let num_conns = 4u32;
+        let threshold = endgame_threshold.min(num_conns.saturating_mul(2));
+        assert_eq!(threshold, 8); // min(8, 8) = 8
+
+        let num_conns = 6u32;
+        let threshold = endgame_threshold.min(num_conns.saturating_mul(2));
+        assert_eq!(threshold, 8); // min(8, 12) = 8
+
+        let num_conns = 1u32;
+        let threshold = endgame_threshold.min(num_conns.saturating_mul(2));
+        assert_eq!(threshold, 2); // min(8, 2) = 2
     }
 }

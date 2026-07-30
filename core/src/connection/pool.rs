@@ -36,6 +36,7 @@ pub struct ConnectionPool {
 }
 
 impl ConnectionPool {
+    #[allow(clippy::too_many_arguments)]
     fn build_client(
         insecure: bool,
         proxy_url: Option<&str>,
@@ -43,7 +44,10 @@ impl ConnectionPool {
         max_time_secs: u64,
         user_agent: Option<&str>,
         cookie_jar: Option<Arc<ZingCookieStore>>,
-    ) -> reqwest::Client {
+        cert_path: Option<&str>,
+        cert_key_path: Option<&str>,
+        dns_overrides: &[(String, Vec<std::net::SocketAddr>)],
+    ) -> anyhow::Result<reqwest::Client> {
         let ua = user_agent.unwrap_or("zing/0.1.0");
         let mut builder = reqwest::Client::builder()
             .user_agent(ua)
@@ -74,9 +78,37 @@ impl ConnectionPool {
             }
         }
 
-        builder.build().expect("failed to build connection pool")
+        if let Some(cert) = cert_path {
+            let cert_bytes = std::fs::read(cert)
+                .map_err(|e| anyhow::anyhow!("Failed to read certificate '{}': {e}", cert))?;
+            let identity = match cert_key_path {
+                Some(key_path) => {
+                    let key_bytes = std::fs::read(key_path).map_err(|e| {
+                        anyhow::anyhow!("Failed to read certificate key '{}': {e}", key_path)
+                    })?;
+                    let mut combined = cert_bytes;
+                    combined.extend_from_slice(&key_bytes);
+                    reqwest::Identity::from_pem(&combined).map_err(|e| {
+                        anyhow::anyhow!("Failed to parse TLS identity (cert + key): {e}")
+                    })?
+                }
+                None => reqwest::Identity::from_pem(&cert_bytes).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse TLS certificate '{}': {e}", cert)
+                })?,
+            };
+            builder = builder.identity(identity);
+        }
+
+        for (domain, addrs) in dns_overrides {
+            if !addrs.is_empty() {
+                builder = builder.resolve_to_addrs(domain, addrs);
+            }
+        }
+
+        Ok(builder.build()?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         insecure: bool,
         proxy_url: Option<&str>,
@@ -84,6 +116,9 @@ impl ConnectionPool {
         max_time_secs: u64,
         user_agent: Option<&str>,
         cookie_jar: Option<Arc<ZingCookieStore>>,
+        cert_path: Option<&str>,
+        cert_key_path: Option<&str>,
+        dns_overrides: &[(String, Vec<std::net::SocketAddr>)],
     ) -> Self {
         let client = Self::build_client(
             insecure,
@@ -92,7 +127,11 @@ impl ConnectionPool {
             max_time_secs,
             user_agent,
             cookie_jar.clone(),
-        );
+            cert_path,
+            cert_key_path,
+            dns_overrides,
+        )
+        .expect("failed to build connection pool");
 
         Self {
             client,
@@ -232,7 +271,7 @@ impl ConnectionResponse {
 
 impl Default for ConnectionPool {
     fn default() -> Self {
-        Self::new(false, None, 30, 300, None, None)
+        Self::new(false, None, 30, 300, None, None, None, None, &[])
     }
 }
 

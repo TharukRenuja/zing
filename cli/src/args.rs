@@ -222,6 +222,12 @@ pub struct Args {
     pub dry_run: bool,
 
     #[arg(
+        long = "standalone",
+        help = "Force standalone mode even if the daemon is running"
+    )]
+    pub standalone: bool,
+
+    #[arg(
         long = "auto-file-renaming",
         help = "Auto-rename file if exists (e.g. file(1).ext)"
     )]
@@ -260,6 +266,24 @@ pub struct Args {
         help = "Use .netrc file for authentication"
     )]
     pub netrc: bool,
+
+    #[arg(
+        long = "digest",
+        help = "Use HTTP Digest authentication (requires --user)"
+    )]
+    pub digest: bool,
+
+    #[arg(
+        long = "cert",
+        help = "TLS client certificate (PEM file, may include private key)"
+    )]
+    pub cert: Option<String>,
+
+    #[arg(
+        long = "cert-key",
+        help = "TLS client certificate private key (PEM file, required if cert does not include the key)"
+    )]
+    pub cert_key: Option<String>,
 
     #[arg(long = "log", short = 'l', help = "Log to file instead of stderr")]
     pub log: Option<String>,

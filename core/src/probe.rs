@@ -155,6 +155,54 @@ async fn estimate_bandwidth(pool: &ConnectionPool, url: &str, rtt: Duration) -> 
     Some(65536.0 / body_secs)
 }
 
+/// Probe all mirrors (including the primary URL) and sort them by RTT.
+/// The fastest mirror is returned first.
+/// Skips URLs that fail the HEAD probe.
+pub async fn probe_mirrors(pool: &ConnectionPool, urls: &[String]) -> Vec<String> {
+    if urls.len() <= 1 {
+        return urls.to_vec();
+    }
+
+    struct MirrorRtt {
+        url: String,
+        rtt: Duration,
+    }
+
+    let mut results: Vec<MirrorRtt> = Vec::with_capacity(urls.len());
+    for url in urls {
+        let start = Instant::now();
+        match pool.client().head(url).send().await {
+            Ok(_) => {
+                let rtt = start.elapsed();
+                results.push(MirrorRtt {
+                    url: url.clone(),
+                    rtt,
+                });
+            }
+            Err(e) => {
+                tracing::warn!("Mirror probe failed for {url}: {e}");
+            }
+        }
+    }
+
+    if results.is_empty() {
+        return urls.to_vec();
+    }
+
+    results.sort_by_key(|a| a.rtt);
+
+    let sorted: Vec<String> = results.into_iter().map(|m| m.url).collect();
+    tracing::info!(
+        "Mirror probe: {} mirrors sorted by RTT (fastest first)",
+        sorted.len()
+    );
+    for (i, url) in sorted.iter().enumerate() {
+        tracing::debug!("  Mirror {}: {}", i + 1, url);
+    }
+
+    sorted
+}
+
 fn decide_strategy(
     protocol: &Protocol,
     total_size: Option<u64>,

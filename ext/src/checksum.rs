@@ -2,6 +2,31 @@ use sha2::Digest;
 use std::io::Read;
 use std::path::Path;
 
+pub fn hash_bytes(data: &[u8], kind: &HashKind) -> String {
+    match kind {
+        HashKind::Md5 => {
+            let mut hasher = md5::Md5::new();
+            hasher.update(data);
+            hex_encode(&hasher.finalize())
+        }
+        HashKind::Sha1 => {
+            let mut hasher = sha1::Sha1::new();
+            hasher.update(data);
+            hex_encode(&hasher.finalize())
+        }
+        HashKind::Sha256 => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(data);
+            hex_encode(&hasher.finalize())
+        }
+        HashKind::Sha512 => {
+            let mut hasher = sha2::Sha512::new();
+            hasher.update(data);
+            hex_encode(&hasher.finalize())
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum HashKind {
     Md5,

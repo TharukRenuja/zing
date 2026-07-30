@@ -32,6 +32,11 @@ pub const RETRY_BACKOFF_MIN_MS: u64 = 500;
 /// Maximum retry backoff delay.
 pub const RETRY_BACKOFF_MAX_MS: u64 = 10_000;
 
+/// End-game mode threshold: when remaining incomplete blocks are at most this
+/// many (or `num_connections * 2`, whichever is smaller), all connections race
+/// for the last blocks instead of working on exclusive segments.
+pub const ENDGAME_BLOCK_THRESHOLD: u32 = 8;
+
 /// Default low speed limit in bytes/sec (0 = disabled).
 pub const LOW_SPEED_LIMIT: u64 = 0;
 

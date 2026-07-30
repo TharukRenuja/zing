@@ -49,13 +49,15 @@ fn build_headers(args: &Args) -> Vec<(String, String)> {
         headers.push(("Referer".into(), referer.clone()));
     }
     if let Some(user) = &args.user {
-        let creds = if let Some((u, p)) = user.split_once(':') {
-            format!("{u}:{p}")
-        } else {
-            user.clone()
-        };
-        let encoded = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
-        headers.push(("Authorization".into(), format!("Basic {encoded}")));
+        if !args.digest {
+            let creds = if let Some((u, p)) = user.split_once(':') {
+                format!("{u}:{p}")
+            } else {
+                user.clone()
+            };
+            let encoded = base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+            headers.push(("Authorization".into(), format!("Basic {encoded}")));
+        }
     }
     headers
 }
@@ -597,7 +599,7 @@ async fn run(args: Args) -> Result<()> {
             return update::run_update().await;
         }
         None => {
-            if args.urls.is_empty() && args.input_file.is_none() {
+            if args.urls.is_empty() && args.input_file.is_none() && args.metalink.is_none() {
                 eprintln!("error: the following required arguments were not provided:\n  <URLS>...\n\nFor more information, try '--help'.");
                 std::process::exit(1);
             }
@@ -646,7 +648,7 @@ async fn run(args: Args) -> Result<()> {
     };
 
     // Download mode — check for daemon proxy
-    if !to_stdout && daemon_client::daemon_is_running().await {
+    if !args.standalone && !to_stdout && daemon_client::daemon_is_running().await {
         tracing::info!("zing daemon detected, proxying commands");
 
         let cfg = Config::load(None);
@@ -831,6 +833,7 @@ async fn run(args: Args) -> Result<()> {
         checksum: Option<String>,
         is_auto_name: bool,
         filename: String,
+        chunk_hashes: Option<zing_ext::metalink::ChunkHashes>,
     }
 
     let metalink_override = if let Some(ref path) = args.metalink {
@@ -840,6 +843,7 @@ async fn run(args: Args) -> Result<()> {
         let files = zing_ext::metalink::parse_metalink_str(&content)
             .map_err(|e| color_eyre::eyre::eyre!("Failed to parse metalink '{}': {e}", path))?;
         if let Some(entry) = files.into_iter().next() {
+            let chunk_hashes = entry.chunk_hashes.clone();
             let url = entry.urls.first().cloned().unwrap_or_default();
             let mirrors: Vec<String> = entry.urls.into_iter().skip(1).collect();
             let checksum = entry.checksums.first().map(|(_, h)| h.clone());
@@ -863,6 +867,7 @@ async fn run(args: Args) -> Result<()> {
                 checksum,
                 is_auto_name: args.output.is_none(),
                 filename,
+                chunk_hashes,
             })
         } else {
             None
@@ -931,6 +936,7 @@ async fn run(args: Args) -> Result<()> {
         let effective_checksum = metalink
             .and_then(|m| m.checksum.clone())
             .or_else(|| args.checksum.clone());
+        let chunk_hashes = metalink.and_then(|m| m.chunk_hashes.clone());
         let mut headers = build_headers(&args);
         if args.netrc {
             parse_netrc_for_url(&url, &mut headers);
@@ -960,6 +966,10 @@ async fn run(args: Args) -> Result<()> {
         let low_speed_limit = args.low_speed_limit;
         let low_speed_time = args.low_speed_time;
         let save_interval = args.save_interval;
+        let cert_path = args.cert.clone();
+        let cert_key_path = args.cert_key.clone();
+        let digest = args.digest;
+        let user_creds = args.user.clone();
 
         join_set.spawn(async move {
             if let Some(ref s) = sem {
@@ -1009,7 +1019,18 @@ async fn run(args: Args) -> Result<()> {
                     low_speed_limit,
                     low_speed_time,
                     save_interval,
+                    chunk_hashes.clone(),
+                    cert_path.clone(),
+                    cert_key_path.clone(),
+                    digest,
                 );
+                if digest {
+                    if let Some(ref creds) = user_creds {
+                        if let Some((u, p)) = creds.split_once(':') {
+                            task.set_auth_credentials(u, p).await;
+                        }
+                    }
+                }
 
                 let task_shutdown = shutdown_tx.subscribe();
                 match task.run_with_shutdown(task_shutdown).await {

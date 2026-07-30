@@ -29,6 +29,51 @@ pub fn preallocate(file: &File, len: u64) -> io::Result<()> {
     }
 }
 
+/// Read bytes at a given offset, regardless of platform.
+/// Uses `pread` on Unix and `seek_read` on Windows.
+pub fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_at(buf, offset)
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        file.seek_read(buf, offset)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        (&*file).seek(SeekFrom::Start(offset))?;
+        (&*file).read(buf)
+    }
+}
+
+pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(buf, offset)
+    }
+
+    #[cfg(windows)]
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        (&*file).seek(SeekFrom::Start(offset))?;
+        (&*file).read_exact(buf)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        (&*file).seek(SeekFrom::Start(offset))?;
+        (&*file).read_exact(buf)
+    }
+}
+
 /// Write all bytes at a given offset, regardless of platform.
 /// Uses `pwrite` on Unix and `seek_write` on Windows.
 pub fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {

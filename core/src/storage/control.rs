@@ -52,6 +52,15 @@ impl BlockBitfield {
         self.bits[byte] |= 1u8 << bit;
     }
 
+    pub fn mark_incomplete(&mut self, block_idx: u32) {
+        if block_idx >= self.num_blocks {
+            return;
+        }
+        let byte = block_idx as usize / 8;
+        let bit = block_idx as usize % 8;
+        self.bits[byte] &= !(1u8 << bit);
+    }
+
     pub fn blocks_for_range(&self, offset: u64, length: u64) -> (u32, u32) {
         let first = (offset / self.block_size) as u32;
         let last = ((offset + length - 1) / self.block_size) as u32;
@@ -104,6 +113,10 @@ impl BlockBitfield {
             }
         }
         ranges
+    }
+
+    pub fn remaining_blocks(&self) -> u32 {
+        self.num_blocks - self.count_set_bits()
     }
 
     pub fn raw_bits(&self) -> &[u8] {

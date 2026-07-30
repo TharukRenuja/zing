@@ -13,8 +13,8 @@ async fn test_server_full_request() {
     let payload = test_payload(64 * 1024);
     let server = TestServer::new(payload.clone()).await;
 
-    let pool =
-        ConnectionPool::new(false, None, 30, 300, None, None).with_event_bus(EventBus::new());
+    let pool = ConnectionPool::new(false, None, 30, 300, None, None, None, None, &[])
+        .with_event_bus(EventBus::new());
     let resp = pool.get(&server.url(), 0).await.unwrap();
     let body = resp.resp.bytes().await.unwrap();
 
@@ -28,8 +28,8 @@ async fn test_server_range_request() {
     let payload = test_payload(1000);
     let server = TestServer::new(payload.clone()).await;
 
-    let pool =
-        ConnectionPool::new(false, None, 30, 300, None, None).with_event_bus(EventBus::new());
+    let pool = ConnectionPool::new(false, None, 30, 300, None, None, None, None, &[])
+        .with_event_bus(EventBus::new());
     let resp = pool.get_range(&server.url(), 100, 200, 0).await.unwrap();
     assert_eq!(resp.resp.status(), 206);
 
@@ -44,8 +44,8 @@ async fn test_server_range_out_of_bounds() {
     let payload = test_payload(500);
     let server = TestServer::new(payload.clone()).await;
 
-    let pool =
-        ConnectionPool::new(false, None, 30, 300, None, None).with_event_bus(EventBus::new());
+    let pool = ConnectionPool::new(false, None, 30, 300, None, None, None, None, &[])
+        .with_event_bus(EventBus::new());
     let resp = pool.get_range(&server.url(), 1000, 200, 0).await.unwrap();
     assert_eq!(resp.resp.status(), 416);
 }
@@ -88,6 +88,10 @@ async fn test_full_download() {
         0,
         30,
         5,
+        None,
+        None,
+        None,
+        false,
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;
@@ -162,6 +166,10 @@ async fn test_resume_download() {
         0,
         30,
         5,
+        None,
+        None,
+        None,
+        false,
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;
