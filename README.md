@@ -1,5 +1,8 @@
 # zing
 
+> **⚠️ Beta:** zing is **still in active development**. Downloads may occasionally be corrupted or incomplete. Use at your own risk.
+
+
 Simple, modern, intelligent, cross-platform HTTP downloader with adaptive connection management, server probing, and concurrent segmented downloads.
 
 ```
@@ -66,9 +69,9 @@ Optionally sets up zing-daemon as a systemd service. Installs to `/usr/local/bin
 
 Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/releases/latest).
 
-- Linux: `zing-<tag>-{arch}-linux.tar.gz`
-- macOS: `zing-<tag>-{arch}-mac.dmg`
-- Windows: `zing-<tag>-{arch}-windows.msi` 
+- Linux: `zing-latest-{arch}-linux.tar.gz`
+- macOS: `zing-latest-{arch}-mac.dmg`
+- Windows: `zing-latest-windows.msi`
 
 #### Build from source
 ```bash

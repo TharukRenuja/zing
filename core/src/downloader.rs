@@ -524,17 +524,6 @@ impl DownloadTask {
                 };
                 let downloaded = state_mon.total_downloaded.load(Ordering::Relaxed);
 
-                if total.is_some() && downloaded >= total.unwrap() {
-                    state_mon.done.store(true, Ordering::Release);
-                    state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
-                        id: state_mon.id,
-                        bytes_downloaded: downloaded,
-                        total_bytes: total,
-                        speed_bytes_per_sec: 0.0,
-                    }));
-                    return;
-                }
-
                 let now = Instant::now();
                 let dt = now.duration_since(prev_time).as_secs_f64();
                 let delta_bytes = downloaded.saturating_sub(prev_downloaded);
@@ -690,7 +679,7 @@ impl DownloadTask {
             speed_bytes_per_sec: 0.0,
         }));
 
-        let completed = total >= total_size;
+        let completed = self.state.segment_mgr.lock().await.is_all_complete();
         if completed {
             self.state.reprobe.store(false, Ordering::Release);
             self.state.bus.emit(EngineEvent::TaskCompleted {
@@ -914,7 +903,53 @@ async fn download_range(
     let mut written: u64 = 0;
     let mut pos = offset;
 
+    // Server returned 200 instead of 206 — it ignored the Range header and
+    // sent the full body. Skip bytes until we reach our segment offset.
+    if status == 200 && offset > 0 {
+        let mut skipped = 0u64;
+        while skipped < offset {
+            let chunk = match tokio::time::timeout(
+                std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
+                stream.next(),
+            )
+            .await
+            {
+                Ok(Some(Ok(d))) => d,
+                Ok(Some(Err(e))) => return Err(e.into()),
+                Ok(None) => break,
+                Err(_) => bail!("read timeout ({}s)", constants::READ_TIMEOUT_SECS),
+            };
+            let chunk_len = chunk.len() as u64;
+            let remaining = offset - skipped;
+            if chunk_len <= remaining {
+                skipped += chunk_len;
+            } else {
+                // Partial: write the tail of this chunk at our offset
+                let discard = remaining as usize;
+                if let Ok(guard) = state.file.lock() {
+                    if let Some(ref file) = *guard {
+                        util::write_at(file, &chunk[discard..], pos)?;
+                    }
+                }
+                let partial = chunk_len - remaining;
+                written += partial;
+                pos += partial;
+                skipped = offset;
+            }
+        }
+        if skipped < offset {
+            bail!(
+                "server returned 200 but body shorter than offset {}B",
+                offset
+            );
+        }
+    }
+
     loop {
+        if written >= length {
+            break;
+        }
+
         let data = match tokio::time::timeout(
             std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
             stream.next(),
@@ -927,35 +962,46 @@ async fn download_range(
             Err(_) => bail!("read timeout ({}s)", constants::READ_TIMEOUT_SECS),
         };
 
-        if let Some(ref limiter) = state.rate_limiter {
-            limiter.consume(data.len() as u64).await;
-        }
+        // Don't write past our assigned range
+        let chunk_len = data.len() as u64;
+        let max_write = length.saturating_sub(written);
+        let write_size = chunk_len.min(max_write);
 
-        if let Ok(guard) = state.file.lock() {
-            if let Some(ref file) = *guard {
-                util::write_at(file, &data, pos)?;
+        if write_size > 0 {
+            let write_data = &data[..write_size as usize];
+            if let Some(ref limiter) = state.rate_limiter {
+                limiter.consume(write_size).await;
             }
-        }
-        written += data.len() as u64;
-        pos += data.len() as u64;
+            if let Ok(guard) = state.file.lock() {
+                if let Some(ref file) = *guard {
+                    util::write_at(file, write_data, pos)?;
+                }
+            }
+            written += write_size;
+            pos += write_size;
 
-        {
-            let mut mgr = state.segment_mgr.lock().await;
-            mgr.update_progress(conn_id, data.len() as u64);
-        }
-        state
-            .total_downloaded
-            .fetch_add(data.len() as u64, Ordering::Relaxed);
+            {
+                let mut mgr = state.segment_mgr.lock().await;
+                mgr.update_progress(conn_id, write_size);
+            }
+            state
+                .total_downloaded
+                .fetch_add(write_size, Ordering::Relaxed);
 
-        // Mark completed blocks in bitfield
-        let end_pos = pos;
-        let start_block =
-            (offset + (written - data.len() as u64)) / crate::storage::control::BLOCK_SIZE;
-        let end_block = (end_pos - 1) / crate::storage::control::BLOCK_SIZE;
-        if start_block <= end_block {
-            let mut bf = state.block_bitfield.lock().await;
-            for b in start_block as u32..=end_block as u32 {
-                bf.mark_complete(b);
+            // Mark completed blocks in bitfield
+            let end_pos = pos;
+            let start_block = (pos - write_size) / crate::storage::control::BLOCK_SIZE;
+            let end_block = (end_pos - 1) / crate::storage::control::BLOCK_SIZE;
+            if start_block <= end_block {
+                let mut bf = state.block_bitfield.lock().await;
+                for b in start_block as u32..=end_block as u32 {
+                    bf.mark_complete(b);
+                }
+            }
+        } else {
+            // Read but nothing to write — still need rate limiter for fairness
+            if let Some(ref limiter) = state.rate_limiter {
+                limiter.consume(chunk_len).await;
             }
         }
     }
