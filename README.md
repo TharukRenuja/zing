@@ -1,9 +1,8 @@
 # zing
 
-> **⚠️ Beta:** zing is **still in active development**. Downloads may occasionally be corrupted or incomplete. Use at your own risk.
+> **⚠️ Beta:** zing is **still in active development**. Downloads may occasionally be corrupted or incomplete. **Use at your own risk**.
 
-
-Simple, modern, intelligent, cross-platform HTTP downloader with adaptive connection management, server probing, and concurrent segmented downloads.
+A modern, cross-platform HTTP downloader with segmented concurrent downloads, adaptive connection management, and server probing.
 
 ```
 zing https://example.com/file.zip
@@ -18,31 +17,20 @@ zing https://example.com/file.zip
       - [Install script (Linux/macOS)](#install-script-linuxmacos)
       - [Download pre-built binary](#download-pre-built-binary)
       - [Build from source](#build-from-source)
-  - [Update](#update)
-  - [Uninstall](#uninstall)
-      - [Using uninstall script](#using-uninstall-script)
-      - [Or manually](#or-manually)
   - [Quick start](#quick-start)
-  - [Pipe mode](#pipe-mode)
-  - [Resume](#resume)
-    - [Standalone resume](#standalone-resume)
-    - [Daemon resume](#daemon-resume)
-  - [Cookies \& Authentication](#cookies--authentication)
-    - [Cookie jars (Netscape format)](#cookie-jars-netscape-format)
-    - [.netrc authentication](#netrc-authentication)
-    - [Basic auth](#basic-auth)
-  - [Event hooks](#event-hooks)
-  - [Logging](#logging)
-  - [Daemon](#daemon)
-    - [Start / Stop / Restart](#start--stop--restart)
-    - [Manage tasks](#manage-tasks)
-    - [Install systemd service (Unix only)](#install-systemd-service-unix-only)
-  - [Scheduled downloads](#scheduled-downloads)
-  - [Configuration](#configuration)
-  - [Completions](#completions)
-  - [Features \& Comparison](#features--comparison)
-    - [Features](#features)
-    - [Comparison](#comparison)
+  - [Features](#features)
+    - [Downloading](#downloading)
+    - [Daemon](#daemon)
+    - [Scheduled downloads](#scheduled-downloads)
+    - [Resume](#resume)
+    - [Pipe mode](#pipe-mode)
+    - [Cookies \& Authentication](#cookies--authentication)
+    - [Event hooks](#event-hooks)
+    - [Logging](#logging)
+    - [Configuration](#configuration)
+    - [Completions](#completions)
+    - [Update \& Uninstall](#update--uninstall)
+  - [Comparison](#comparison)
   - [Architecture](#architecture)
   - [Design](#design)
 
@@ -59,6 +47,7 @@ zing https://example.com/file.zip
 ## Install
 
 #### Install script (Linux/macOS)
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TharukRenuja/zing/main/install.sh | sh
 ```
@@ -74,57 +63,11 @@ Grab the latest release from [Releases](https://github.com/TharukRenuja/zing/rel
 - Windows: `zing-latest-windows.msi`
 
 #### Build from source
+
 ```bash
 cargo build --release
 ./target/release/zing --help
 ```
-
-## Update
-
-<details>
-<summary>Check for updates & update instructions</summary>
-
-```bash
-# Check for updates and apply
-zing update
-```
-
-`zing update` downloads the latest release for your platform (Linux, macOS, Windows; x86_64 or ARM), extracts it, and swaps the binary. If a `zing-daemon` binary is present in the same directory, it's updated too.
-
-Update archives are named with a `-update` suffix on macOS and Windows (e.g. `zing-*-x86_64-mac-update.tar.gz`) to distinguish them from source archives. Linux archives use the plain name. zing automatically checks for updates every 7 days, configure with `update_check_interval_days` in config, or set to `0` to disable.
-
-</details>
-
-## Uninstall
-
-<details>
-<summary>Uninstall Instructions</summary>
-
-#### Using uninstall script
-```bash
-zing -p https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | sh
-```
-
-#### Or manually
-```bash
-# Remove binaries
-sudo rm /usr/local/bin/zing /usr/local/bin/zing-daemon     # Linux
-# or: rm ~/.local/bin/zing ~/.local/bin/zing-daemon
-
-# Remove config and schedule files
-rm -rf ~/.config/zing
-
-# Remove daemon service (if installed)
-zing daemon uninstall
-
-# Remove socket and auth token (Linux)
-rm -f /tmp/zing.sock /tmp/zing.sock.auth
-
-# Windows: use Add/Remove Programs for the NSIS installer,
-# or manually delete the install directory and remove from PATH
-```
-
-</details>
 
 ## Quick start
 
@@ -132,10 +75,8 @@ rm -f /tmp/zing.sock /tmp/zing.sock.auth
 # Download a file (auto-named from URL)
 zing https://example.com/file.zip
 
-# Save to a specific filename
+# Save to a specific filename / directory
 zing -o myfile.zip https://example.com/file.zip
-
-# Download to a directory
 zing -d downloads/ https://example.com/file.zip
 
 # Rate limit to 2 MB/s
@@ -150,32 +91,18 @@ zing -c d41d8cd98f00b204e9800998ecf8427e https://example.com/file.zip
 # Use a proxy
 zing -x http://user:pass@proxy:8080 https://example.com/file.zip
 
-# Use mirror URLs for failover
+# Mirror URLs for failover
 zing -m https://mirror1.example.com/file.zip https://example.com/file.zip
 
 # Schedule bandwidth (8AM: 500KB/s, 6PM: 2MB/s)
 zing -b "08:00,500KB 18:00,2MB" https://example.com/file.zip
 
-# Limit file size (skip if Content-Length exceeds)
-zing -S 1GB https://example.com/large-file.zip
-
-# Custom HTTP headers
+# Custom headers and User-Agent
 zing -H "Authorization: Bearer token" https://example.com/private.zip
-
-# Custom User-Agent
 zing -A "MyApp/1.0" https://example.com/file.zip
-
-# Content-Disposition: use server-provided filename
-zing -C https://example.com/download
 
 # Auto-rename if file exists (file(1).ext, file(2).ext, …)
 zing --auto-file-renaming https://example.com/file.zip
-
-# Dry-run: show URLs without downloading
-zing --dry-run https://example.com/file.zip
-
-# Use a Metalink file for mirrors + checksums
-zing -M file.meta4
 
 # Download multiple files concurrently
 zing --max-concurrent 3 url1 url2 url3
@@ -183,68 +110,91 @@ zing --max-concurrent 3 url1 url2 url3
 # Progress output: bar (default), json, or none
 zing --progress json https://example.com/file.zip
 
-# Log to file instead of stderr
-zing -l download.log https://example.com/file.zip
+# Use a Metalink file for mirrors + checksums
+zing -M file.meta4
 
-# Abort slow connections (below 1KB/s for 60s, then try mirror)
-zing --low-speed-limit 1024 --low-speed-time 60 https://example.com/file.zip
-
-# Control file save interval (default 5s)
-zing --save-interval 10 https://example.com/large-file.zip
-
-# Digest authentication (RFC 7616 MD5-sess)
-zing --digest -u user:pass https://example.com/private.zip
-
-# TLS client certificate
-zing --cert client.pem --cert-key client-key.pem https://example.com/secure.zip
+# Dry-run: show URLs without downloading
+zing --dry-run https://example.com/file.zip
 
 # Force standalone mode (skip daemon even if running)
 zing --standalone https://example.com/file.zip
 ```
 
-## Pipe mode
+## Features
+
+### Downloading
 
 <details>
-<summary>Direct piping, script execution, and app install</summary>
+<summary>Segmented downloads, probing, throttling, rate limits</summary>
 
-`-p` / `--pipe` outputs content to stdout (suppressing all logs), optionally auto-piping to a command.
-
-```
-# Raw pipe (same as before — pipe manually)
-zing -p https://example.com/script.sh | sh
-
-# Auto-pipe to interpreters
-zing -p=sh     https://example.com/script.sh      # sh -s
-zing -p=bash   https://example.com/script.sh      # bash -s
-zing -p=run    https://example.com/script.sh      # sh -s (alias)
-zing -p=python https://example.com/script.py      # python3
-zing -p=node   https://example.com/script.js      # node
-
-# Extract archives on the fly
-zing -p=tar https://example.com/pkg.tar.gz         # tar -xzf -
-
-# Install single binary
-zing -p=app https://example.com/tool.AppImage
-# → ~/.local/bin/tool.AppImage (chmod +x)
-
-# Full install (archive extraction / AppImage / .sh installer)
-zing -p=install https://example.com/tool.tar.gz
-# → extracts, finds binary → ~/.local/bin/<name> (chmod +x)
-zing -p=install https://example.com/tool.zip
-zing -p=install https://example.com/tool.AppImage
-zing -p=install https://example.com/installer.sh   # runs the installer
-```
-
-Use `-p` (no value) for raw output, `-p=<mode>` to auto-pipe.
+- **Segmented concurrent downloads** with adaptive connection count (PID control + slow-start) instead of a fixed static split
+- **Server probing** → measures RTT, protocol, and bandwidth to pick the best download strategy
+- **Throttling detection** → if speed drops too low, re-probes and fails over to mirrors
+- **End-game mode** → remaining connections race for the last few blocks to minimize tail latency
+- **HTTP/1.1, HTTP/2, and HTTP/3** via reqwest
+- **Happy Eyeballs DNS** (IPv6-first) and mirror pre-probing by RTT
+- **Efficient disk writes** → lock-free `pwrite`, write cache with full-block flushes, `fallocate` pre-allocation on Linux
+- **Metalink (.meta4)** with per-block hash validation during download
+- **Token bucket rate limiter** and **bandwidth scheduling** for time-of-day limits
+- **Retry with exponential backoff + jitter** and multi-URL mirror fallback
+- **Checksum verification** (auto-detect by length), **digest auth** (RFC 7616), **TLS client certificates**
+- **Auto-naming** from URL or server, **auto-file-renaming** when a file exists, **dry-run** preview
 
 </details>
 
-## Resume
+### Daemon
+
+<details>
+<summary>Background downloads, task management, JSON-RPC</summary>
+
+The daemon runs downloads in the background so they continue even after you close the terminal. Any `zing download` command automatically detects the daemon and proxies through it. Use `--standalone` to force direct download even when the daemon is running.
+
+```bash
+# Start / stop / restart
+zing daemon start    # foreground
+zing daemon stop
+zing daemon restart
+zing daemon status   # Unix only (systemd)
+
+# Manage tasks
+zing list
+zing pause <id>
+zing resume <id>
+zing remove <id>
+
+# Install systemd service (Unix only)
+zing daemon install
+zing daemon uninstall
+```
+
+</details>
+
+### Scheduled downloads
+
+<details>
+<summary>Cron-like day/time triggers</summary>
+
+The daemon must be running.
+
+```bash
+# Download at a specific time
+zing schedule add https://example.com/file.zip --at 02:00
+
+# Within a time window, on specific days
+zing schedule add https://example.com/file.zip --at 00:00 --end 07:00 --days Mon,Wed,Fri
+
+# List / remove schedules
+zing schedule list
+zing schedule remove <id>
+```
+
+</details>
+
+### Resume
 
 <details>
 <summary>Control file resume + daemon resume command</summary>
 
-### Standalone resume
 zing saves state to a `.zing` control file on exit. Re-running the same URL resumes.
 
 ```
@@ -253,8 +203,7 @@ zing https://example.com/large-file.zip
   zing https://example.com/large-file.zip  → resumes
 ```
 
-### Daemon resume
-Restart a paused download in the daemon:
+For daemon-managed downloads:
 
 ```
 zing resume <id>
@@ -262,174 +211,93 @@ zing resume <id>
 
 </details>
 
-## Cookies & Authentication
+### Pipe mode
 
 <details>
-<summary>Cookie files, .netrc, basic auth</summary>
+<summary>Direct piping, script execution, and app install</summary>
 
-### Cookie jars (Netscape format)
+`-p` / `--pipe` outputs content to stdout (suppressing all logs), optionally auto-piping to a command.
+
+```bash
+# Raw pipe
+zing -p https://example.com/script.sh | sh
+
+# Auto-pipe to interpreters
+zing -p=sh     https://example.com/script.sh      # sh -s
+zing -p=bash   https://example.com/script.sh      # bash -s
+zing -p=python https://example.com/script.py      # python3
+zing -p=node   https://example.com/script.js      # node
+
+# Extract archives / install
+zing -p=tar     https://example.com/pkg.tar.gz     # tar -xzf -
+zing -p=app     https://example.com/tool.AppImage  # → ~/.local/bin (chmod +x)
+zing -p=install https://example.com/tool.tar.gz    # extracts → ~/.local/bin/<name>
 ```
-# Load cookies from file
-zing -L cookies.txt https://example.com/file.zip
 
-# Load cookies AND save updated ones after download
-zing -L cookies.txt -s cookies.txt https://example.com/file.zip
+</details>
 
-# Save cookies only
-zing -s cookies.txt https://example.com/file.zip
-```
+### Cookies & Authentication
 
-### .netrc authentication
-```
+<details>
+<summary>Cookie files, .netrc, basic/digest auth, TLS certs</summary>
+
+```bash
+# Cookie jars (Netscape format)
+zing -L cookies.txt https://example.com/file.zip               # load cookies
+zing -s cookies.txt https://example.com/file.zip               # save cookies
+zing -L cookies.txt -s cookies.txt https://example.com/...     # both
+
+# .netrc auth
 zing -N https://example.com/private.zip
-# Uses credentials from ~/.netrc matching the hostname
-```
 
-### Basic auth
-```
+# Basic auth (or bearer token with 'token:')
 zing -u user:pass https://example.com/private.zip
-# Or with a bearer token:
-zing -u "token:" https://example.com/api/download
-```
 
-### Digest auth
-```
+# Digest auth (RFC 7616 MD5-sess)
 zing --digest -u user:pass https://example.com/private.zip
-# Uses MD5-sess digest authentication (RFC 7616) instead of Basic auth
-```
 
-### TLS client certificates
-```
-zing --cert client.pem https://example.com/private.zip
+# TLS client certificates
 zing --cert client.pem --cert-key client-key.pem https://example.com/private.zip
 ```
 
 </details>
 
-## Event hooks
+### Event hooks
 
 <details>
-<summary>Run custom commands when downloads finish or fail</summary>
+<summary>Run commands when downloads finish or fail</summary>
 
-Run custom commands when downloads finish or fail:
+`{}` is replaced with the file path.
 
-```
+```bash
 zing --on-download-complete "notify-send 'Done: {}'" https://example.com/file.zip
 zing --on-download-error  "echo 'Failed: {}' >> ~/failures.log" https://example.com/file.zip
 ```
 
-`{}` is replaced with the file path.
-
 </details>
 
-## Logging
+### Logging
 
 <details>
 <summary>Log to file instead of stderr</summary>
 
-```
-# Log to file instead of stderr
+```bash
 zing -l download.log https://example.com/file.zip
 ```
 
 </details>
 
-## Daemon
-
-<details>
-<summary>Background daemon with task management</summary>
-
-The daemon runs downloads in the background so they continue even after you close the terminal. Any `zing download` command automatically detects the daemon and proxies through it. Use `--standalone` to force direct download even when the daemon is running.
-
-### Start / Stop / Restart
-
-```bash
-# Start the daemon in the foreground
-zing daemon start
-
-# Stop the daemon
-zing daemon stop
-
-# Restart the daemon
-zing daemon restart
-
-# Check daemon status (Unix only — systemd)
-zing daemon status
-```
-
-### Manage tasks
-
-```bash
-# List all downloads
-zing list
-
-# Pause a download
-zing pause <id>
-
-# Resume a paused download
-zing resume <id>
-
-# Remove a download
-zing remove <id>
-```
-
-### Install systemd service (Unix only)
-```bash
-zing daemon install
-zing daemon uninstall
-```
-
-</details>
-
-## Scheduled downloads
-
-<details>
-<summary>Cron-like time/day triggers</summary>
-
-Schedule downloads with an optional time window. The daemon must be running.
-
-```bash
-# Download at a specific time
-zing schedule add https://example.com/file.zip --at 02:00
-
-# Download within a time window
-zing schedule add https://example.com/file.zip --at 00:00 --end 07:00
-
-# On specific days only
-zing schedule add https://example.com/file.zip --at 06:00 --end 07:00 --days Mon,Wed,Fri
-
-# List scheduled downloads
-zing schedule list
-
-# Remove a schedule
-zing schedule remove <id>
-```
-
-</details>
-
-## Configuration
+### Configuration
 
 <details>
 <summary>Config file, keys, and commands</summary>
 
 ```bash
-# Interactive editor (guided prompts)
-zing config edit
-
-# List current config
-zing config list
-
-# Get a value
-zing config get download_dir
-
-# Set a value
+zing config edit     # interactive wizard
+zing config list     # or: config get <key>
 zing config set download_dir "~/Downloads"
-
-# Delete a config key
 zing config delete download_dir
 ```
-
-`zing config edit` opens an interactive wizard that shows all settings and lets you change them one by one.
 
 Config file: `~/.config/zing/config.json` (Linux/macOS) or `%APPDATA%\zing\config.json` (Windows)
 
@@ -449,13 +317,12 @@ Config file: `~/.config/zing/config.json` (Linux/macOS) or `%APPDATA%\zing\confi
 
 </details>
 
-## Completions
+### Completions
 
 <details>
 <summary>Generate shell completions</summary>
 
 ```bash
-# Generate shell completions
 zing completions bash
 zing completions zsh
 zing completions fish
@@ -464,110 +331,58 @@ zing completions powershell
 
 </details>
 
-## Features & Comparison
+### Update & Uninstall
 
-### Features
+<details>
+<summary>Updating and removing zing</summary>
 
-- **Smart downloads** with automatic speed adjustment
-- **End-game mode** — remaining connections race for the last few blocks to minimize tail latency
-- **Happy Eyeballs DNS** — resolves hostnames with IPv6 preference for faster dual-stack connections
-- **Write cache / delayed writes** — buffers sequential data and flushes in full-block writes for fewer syscalls
-- **Metalink per-block hash validation** — validates each block against chunk hashes during download
-- **Mirror pre-probing** — probes all mirrors by RTT before selecting the fastest connection
-- **Fast disk writing** for better performance
-- **Supports the fastest web protocols** (HTTP/1.1, HTTP/2, HTTP/3)
-- **Automatic server testing** to find the best download method
-- **Smart connection management** to avoid throttling
-- **Multi-URL mirror fallback** for better reliability
-- **Token bucket rate limiter** for smooth downloads
-- **Bandwidth scheduling** for time-of-day rate limits
-- **Auto-naming** from server or URL when no filename is given
-- **Checksum verification** to ensure file integrity
-- **Proxy support** for secure downloads
-- **Daemon mode** with live progress updates, session persistence, pause/resume via RPC
-- **Scheduled downloads** with cron-like day/time triggers
-- **Download resume** to continue interrupted downloads (control file + daemon RPC)
-- **Concurrent multi-URL downloads** with `--max-concurrent`
-- **Metalink (.meta4)** support for mirrors + checksums
-- **Pipe mode** (`-p`) with raw output, script execution (sh/bash/python/node), archive extraction (tar), and app install
-- **Cookie support** (`-L`/`-s`) for Netscape-format cookie files
-- **.netrc auth** (`-N`) for automatic credential lookup
-- **User-Agent** override (`-A`/`--user-agent`)
-- **Content-Disposition** filename handling (`-C`)
-- **Auto-file-renaming** (`--auto-file-renaming`) and **overwrite** control (`--allow-overwrite`)
-- **Dry-run** (`--dry-run`) to preview downloads
-- **Log to file** (`-l`/`--log`) instead of stderr
-- **Low-speed abort** (`--low-speed-limit`, `--low-speed-time`) to detect stuck connections and fail over to mirrors
-- **Configurable save interval** (`--save-interval`) to tune control-file persistence frequency
-- **Native fallocate pre-allocation** on Linux to reserve disk space before downloading
-- **Cookie save on interrupt** — cookies persist even on Ctrl+C/SIGTERM
-- **Daemon event hooks** — `--on-download-complete`/`--on-download-error` work in daemon mode too
-- **Event hooks** (`--on-download-complete`, `--on-download-error`) for custom post-download actions
-- **Update command** (`zing update`) to automatically upgrade to the latest release
-- **Shell completions** (`zing completions <shell>`) for bash, zsh, fish, and powershell
-- **Digest auth** (`--digest`) for MD5-sess HTTP Digest authentication (RFC 7616)
-- **TLS client certificates** (`--cert` / `--cert-key`) for mutual TLS authentication
-- **Standalone mode** (`--standalone`) to bypass the daemon and download directly
+```bash
+# Check for updates and apply
+zing update
 
-### Comparison
+# Uninstall via script
+zing -p https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | sh
+
+# Or manually: remove binaries, ~/.config/zing, and the daemon service
+# Windows: use Add/Remove Programs for the NSIS installer
+```
+
+</details>
+
+## Comparison
 
 | Capability | zing | aria2 | curl | wget2 | gopeed |
 | --- | --- | --- | --- | --- | --- |
-| HTTP/1.1 + H2 + H3 | Yes | Yes | Yes | Yes | Yes |
-| Segmented concurrent | PID + slow-start + steal | Static split | No | No | Static split |
-| Adaptive connections | PID + gain-flattening | No | No | No | No |
-| Intelligence probe | RTT + protocol + bw + Range | No | No | No | No |
-| Throttling -> re-probe | Speed <30% for 3s | No | No | No | No |
-| Lock-free disk writes | pwrite (no seek/mutex) | No | No | No | No |
-| Retry + backoff | Exponential + jitter | Yes | No | No | No |
-| Rate limiting | TokenBucket | Yes | No | No | No |
-| Bandwidth scheduling | Yes | No | No | No | No |
-| Mirror failover | Rotate on fail/throttle | Multi-URL | No | No | No |
+| HTTP/1.1 + H2 + H3 | Yes | H1.1 | Yes | H1.1 + H2 | H1.1 + H2 |
+| Segmented concurrent download | Yes (adaptive) | Static split | No | Partial (H2 chunked) | Static split |
+| Adaptive connection count | Yes | No | No | No | No |
+| Server intelligence probe | Yes | No | No | No | No |
+| Throttle detection → re-probe | Yes | No | No | No | No |
+| Rate limiting | Yes | Yes | Yes (`--limit-rate`) | Yes | Yes |
+| Bandwidth scheduling (time-of-day) | Yes | No | No | No | No |
+| Mirror failover | Yes | Multi-URL | No | No | No |
 | Metalink | .meta4 parser | Yes | No | No | No |
-| Proxy | Yes | Yes | Yes | Yes | Yes |
-| Daemon + RPC | Socket / TCP JSON-RPC | RPC | No | No | Web |
-| Daemon session persist | Save/restore on restart | Yes | No | No | No |
-| Daemon resume RPC | `zing resume <id>` | No | No | No | No |
-| Scheduled downloads | Day/time triggers | No | No | No | No |
-| Resume | Control file + daemon RPC | .aria2 | Yes | Yes | Yes |
-| Checksum verify | Post-download auto-detect | Metalink | No | No | No |
-| Concurrent multi-URL | Yes (--max-concurrent) | Yes | No | No | No |
-| Pipe mode | raw/sh/bash/python/node/tar/app/install | No | Yes | No | No |
-| Cookie jar (Netscape) | Load + save | Yes | Yes | Yes | No |
-| .netrc auth | Yes | No | Yes | Yes | No |
-| Content-Disposition | Yes | Yes | No | Yes | No |
-| Auto-file-renaming | Yes | No | No | No | No |
-| Dry-run | Yes | No | Yes | Yes | No |
-| Low-speed abort | Configurable limit+timeout | `--lowest-speed-limit` | No | No | No |
-| Disk pre-allocation | fallocate/ftruncate | falloc/prealloc/trunc | No | No | No |
-| Cookie save on interrupt | Yes | No | Yes (--cookie-jar) | No | No |
-| Daemon event hooks | on-complete & on-error | on-complete/error/start/pause | No | No | No |
-| Event hooks | on-complete / on-error | Yes | No | No | No |
-| User-Agent override | Yes | Yes | Yes | Yes | Yes |
-| Digest auth (RFC 7616) | Yes | Yes | Yes | No | No |
-| TLS client cert | Yes | Yes (`--cert`) | Yes (`--cert`) | No | No |
+| Checksum verification | Auto-detect | Yes | No | No | No |
 | End-game mode | Yes | No | No | No | No |
-| Write cache / delayed writes | Yes | No | No | No | No |
-| Mirror pre-probing (RTT) | Yes | No | No | No | No |
-| Happy Eyeballs DNS (IPv6-first) | Yes | No | Yes | No | No |
 | Per-block hash validation | Yes | Metalink only | No | No | No |
-
-</details>
+| Pipe / script output | Yes | No | Yes | No | No |
+| Daemon + RPC | Yes | JSON-RPC | No | No | Web |
+| Scheduled downloads | Yes | No | No | No | No |
+| Resume | Control file + RPC | `.aria2` | `-C -` | Yes | Yes |
+| Happy Eyeballs DNS | Yes | Yes | Yes | No | No |
 
 ## Architecture
 
 4 crates in a workspace:
 
-- **core**: Download engine: probe, segment management, PID control, rate limiting, retry, bandwidth scheduling, connection pool, cookie store, cross-platform IPC (transport layer)
-- **cli**: CLI frontend with progress bar, daemon auto-detection, checksum verification, config/schedule management, pipe modes, cookie/netrc auth, event hooks
-- **daemon**: JSON-RPC server for background and scheduled downloads (Unix socket on Linux, TCP on Windows)
-- **ext**: Utilities: checksum verification, filename extraction, aria2 session import, metalink parsing
+- **core** → Download engine: probe, segment management, PID control, rate limiting, retry, bandwidth scheduling, connection pool, cookie store, cross-platform IPC (transport layer)
+- **cli** → CLI frontend with progress bar, daemon auto-detection, checksum verification, config/schedule management, pipe modes, cookie/netrc auth, event hooks
+- **daemon** → JSON-RPC server for background and scheduled downloads (Unix socket on Linux, TCP on Windows)
+- **ext** → Utilities: checksum verification, filename extraction, aria2 session import, metalink parsing
 
 ## Design
 
-- **Pwrite over mmap**: Sequential streaming writes benefit from `pwrite`'s direct kernel path. Mmap adds page fault overhead for write-once workloads.
-- **reqwest over hyper**: reqwest provides HTTP/2 ALPN negotiation, HTTP/3 via quinn, connection pooling, and proxy support out of the box.
-- **Unix socket over TCP (Linux)**: No port conflicts, filesystem permissions control access, no network exposure.
-- **TCP fallback (Windows)**: Windows daemon uses TCP on 127.0.0.1 with a random port, stored in `%APPDATA%\zing\daemon.port`.
-- **No BitTorrent / browser impersonation**: zing focuses on clean HTTP download intelligence.
-
+- **Pwrite over mmap** → sequential streaming writes benefit from `pwrite`'s direct kernel path; mmap adds page-fault overhead for write-once workloads
+- **reqwest over hyper** → HTTP/2 ALPN negotiation, HTTP/3 via quinn, connection pooling, and proxy support out of the box
+- **Unix socket over TCP (Linux)** → no port conflicts, filesystem permissions control access, no network exposure
+- **TCP fallback (Windows)** → daemon uses TCP on 127.0.0.1 with a random port stored in `%APPDATA%\zing\daemon.port`
