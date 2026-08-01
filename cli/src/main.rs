@@ -677,7 +677,31 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         Some(Commands::Update) => {
             return update::run_update().await;
         }
-        Some(Commands::Tui { urls, connections }) => {
+        Some(Commands::Tui {
+            urls,
+            connections,
+            dir,
+            output,
+            max_download_rate,
+            max_filesize,
+            insecure,
+            proxy,
+            mirror,
+            user_agent,
+            header,
+            user,
+            digest,
+            retry,
+            retry_wait,
+            connect_timeout,
+            max_time,
+            end_game,
+            no_end_game,
+            throttle_reprobe,
+            no_throttle_reprobe,
+            load_cookies,
+            save_cookies,
+        }) => {
             #[cfg(not(feature = "tui"))]
             {
                 let _ = (urls, connections);
@@ -698,13 +722,67 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
                 let bus = EventBus::new();
 
-                let filename = url
-                    .rsplit('/')
-                    .next()
-                    .filter(|s| !s.is_empty())
-                    .and_then(|s| s.split('?').next())
-                    .unwrap_or("download")
-                    .to_string();
+                let cfg = Config::load(None);
+                let download_dir = dir.clone().unwrap_or_else(|| cfg.download_dir());
+                tokio::fs::create_dir_all(&download_dir)
+                    .await
+                    .map_err(|e| {
+                        color_eyre::eyre::eyre!(
+                            "Cannot create download directory '{}': {e}",
+                            download_dir.display()
+                        )
+                    })?;
+
+                let filename = match &output {
+                    Some(name) => name.to_string_lossy().to_string(),
+                    None => download_dir
+                        .join(filename::from_url(url))
+                        .to_string_lossy()
+                        .to_string(),
+                };
+
+                let mut headers = parse_headers(&header);
+                if let Some(user) = &user {
+                    if !digest {
+                        let creds = if let Some((u, p)) = user.split_once(':') {
+                            format!("{u}:{p}")
+                        } else {
+                            user.clone()
+                        };
+                        let encoded =
+                            base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+                        headers.push(("Authorization".into(), format!("Basic {encoded}")));
+                    }
+                }
+
+                let cookie_jar: Option<Arc<ZingCookieStore>> = match &load_cookies {
+                    Some(path) => match ZingCookieStore::from_netscape_file(path) {
+                        Ok(store) => {
+                            tracing::info!("Loaded cookies from {}", path);
+                            Some(Arc::new(store))
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to load cookies from '{}': {}", path, e);
+                            None
+                        }
+                    },
+                    None => None,
+                };
+
+                let endgame_enabled = if end_game {
+                    true
+                } else if no_end_game {
+                    false
+                } else {
+                    cfg.end_game.unwrap_or(true)
+                };
+                let throttle_reprobe_enabled = if throttle_reprobe {
+                    true
+                } else if no_throttle_reprobe {
+                    false
+                } else {
+                    cfg.throttle_reprobe.unwrap_or(true)
+                };
 
                 let task = Arc::new(DownloadTask::new(
                     1,
@@ -714,31 +792,38 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     false,
                     connections,
                     bus,
+                    insecure,
+                    max_download_rate,
+                    proxy.clone(),
+                    mirror.clone(),
+                    None,
+                    headers,
+                    max_filesize,
+                    retry,
+                    retry_wait,
+                    connect_timeout,
+                    max_time,
+                    user_agent.clone(),
                     false,
+                    cookie_jar,
+                    save_cookies.clone(),
                     0,
-                    None,
-                    vec![],
-                    None,
-                    vec![],
-                    0,
-                    5,
-                    500,
                     30,
-                    300,
-                    None,
-                    false,
-                    None,
-                    None,
-                    0,
-                    30,
                     5,
                     None,
                     None,
                     None,
-                    false,
-                    true,
-                    true,
+                    digest,
+                    endgame_enabled,
+                    throttle_reprobe_enabled,
                 ));
+                if digest {
+                    if let Some(ref creds) = user {
+                        if let Some((u, p)) = creds.split_once(':') {
+                            task.set_auth_credentials(u, p).await;
+                        }
+                    }
+                }
 
                 let t = task.clone();
                 let rx = shutdown_tx.subscribe();

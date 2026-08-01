@@ -407,6 +407,128 @@ pub enum Commands {
             help = "Max parallel connections per download"
         )]
         connections: usize,
+
+        #[arg(long = "dir", short = 'd', help = "Output directory")]
+        dir: Option<PathBuf>,
+
+        #[arg(long = "output", short = 'o', help = "Output filename")]
+        output: Option<PathBuf>,
+
+        #[arg(
+            long = "max-download-rate",
+            short = 'r',
+            value_parser = parse_bandwidth,
+            default_value = "0",
+            help = "Max download rate (500KB, 2MB, 1.5GB, 0 = unlimited)"
+        )]
+        max_download_rate: u64,
+
+        #[arg(
+            long = "max-filesize",
+            short = 'S',
+            value_parser = parse_bandwidth,
+            default_value = "0",
+            help = "Max file size (500KB, 2MB, 1GB, 0 = unlimited). Skips download if Content-Length exceeds this."
+        )]
+        max_filesize: u64,
+
+        #[arg(long = "insecure", short = 'k', help = "Skip TLS verification")]
+        insecure: bool,
+
+        #[arg(long = "proxy", short = 'x', help = "HTTP/HTTPS proxy")]
+        proxy: Option<String>,
+
+        #[arg(long = "mirror", short = 'm', help = "Mirror URLs for failover")]
+        mirror: Vec<String>,
+
+        #[arg(long = "user-agent", short = 'A', help = "Custom User-Agent header")]
+        user_agent: Option<String>,
+
+        #[arg(
+            long = "header",
+            short = 'H',
+            help = "Custom HTTP header (e.g. 'User-Agent: MyApp/1.0'). Can be repeated."
+        )]
+        header: Vec<String>,
+
+        #[arg(
+            long = "user",
+            short = 'u',
+            help = "HTTP basic auth username:password (e.g. 'user:pass' or 'token')"
+        )]
+        user: Option<String>,
+
+        #[arg(
+            long = "digest",
+            help = "Use HTTP Digest authentication (requires --user)"
+        )]
+        digest: bool,
+
+        #[arg(
+            long = "retry",
+            default_value = "5",
+            help = "Max retry attempts per connection"
+        )]
+        retry: u32,
+
+        #[arg(
+            long = "retry-wait",
+            default_value = "500",
+            help = "Base retry wait in milliseconds (doubles each attempt)"
+        )]
+        retry_wait: u64,
+
+        #[arg(
+            long = "connect-timeout",
+            default_value = "30",
+            help = "Connection timeout in seconds"
+        )]
+        connect_timeout: u64,
+
+        #[arg(
+            long = "max-time",
+            default_value = "300",
+            help = "Maximum total transfer time in seconds"
+        )]
+        max_time: u64,
+
+        #[arg(
+            long = "end-game",
+            help = "Enable end-game mode (all connections race for last blocks)"
+        )]
+        end_game: bool,
+        #[arg(
+            long = "no-end-game",
+            help = "Disable end-game mode",
+            conflicts_with = "end_game"
+        )]
+        no_end_game: bool,
+
+        #[arg(
+            long = "throttle-reprobe",
+            help = "Enable throttling re-probe (restart download if speed drops too low)"
+        )]
+        throttle_reprobe: bool,
+        #[arg(
+            long = "no-throttle-reprobe",
+            help = "Disable throttling re-probe",
+            conflicts_with = "throttle_reprobe"
+        )]
+        no_throttle_reprobe: bool,
+
+        #[arg(
+            long = "load-cookies",
+            short = 'L',
+            help = "Load cookies from Netscape-format cookie file"
+        )]
+        load_cookies: Option<String>,
+
+        #[arg(
+            long = "save-cookies",
+            short = 's',
+            help = "Save cookies to file after download"
+        )]
+        save_cookies: Option<String>,
     },
 }
 

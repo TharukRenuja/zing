@@ -321,11 +321,11 @@ fn render_block_map(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
 
 fn styled_log_line(text: &str) -> Line<'static> {
     let clean = clean_log_line(text);
-    let (color, modifier) = if clean.contains(" ERROR ") {
+    let (color, modifier) = if clean.starts_with("ERROR") {
         (Color::Red, Modifier::BOLD)
-    } else if clean.contains(" WARN ") {
+    } else if clean.starts_with("WARN") {
         (Color::Yellow, Modifier::empty())
-    } else if clean.contains(" DEBUG ") {
+    } else if clean.starts_with("DEBUG") || clean.starts_with("TRACE") {
         (Color::DarkGray, Modifier::empty())
     } else {
         (Color::Gray, Modifier::empty())
@@ -333,21 +333,34 @@ fn styled_log_line(text: &str) -> Line<'static> {
     Line::styled(clean, Style::default().fg(color).add_modifier(modifier))
 }
 
-/// Remove ANSI escape sequences and the leading RFC3339 timestamp from a
-/// tracing log line. The subscriber emits `compact()` formatted lines such as
-/// `2026-08-01T12:34:56.123456Z  INFO target: message`; in the TUI the
-/// timestamp and color codes are noise that eats horizontal space.
+/// Remove ANSI escape sequences, the leading RFC3339 timestamp, and the
+/// `target:` module path from a tracing log line. The subscriber emits
+/// `compact()` formatted lines such as
+/// `2026-08-01T12:34:56.123456Z  INFO zing_core::downloader: Probe: ...`;
+/// in the TUI the timestamp, color codes, and module path are noise that eat
+/// horizontal space, so we reduce this to `INFO: Probe: ...`.
 fn clean_log_line(text: &str) -> String {
     let without_ansi = strip_ansi(text);
-    let level_start = without_ansi
-        .find("DEBUG ")
-        .or_else(|| without_ansi.find("INFO "))
-        .or_else(|| without_ansi.find("WARN "))
-        .or_else(|| without_ansi.find("ERROR "))
-        .or_else(|| without_ansi.find("TRACE "));
-    match level_start {
-        Some(idx) => without_ansi[idx..].to_string(),
-        None => without_ansi,
+    let level_start = ["DEBUG", "INFO", "WARN", "ERROR", "TRACE"]
+        .iter()
+        .filter_map(|level| without_ansi.find(level))
+        .min();
+    let Some(idx) = level_start else {
+        return without_ansi;
+    };
+    let rest = &without_ansi[idx..];
+    // Cut at the first ": " which separates the module target from the
+    // message (e.g. "INFO zing_core::downloader: Probe: ..." -> "INFO Probe: ...").
+    if let Some(colon) = rest.find(": ") {
+        let level_end = rest
+            .find(' ')
+            .or_else(|| rest.find(':'))
+            .unwrap_or(rest.len());
+        let level = &rest[..level_end];
+        let message = rest[colon + 2..].trim_start();
+        format!("{level}: {message}")
+    } else {
+        rest.to_string()
     }
 }
 
@@ -470,5 +483,48 @@ fn truncate_addr(addr: &str, max: usize) -> String {
         format!("{}…", &addr[..max.saturating_sub(1)])
     } else {
         addr.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_log_line_strips_ansi_timestamp_and_target() {
+        // Raw compact()-formatted line with ANSI colors and timestamp.
+        let raw = "\u{1b}[2m2026-08-01T12:34:56.123456Z\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m \u{1b}[2mzing_core::downloader\u{1b}[0m\u{1b}[2m:\u{1b}[0m Probe: https://example.com/file.bin";
+        assert_eq!(
+            clean_log_line(raw),
+            "INFO: Probe: https://example.com/file.bin"
+        );
+    }
+
+    #[test]
+    fn clean_log_line_handles_message_with_colon() {
+        // The message itself contains ": " — only the target separator is cut.
+        let raw = "2026-08-01T12:00:00.000000Z  WARN zing_core::downloader: Conn 1: retrying...";
+        assert_eq!(clean_log_line(raw), "WARN: Conn 1: retrying...");
+    }
+
+    #[test]
+    fn clean_log_line_without_target_keeps_rest() {
+        // No ": " separator (no module target) — keep the whole tail.
+        let raw = "2026-08-01T12:00:00.000000Z  INFO message without target";
+        assert_eq!(clean_log_line(raw), "INFO message without target");
+    }
+
+    #[test]
+    fn clean_log_line_no_level_returns_raw() {
+        let raw = "some bare line without level";
+        assert_eq!(clean_log_line(raw), "some bare line without level");
+    }
+
+    #[test]
+    fn clean_log_line_errors_and_debug_levels() {
+        let err = "2026-08-01T12:00:00.000000Z ERROR zing_core::downloader: boom";
+        assert_eq!(clean_log_line(err), "ERROR: boom");
+        let dbg = "2026-08-01T12:00:00.000000Z DEBUG zing_core::downloader: trace point";
+        assert_eq!(clean_log_line(dbg), "DEBUG: trace point");
     }
 }
