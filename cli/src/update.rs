@@ -269,7 +269,7 @@ pub async fn run_update() -> Result<()> {
     // On Linux/macOS a running daemon keeps executing the old binary in memory,
     // so the fresh CLI would proxy to a stale daemon and hang. Restart it so
     // the new binary is picked up (mirrors the Windows service restart above).
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
         if is_running_as_root() {
             println!("  Running as root, skipping daemon restart");
@@ -432,15 +432,10 @@ fn current_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn is_running_as_root() -> bool {
     // SAFETY: geteuid takes no arguments and returns the effective UID.
     unsafe { libc::geteuid() == 0 }
-}
-
-#[cfg(windows)]
-fn is_running_as_root() -> bool {
-    false
 }
 
 fn version_cmp(a: &str, b: &str) -> Ordering {
