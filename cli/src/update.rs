@@ -254,6 +254,22 @@ pub async fn run_update() -> Result<()> {
         }
     }
 
+    // Reconcile the Windows service registration (create/config/restart) so an
+    // update behaves like a fresh MSI install — binary ACLs, service account,
+    // and startup state stay correct without the user reinstalling.
+    #[cfg(windows)]
+    {
+        if daemon_path.exists() {
+            ensure_daemon_service(&daemon_path).await?;
+        } else {
+            println!("  zing-daemon binary missing, skipping service setup");
+        }
+    }
+
+    // Housekeeping: remove leftover backup files from previous swaps.
+    let _ = std::fs::remove_file(exe_dir.join("zing.old"));
+    let _ = std::fs::remove_file(exe_dir.join("zing-daemon.old"));
+
     let _ = std::fs::remove_dir_all(&tmp);
     println!("Done. v{current} -> {tag}");
 
@@ -261,6 +277,98 @@ pub async fn run_update() -> Result<()> {
     save_cache(&cache_path, &tag);
 
     Ok(())
+}
+
+/// Reconcile the Windows `zing-daemon` service after a binary swap so the
+/// update behaves like a fresh MSI install:
+/// - create the service if it does not exist,
+/// - reset the binary path, service account (LocalSystem) and auto-start,
+/// - restart it so the new binary is live.
+#[cfg(windows)]
+async fn ensure_daemon_service(daemon_path: &std::path::Path) -> Result<()> {
+    let bin_path = format!("\"{}\"", daemon_path.display());
+
+    let exists = run_sc(&["query", "zing-daemon"]).await.is_ok();
+
+    if exists {
+        println!("  Reconfiguring zing-daemon service...");
+        let res = run_sc(&[
+            "config",
+            "zing-daemon",
+            "binPath=",
+            &bin_path,
+            "obj=",
+            "NT AUTHORITY\\LocalSystem",
+            "start=",
+            "auto",
+            "depend=",
+            "Tcpip",
+        ])
+        .await;
+        if let Err(e) = res {
+            bail!("Failed to reconfigure zing-daemon service: {e}");
+        }
+    } else {
+        println!("  Creating zing-daemon service...");
+        let res = run_sc(&[
+            "create",
+            "zing-daemon",
+            "type=",
+            "own",
+            "start=",
+            "auto",
+            "error=",
+            "normal",
+            "binPath=",
+            &bin_path,
+            "obj=",
+            "NT AUTHORITY\\LocalSystem",
+            "depend=",
+            "Tcpip",
+        ])
+        .await;
+        if let Err(e) = res {
+            bail!("Failed to create zing-daemon service: {e}");
+        }
+    }
+
+    // Restart the service so the new binary is picked up. Stopping a service
+    // that is not running is fine.
+    let _ = run_sc(&["stop", "zing-daemon"]).await;
+    let start = run_sc(&["start", "zing-daemon"]).await;
+    match start {
+        Ok(_) => println!("  zing-daemon service restarted"),
+        Err(e) => bail!("Failed to start zing-daemon service: {e}"),
+    }
+    Ok(())
+}
+
+/// Run `sc <args>` and return whether it succeeded. Prints stdout/stderr on
+/// failure so `sc`'s real error (e.g. "Access is denied") is visible.
+#[cfg(windows)]
+async fn run_sc(args: &[&str]) -> std::result::Result<(), String> {
+    let output = tokio::process::Command::new("sc")
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("sc {args:?}: {e}"))?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.trim().is_empty() {
+            println!("{}", stdout.trim());
+        }
+        Ok(())
+    } else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!(
+            "sc {}: {} {}",
+            args.join(" "),
+            stdout.trim(),
+            stderr.trim()
+        ))
+    }
 }
 
 fn swap_binary(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
@@ -283,7 +391,12 @@ fn swap_binary(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
         let old = dst.with_extension("old");
         let _ = std::fs::remove_file(&old);
         std::fs::rename(dst, &old)?;
-        std::fs::rename(&tmp_dst, dst)?;
+        // Use a copy (not rename) so the new binary inherits the destination
+        // directory ACL. Rename preserves the source (%TEMP%) ACL, which omits
+        // the service account and makes `sc start zing-daemon` fail with
+        // "Access is denied (5)" after an update.
+        std::fs::copy(&tmp_dst, dst)?;
+        let _ = std::fs::remove_file(&tmp_dst);
     }
     #[cfg(not(windows))]
     {

@@ -1460,8 +1460,14 @@ async fn run_sc_command(action: &str) -> Result<()> {
             println!("{}", stdout.trim());
         }
     } else {
-        tracing::error!("sc {action}: {}", stderr.trim());
-        return Err(color_eyre::eyre::eyre!("sc {action}: {}", stderr.trim()));
+        // `sc` writes errors (e.g. "Access is denied") to stdout, so include
+        // both streams in the message.
+        let detail = format!("{} {}", stdout.trim(), stderr.trim());
+        tracing::error!("sc {action}: {detail}");
+        if action == "start" || action == "stop" {
+            tracing::error!("Hint: starting/stopping the zing-daemon service requires an elevated (Administrator) PowerShell.");
+        }
+        return Err(color_eyre::eyre::eyre!("sc {action}: {detail}"));
     }
     Ok(())
 }
