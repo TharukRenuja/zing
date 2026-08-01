@@ -55,7 +55,7 @@ pub fn spawn_scheduler(limiter: Arc<TokenBucket>, schedule: &str) {
 
     let initial_rate = entries[0].rate_bytes;
     limiter.set_rate(initial_rate);
-    tracing::info!(
+    tracing::debug!(
         "Bandwidth schedule loaded ({} entries), initial rate: {}",
         entries.len(),
         initial_rate,

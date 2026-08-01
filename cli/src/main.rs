@@ -10,7 +10,7 @@ use clap::Parser;
 use clap_complete::generate;
 use color_eyre::Result;
 use config::Config;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -935,7 +935,11 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 Ok(resp) => {
                     let id = resp.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
                     let name = zing_ext::filename::from_url(url_str);
-                    tracing::info!("Downloading: {name}");
+                    if progress_type == ProgressType::Bar {
+                        tracing::debug!("Downloading: {name}");
+                    } else {
+                        tracing::info!("Downloading: {name}");
+                    }
                     let pt = progress_type;
                     handles.push(tokio::spawn(async move {
                         daemon_client::subscribe_and_show_progress(id, pt).await;
@@ -951,7 +955,11 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         return Ok(());
     }
 
-    tracing::info!("No daemon found, running standalone");
+    if args.standalone {
+        tracing::info!("Forced standalone mode, running directly");
+    } else {
+        tracing::info!("No daemon found, running standalone");
+    }
 
     // Pipe mode dispatch (non-raw modes)
     if let Some(ref mode) = args.pipe {
@@ -1251,6 +1259,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 })?;
 
             let task_id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
+            let started_at = std::time::Instant::now();
 
             loop {
                 bus.emit(EngineEvent::TaskCreated {
@@ -1353,14 +1362,20 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 }
 
                 // Normal completion
-                tracing::info!("{filename}: done");
-                if let Some(ref chk) = effective_checksum {
-                    let path = Path::new(&filename);
-                    match checksum::verify_file(path, chk) {
-                        Ok(true) => tracing::info!("Checksum: OK ({chk})"),
-                        Ok(false) => tracing::error!("Checksum: MISMATCH (expected {chk})"),
-                        Err(e) => tracing::error!("Checksum: {e}"),
+                let mut checksum_ok = None;
+                if !to_stdout {
+                    if let Some(ref chk) = effective_checksum {
+                        let path = Path::new(&filename);
+                        match checksum::verify_file(path, chk) {
+                            Ok(true) => checksum_ok = Some(true),
+                            Ok(false) => checksum_ok = Some(false),
+                            Err(e) => {
+                                tracing::error!("Checksum: {e}");
+                                checksum_ok = Some(false);
+                            }
+                        }
                     }
+                    print_download_summary(&filename, started_at, checksum_ok);
                 }
                 if let Some(ref cmd) = on_complete {
                     run_hook(cmd, &filename);
@@ -2008,40 +2023,91 @@ async fn run_list() -> Result<()> {
                         env!("CARGO_PKG_VERSION")
                     );
                 }
-                println!(
-                    "{:<6} {:<12} {:<30} {:<25} FILE",
-                    "ID", "STATUS", "PROGRESS", "SPEED"
-                );
-                println!("{}", "-".repeat(100));
-                for task in &tasks {
-                    let id = task.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                    let filename = task.get("filename").and_then(|v| v.as_str()).unwrap_or("?");
-                    let total = task
-                        .get("total_bytes")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let downloaded = task.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let speed = task.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let status_short = status.trim_end_matches(')').trim_start_matches("Failed(");
-                    let progress = if total > 0 {
-                        let pct = if total > 0 {
-                            downloaded as f64 / total as f64 * 100.0
+
+                let green = "\x1b[32m";
+                let red = "\x1b[31m";
+                let yellow = "\x1b[33m";
+                let cyan = "\x1b[36m";
+                let reset = "\x1b[0m";
+
+                let status_color = |s: &str| match s {
+                    "Downloading" | "Active" | "running" => format!("{green}{s}{reset}"),
+                    "Paused" | "paused" => format!("{yellow}{s}{reset}"),
+                    "Failed" | "Error" | "failed" => format!("{red}{s}{reset}"),
+                    _ => s.to_string(),
+                };
+
+                let rows: Vec<(String, String, String, String, String)> = tasks
+                    .iter()
+                    .map(|task| {
+                        let id = task.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let filename = task.get("filename").and_then(|v| v.as_str()).unwrap_or("?");
+                        let total = task
+                            .get("total_bytes")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let downloaded =
+                            task.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let speed = task.get("speed").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let status_short =
+                            status.trim_end_matches(')').trim_start_matches("Failed(");
+                        let progress = if total > 0 {
+                            let pct = downloaded as f64 / total as f64 * 100.0;
+                            format!(
+                                "{:>5.1}% ({}/{})",
+                                pct,
+                                zing_ext::human::human_bytes(downloaded),
+                                zing_ext::human::human_bytes(total)
+                            )
                         } else {
-                            0.0
+                            zing_ext::human::human_bytes(downloaded)
                         };
-                        format!("{:.1}% ({}/{})", pct, downloaded, total)
-                    } else {
-                        format!("{} bytes", downloaded)
-                    };
-                    let speed_str = if speed > 0.0 {
-                        format!("{:.1} KB/s", speed / 1024.0)
-                    } else {
-                        "-".to_string()
-                    };
+                        let speed_str = if speed > 0.0 {
+                            format!("{}/s", zing_ext::human::human_speed(speed as u64))
+                        } else {
+                            "-".to_string()
+                        };
+                        (
+                            format!("{cyan}{id}{reset}"),
+                            status_color(status_short),
+                            progress,
+                            speed_str,
+                            filename.to_string(),
+                        )
+                    })
+                    .collect();
+
+                let max_id = rows.iter().map(|r| visible_len(&r.0)).max().unwrap_or(2);
+                let max_status = rows.iter().map(|r| visible_len(&r.1)).max().unwrap_or(6);
+                let max_prog = rows.iter().map(|r| visible_len(&r.2)).max().unwrap_or(8);
+                let max_speed = rows.iter().map(|r| visible_len(&r.3)).max().unwrap_or(10);
+                let width = terminal_width();
+                let file_w =
+                    width.saturating_sub(max_id + max_status + max_prog + max_speed + 2 + 6);
+                let file_w = file_w.clamp(10, 60);
+
+                println!(
+                    "{:<idw$} {:<sw$} {:<pw$} {:<spw$} FILE",
+                    "ID",
+                    "STATUS",
+                    "PROGRESS",
+                    "SPEED",
+                    idw = max_id,
+                    sw = max_status,
+                    pw = max_prog,
+                    spw = max_speed,
+                );
+                println!("{}", "-".repeat(width.min(120)));
+                for (id, status, progress, speed, filename) in &rows {
+                    let fname = truncate_width(filename, file_w);
                     println!(
-                        "{:<6} {:<12} {:<30} {:<25} {}",
-                        id, status_short, progress, speed_str, filename
+                        "{} {} {} {} {}",
+                        pad_visible(id, max_id),
+                        pad_visible(status, max_status),
+                        pad_visible(progress, max_prog),
+                        pad_visible(speed, max_speed),
+                        fname,
                     );
                 }
             }
@@ -2051,6 +2117,129 @@ async fn run_list() -> Result<()> {
         eprintln!("No daemon running. Start one with: zing daemon");
     }
     Ok(())
+}
+
+fn visible_len(s: &str) -> usize {
+    let mut count = 0;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            while let Some(&c2) = chars.peek() {
+                chars.next();
+                if c2 == 'm' {
+                    break;
+                }
+            }
+        } else {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn truncate_width(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn pad_visible(s: &str, width: usize) -> String {
+    let vlen = visible_len(s);
+    if vlen >= width {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(width - vlen))
+    }
+}
+
+fn bar_style_unknown_size() -> indicatif::ProgressStyle {
+    indicatif::ProgressStyle::default_bar()
+        .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec}) {msg}")
+        .unwrap()
+}
+
+fn bar_style_sized(show_eta: bool) -> indicatif::ProgressStyle {
+    let template = if show_eta {
+        "{prefix:.dim} [{elapsed_precise}] [{wide_bar:.cyan}] {percent}% {bytes}/{total_bytes}  {bytes_per_sec}  {eta}  {msg}"
+    } else {
+        "{prefix:.dim} [{elapsed_precise}] [{wide_bar:.cyan}] {percent}% {bytes}/{total_bytes}  {bytes_per_sec}  {msg}"
+    };
+    indicatif::ProgressStyle::default_bar()
+        .template(template)
+        .unwrap()
+        .progress_chars("=>-")
+}
+
+#[cfg(unix)]
+fn terminal_width() -> usize {
+    use std::os::fd::AsRawFd;
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(std::io::stderr().as_raw_fd(), libc::TIOCGWINSZ, &mut ws) == 0
+            && ws.ws_col > 0
+        {
+            ws.ws_col as usize
+        } else {
+            80
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn terminal_width() -> usize {
+    80
+}
+
+fn print_download_summary(
+    filename: &str,
+    started_at: std::time::Instant,
+    checksum_ok: Option<bool>,
+) {
+    let elapsed = started_at.elapsed();
+    let size = std::fs::metadata(filename).map(|m| m.len()).unwrap_or(0);
+    let avg_speed = if elapsed.as_secs_f64() > 0.0 {
+        (size as f64 / elapsed.as_secs_f64()) as u64
+    } else {
+        0
+    };
+
+    let green = "\x1b[32m";
+    let red = "\x1b[31m";
+    let bold = "\x1b[1m";
+    let dim = "\x1b[2m";
+    let reset = "\x1b[0m";
+
+    let status = match checksum_ok {
+        Some(true) => format!("{green}✓{reset} {green}{bold}{filename}{reset}"),
+        Some(false) => format!("{red}✗{reset} {red}{bold}{filename}{reset}"),
+        None => format!("{green}✓{reset} {bold}{filename}{reset}"),
+    };
+
+    println!(
+        "{status} {dim}({size} · {elapsed} · {speed}){reset}",
+        size = zing_ext::human::human_bytes(size),
+        elapsed = {
+            let s = elapsed.as_secs_f64();
+            if s < 60.0 {
+                format!("{s:.1}s")
+            } else {
+                format!("{}m{:02}s", (s as u64) / 60, (s as u64) % 60)
+            }
+        },
+        speed = zing_ext::human::human_speed(avg_speed),
+    );
+
+    match checksum_ok {
+        Some(true) => println!("{green}  Checksum: OK{reset}"),
+        Some(false) => println!("{red}  Checksum: MISMATCH{reset}"),
+        None => {}
+    }
 }
 
 async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Result<()> {
@@ -2068,11 +2257,7 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                 let display_name = filename::from_url(&url);
                 let bar = mp.add(ProgressBar::new(0));
                 bar.set_prefix(display_name);
-                bar.set_style(
-                    ProgressStyle::default_bar()
-                        .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})")
-                        .unwrap(),
-                );
+                bar.set_style(bar_style_unknown_size());
                 bar.enable_steady_tick(std::time::Duration::from_millis(100));
                 bars.insert(id, bar);
                 known_totals.remove(&id);
@@ -2083,34 +2268,15 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                     if !known_totals.contains_key(&p.id) && p.total_bytes.is_some_and(|t| t > 0) {
                         known_totals.insert(p.id, p.total_bytes.unwrap());
                         bar.set_length(p.total_bytes.unwrap());
-                        bar.set_style(
-                            ProgressStyle::default_bar()
-                                .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
-                                .unwrap()
-                                .progress_chars("=>-"),
-                        );
                     }
                     if known_totals.contains_key(&p.id) {
-                        if p.speed_bytes_per_sec < 1.0 {
-                            bar.set_style(
-                                ProgressStyle::default_bar()
-                                    .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}")
-                                    .unwrap()
-                                    .progress_chars("=>-"),
-                            );
-                        } else {
-                            bar.set_style(
-                                ProgressStyle::default_bar()
-                                    .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
-                                    .unwrap()
-                                    .progress_chars("=>-"),
-                            );
-                        }
+                        bar.set_style(bar_style_sized(p.speed_bytes_per_sec >= 1.0));
                     }
                 }
             }
             Ok(EngineEvent::TaskCompleted { id, .. }) => {
                 if let Some(bar) = bars.remove(&id) {
+                    bar.set_message("done");
                     bar.finish();
                 }
                 known_totals.remove(&id);

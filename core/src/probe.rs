@@ -192,7 +192,7 @@ pub async fn probe_mirrors(pool: &ConnectionPool, urls: &[String]) -> Vec<String
     results.sort_by_key(|a| a.rtt);
 
     let sorted: Vec<String> = results.into_iter().map(|m| m.url).collect();
-    tracing::info!(
+    tracing::debug!(
         "Mirror probe: {} mirrors sorted by RTT (fastest first)",
         sorted.len()
     );

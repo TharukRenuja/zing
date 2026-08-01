@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph, Row, Table};
 use ratatui::Frame;
 use zing_core::downloader::TaskSnapshot;
+use zing_ext::human::{human_bytes, human_speed};
 
 use crate::layout;
 
@@ -156,16 +157,8 @@ fn render_stats(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
                 Color::Green,
             ),
             ("Total", human_bytes(snap.total_bytes), Color::White),
-            (
-                "Speed",
-                format!("{}/s", human_bytes(snap.speed)),
-                Color::Green,
-            ),
-            (
-                "Peak",
-                format!("{}/s", human_bytes(snap.peak_speed)),
-                Color::Cyan,
-            ),
+            ("Speed", human_speed(snap.speed), Color::Green),
+            ("Peak", human_speed(snap.peak_speed), Color::Cyan),
         ],
         cell_width,
     );
@@ -234,7 +227,7 @@ fn render_connections(frame: &mut Frame, area: Rect, snap: &TaskSnapshot, scroll
         .map(|c| {
             let addr_short = truncate_addr(&c.addr, 14);
             let speed_str = if c.speed_bytes_per_sec > 0.0 {
-                format!("{}/s", human_bytes(c.speed_bytes_per_sec as u64))
+                human_speed(c.speed_bytes_per_sec as u64)
             } else {
                 "-".to_string()
             };
@@ -293,7 +286,7 @@ fn render_block_map(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
         .count();
 
     let endgame_str = if snap.endgame { "ON" } else { "OFF" };
-    let speed = human_bytes(snap.speed);
+    let speed = human_speed(snap.speed);
 
     let eta = if snap.speed > 0 && !snap.done {
         let remaining = snap.total_bytes.saturating_sub(snap.bytes_downloaded);
@@ -408,7 +401,7 @@ fn render_logs(frame: &mut Frame, area: Rect, logs: &[String]) {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
-    let peak = human_bytes(snap.peak_speed);
+    let peak = human_speed(snap.peak_speed);
 
     let pause_label = if snap.paused { "resume" } else { "pause" };
     let text = Line::from(vec![
@@ -462,20 +455,6 @@ fn render_footer(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
         .title_bottom(text.centered());
 
     frame.render_widget(block, area);
-}
-
-fn human_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    if bytes == 0 {
-        return "0B".to_string();
-    }
-    let mut b = bytes as f64;
-    let mut unit = 0;
-    while b > 1024.0 && unit < UNITS.len() - 1 {
-        b /= 1024.0;
-        unit += 1;
-    }
-    format!("{:.1}{}", b, UNITS[unit])
 }
 
 fn truncate_addr(addr: &str, max: usize) -> String {

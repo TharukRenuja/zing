@@ -416,7 +416,7 @@ impl DownloadTask {
         if self.state.is_auto_name && self.state.use_cd {
             if let Some(ref cd) = profile.content_disposition {
                 if let Some(cd_name) = zing_ext::filename::from_content_disposition(cd) {
-                    tracing::info!("Using server-provided filename: {cd_name}");
+                    tracing::debug!("Using server-provided filename: {cd_name}");
                     let current = self.state.filename.lock().await.clone();
                     let new_name = if let Some(parent) = std::path::Path::new(&current).parent() {
                         if !parent.as_os_str().is_empty() {
@@ -448,7 +448,7 @@ impl DownloadTask {
                 let _ = tokio::fs::remove_file(Path::new(&filename)).await;
                 return self.run_fresh(profile.total_size).await;
             }
-            tracing::info!("Resuming: {:.1}% complete", cf.bitfield.progress_pct());
+            tracing::debug!("Resuming: {:.1}% complete", cf.bitfield.progress_pct());
         }
 
         if profile.total_size.is_none_or(|s| s == 0) && !resume.is_some() {
@@ -462,7 +462,7 @@ impl DownloadTask {
         let total_size = profile.total_size;
         let effective_url = self.state.url.lock().await.clone();
 
-        tracing::info!(
+        tracing::debug!(
             "Probe: {} RTT={}ms {} streams protocol={} ranges={}",
             effective_url,
             profile.rtt.as_millis(),
@@ -506,7 +506,7 @@ impl DownloadTask {
         mut resume: Option<ControlFile>,
         total_size: u64,
     ) -> Result<()> {
-        tracing::info!("Segmented: {} bytes", total_size);
+        tracing::debug!("Segmented: {} bytes", total_size);
         let mut filename = self.state.filename.lock().await.clone();
         loop {
             if resume.is_some() {
@@ -939,7 +939,7 @@ impl DownloadTask {
         Ok(())
     }
     async fn run_streaming(&self) -> Result<()> {
-        tracing::info!("Streaming mode (unknown size)");
+        tracing::debug!("Streaming mode (unknown size)");
         let filename = self.state.filename.lock().await.clone();
 
         let stream_url = self.state.url.lock().await.clone();
@@ -991,7 +991,7 @@ impl DownloadTask {
     }
 
     async fn run_to_stdout(&self, url: &str) -> Result<()> {
-        tracing::info!("Streaming to stdout");
+        tracing::debug!("Streaming to stdout");
         let resp = self.state.pool.get(url, self.state.id).await?;
         if !resp.status().is_success() {
             bail!("HTTP {}", resp.status());
@@ -1202,7 +1202,7 @@ async fn download_range(
                     if let Some(auth_header) = zing_ext::digest_auth::compute_digest_auth(
                         challenge, &username, &password, "GET", &url_str,
                     ) {
-                        tracing::info!("Conn {conn_id}: retrying with Digest auth");
+                        tracing::debug!("Conn {conn_id}: retrying with Digest auth");
                         let end = offset + length - 1;
                         let http_resp = state
                             .pool

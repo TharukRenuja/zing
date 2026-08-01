@@ -2,6 +2,24 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use zing_core::transport;
 
+fn bar_style_unknown_size() -> indicatif::ProgressStyle {
+    indicatif::ProgressStyle::default_bar()
+        .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec}) {msg}")
+        .unwrap()
+}
+
+fn bar_style_sized(show_eta: bool) -> indicatif::ProgressStyle {
+    let template = if show_eta {
+        "{prefix:.dim} [{elapsed_precise}] [{wide_bar:.cyan}] {percent}% {bytes}/{total_bytes}  {bytes_per_sec}  {eta}  {msg}"
+    } else {
+        "{prefix:.dim} [{elapsed_precise}] [{wide_bar:.cyan}] {percent}% {bytes}/{total_bytes}  {bytes_per_sec}  {msg}"
+    };
+    indicatif::ProgressStyle::default_bar()
+        .template(template)
+        .unwrap()
+        .progress_chars("=>-")
+}
+
 async fn read_auth_token() -> Option<String> {
     let addr = transport::default_addr();
     let token_path = transport::auth_file(&addr);
@@ -135,11 +153,7 @@ pub async fn subscribe_and_show_progress(task_id: u64, progress_type: crate::arg
                     let display = zing_ext::filename::from_url(url);
                     let bar = indicatif::ProgressBar::new(0);
                     bar.set_prefix(display);
-                    bar.set_style(
-                        indicatif::ProgressStyle::default_bar()
-                            .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})")
-                            .unwrap(),
-                    );
+                    bar.set_style(bar_style_unknown_size());
                     bar.enable_steady_tick(std::time::Duration::from_millis(100));
                     pb = Some(bar);
                 }
@@ -161,38 +175,17 @@ pub async fn subscribe_and_show_progress(task_id: u64, progress_type: crate::arg
                         }
                         if total.is_some_and(|t| t > 0) {
                             if speed < 1.0 {
-                                bar.set_style(
-                                        indicatif::ProgressStyle::default_bar()
-                                            .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}")
-                                            .unwrap()
-                                            .progress_chars("=>-"),
-                                    );
+                                bar.set_style(bar_style_sized(false));
                             } else {
-                                bar.set_style(
-                                        indicatif::ProgressStyle::default_bar()
-                                            .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
-                                            .unwrap()
-                                            .progress_chars("=>-"),
-                                    );
+                                bar.set_style(bar_style_sized(true));
                             }
                         }
                     } else {
                         let bar = indicatif::ProgressBar::new(total.unwrap_or(0));
                         if total.is_some_and(|t| t > 0) {
-                            bar.set_style(
-                                    indicatif::ProgressStyle::default_bar()
-                                        .template("{prefix:.dim} [{elapsed_precise}] [{bar:30}] {bytes}/{total_bytes}  {bytes_per_sec}  {eta}")
-                                        .unwrap()
-                                        .progress_chars("=>-"),
-                                );
+                            bar.set_style(bar_style_sized(true));
                         } else {
-                            bar.set_style(
-                                    indicatif::ProgressStyle::default_bar()
-                                        .template(
-                                            "{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec})",
-                                        )
-                                        .unwrap(),
-                                );
+                            bar.set_style(bar_style_unknown_size());
                         }
                         bar.enable_steady_tick(std::time::Duration::from_millis(100));
                         pb = Some(bar);
