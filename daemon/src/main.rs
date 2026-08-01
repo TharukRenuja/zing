@@ -12,10 +12,30 @@ use zing_core::transport;
 windows_service::define_windows_service!(ffi_service_main, my_service_main);
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("zing-daemon {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "zing-daemon {} — background download daemon",
+            env!("CARGO_PKG_VERSION")
+        );
+        println!();
+        println!("Usage: zing-daemon [OPTIONS]");
+        println!();
+        println!("Options:");
+        println!("  -h, --help     Print this help");
+        println!("  -V, --version  Print version");
+        #[cfg(windows)]
+        println!("  --console      Run in console mode instead of as a Windows service");
+        return;
+    }
+
     #[cfg(windows)]
     {
-        let args: Vec<String> = std::env::args().collect();
-        if args.get(1).map(|s| s == "--console").unwrap_or(false) {
+        if args.get(0).map(|s| s == "--console").unwrap_or(false) {
             run_daemon_console();
             return;
         }

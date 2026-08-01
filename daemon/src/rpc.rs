@@ -57,6 +57,11 @@ pub async fn handle_request(
         "zing.pause" => handle_pause(req.params, manager).await,
         "zing.resume" => handle_resume(req.params, manager).await,
         "zing.remove" => handle_remove(req.params, manager).await,
+        "zing.version" => RpcResponse {
+            id: req.id,
+            result: Some(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })),
+            error: None,
+        },
         "zing.shutdown" => {
             let _ = shutdown_tx.send(());
             RpcResponse {
@@ -694,6 +699,16 @@ mod tests {
 
         let task = mgr.get_task(id).await;
         assert!(task.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_version() {
+        let (mgr, stx) = test_setup();
+        let req = make_req("zing.version", None);
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]

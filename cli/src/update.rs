@@ -266,6 +266,29 @@ pub async fn run_update() -> Result<()> {
         }
     }
 
+    // On Linux/macOS a running daemon keeps executing the old binary in memory,
+    // so the fresh CLI would proxy to a stale daemon and hang. Restart it so
+    // the new binary is picked up (mirrors the Windows service restart above).
+    #[cfg(not(windows))]
+    {
+        if is_running_as_root() {
+            println!("  Running as root, skipping daemon restart");
+            println!("  Run `zing daemon restart` as your user to pick up the new daemon");
+        } else if crate::daemon_client::daemon_is_running().await {
+            println!("  Restarting zing-daemon...");
+            let _ = crate::run_daemon_stop().await;
+            // Wait for the old daemon to release the socket before starting anew.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while crate::daemon_client::daemon_is_running().await
+                && std::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            crate::run_daemon_start().await?;
+            println!("  zing-daemon restarted");
+        }
+    }
+
     // Housekeeping: remove leftover backup files from previous swaps.
     let _ = std::fs::remove_file(exe_dir.join("zing.old"));
     let _ = std::fs::remove_file(exe_dir.join("zing-daemon.old"));
@@ -407,6 +430,17 @@ fn swap_binary(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
 
 fn current_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[cfg(not(windows))]
+fn is_running_as_root() -> bool {
+    // SAFETY: geteuid takes no arguments and returns the effective UID.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(windows)]
+fn is_running_as_root() -> bool {
+    false
 }
 
 fn version_cmp(a: &str, b: &str) -> Ordering {

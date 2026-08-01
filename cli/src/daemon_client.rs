@@ -47,6 +47,14 @@ pub async fn daemon_is_running() -> bool {
     transport::connect(&addr).await.is_ok()
 }
 
+pub async fn daemon_version() -> Result<String, String> {
+    let resp = send_request("zing.version", None).await?;
+    resp.get("version")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .ok_or_else(|| "daemon did not return a version".to_string())
+}
+
 pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, String> {
     let addr = transport::default_addr();
     let stream = transport::connect(&addr)

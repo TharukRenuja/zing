@@ -898,7 +898,29 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     };
 
     // Download mode — check for daemon proxy
-    if !args.standalone && !to_stdout && daemon_client::daemon_is_running().await {
+    let can_proxy = !args.standalone && !to_stdout && daemon_client::daemon_is_running().await;
+    let daemon_ok = if can_proxy {
+        match daemon_client::daemon_version().await {
+            Ok(v) if v == env!("CARGO_PKG_VERSION") => true,
+            Ok(v) => {
+                tracing::warn!(
+                    "Daemon v{v} is older than zing v{} — run `zing daemon restart` to upgrade it",
+                    env!("CARGO_PKG_VERSION")
+                );
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Could not verify daemon version ({e}); assuming outdated — run `zing daemon restart`"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    if daemon_ok {
         tracing::info!("zing daemon detected, proxying commands");
 
         let cfg = Config::load(None);
@@ -957,6 +979,8 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
 
     if args.standalone {
         tracing::info!("Forced standalone mode, running directly");
+    } else if can_proxy && !daemon_ok {
+        tracing::info!("Daemon incompatible, running standalone");
     } else {
         tracing::info!("No daemon found, running standalone");
     }
@@ -1417,7 +1441,7 @@ fn daemon_name() -> &'static str {
     }
 }
 
-async fn run_daemon_start() -> Result<()> {
+pub(crate) async fn run_daemon_start() -> Result<()> {
     #[cfg(windows)]
     return run_sc_command("start").await;
 
@@ -1436,7 +1460,7 @@ async fn run_daemon_start() -> Result<()> {
     }
 }
 
-async fn run_daemon_stop() -> Result<()> {
+pub(crate) async fn run_daemon_stop() -> Result<()> {
     #[cfg(windows)]
     return run_sc_command("stop").await;
 
