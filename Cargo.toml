@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "daemon", "ext"]
+members = ["core", "cli", "daemon", "ext", "tui"]
 default-members = ["cli"]
 
 [profile.release]

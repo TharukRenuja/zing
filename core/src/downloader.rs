@@ -14,6 +14,7 @@ use crate::storage::control::BlockBitfield;
 use crate::storage::ControlFile;
 use crate::util;
 use anyhow::{bail, Result};
+use reqwest::Error as ReqwestError;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -55,6 +56,7 @@ struct SharedState {
     pub endgame: AtomicBool,
     pub endgame_enabled: bool,
     pub throttle_reprobe_enabled: bool,
+    pub paused: AtomicBool,
     pub claimed_blocks: tokio::sync::Mutex<HashSet<u32>>,
     pub digest_auth: bool,
     pub auth_credentials: tokio::sync::Mutex<Option<(String, String)>>,
@@ -100,6 +102,22 @@ impl SharedState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TaskSnapshot {
+    pub url: String,
+    pub filename: String,
+    pub bytes_downloaded: u64,
+    pub total_bytes: u64,
+    pub speed: u64,
+    pub peak_speed: u64,
+    pub done: bool,
+    pub endgame: bool,
+    pub paused: bool,
+    pub connections: Vec<crate::segment::manager::ConnectionInfo>,
+    pub completed_blocks: u32,
+    pub total_blocks: u32,
+}
+
 pub struct DownloadTask {
     state: Arc<SharedState>,
 }
@@ -108,6 +126,28 @@ impl DownloadTask {
     pub async fn set_auth_credentials(&self, username: &str, password: &str) {
         *self.state.auth_credentials.lock().await =
             Some((username.to_string(), password.to_string()));
+    }
+
+    /// Pause the download. In-flight reads finish their current chunk, but
+    /// connections stop claiming new work and the monitor stops adjusting
+    /// the connection pool until [`DownloadTask::resume`] is called.
+    pub fn pause(&self) {
+        self.state.paused.store(true, Ordering::Release);
+    }
+
+    /// Resume a paused download.
+    pub fn resume(&self) {
+        self.state.paused.store(false, Ordering::Release);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.state.paused.load(Ordering::Acquire)
+    }
+
+    /// Request a graceful stop. Connections finish their current segment and
+    /// the control file is saved so the download can be resumed later.
+    pub fn stop(&self) {
+        self.state.done.store(true, Ordering::Release);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -221,6 +261,7 @@ impl DownloadTask {
                 endgame: AtomicBool::new(false),
                 endgame_enabled,
                 throttle_reprobe_enabled,
+                paused: AtomicBool::new(false),
                 claimed_blocks: tokio::sync::Mutex::new(HashSet::new()),
                 digest_auth,
                 auth_credentials: tokio::sync::Mutex::new(None),
@@ -230,6 +271,49 @@ impl DownloadTask {
 
     pub fn event_bus(&self) -> &EventBus {
         &self.state.bus
+    }
+
+    pub async fn snapshot(&self) -> TaskSnapshot {
+        let seg_mgr = self.state.segment_mgr.lock().await;
+        let conns = seg_mgr.connections.clone();
+        let total_size = seg_mgr.total_size.unwrap_or(0);
+        let conn_count = conns.len();
+        drop(seg_mgr);
+        let bitfield = self.state.block_bitfield.lock().await;
+        let completed_blocks = bitfield.num_blocks - bitfield.remaining_blocks();
+        let total_blocks = bitfield.num_blocks;
+        drop(bitfield);
+        tracing::debug!(
+            "snapshot: conns={conn_count} total_size={total_size} blocks={completed_blocks}/{total_blocks} speed={} done={}",
+            self.state.bandwidth_estimate.load(std::sync::atomic::Ordering::Relaxed),
+            self.state.done.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        TaskSnapshot {
+            url: self.state.url.lock().await.clone(),
+            filename: self.state.filename.lock().await.clone(),
+            bytes_downloaded: self
+                .state
+                .total_downloaded
+                .load(std::sync::atomic::Ordering::Relaxed),
+            total_bytes: total_size.max(self.state.max_filesize),
+            speed: self
+                .state
+                .bandwidth_estimate
+                .load(std::sync::atomic::Ordering::Relaxed),
+            peak_speed: self
+                .state
+                .peak_speed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            done: self.state.done.load(std::sync::atomic::Ordering::Relaxed),
+            endgame: self
+                .state
+                .endgame
+                .load(std::sync::atomic::Ordering::Relaxed),
+            paused: self.state.paused.load(std::sync::atomic::Ordering::Relaxed),
+            connections: conns,
+            completed_blocks,
+            total_blocks,
+        }
     }
 
     /// Run the download. If `shutdown` is provided, it will be checked periodically
@@ -497,10 +581,11 @@ impl DownloadTask {
 
         let batches =
             SlowStartAllocator::new(self.state.segment_mgr.lock().await.max_connections).batches();
-        let mut handles = Vec::new();
+        let conn_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let state = Arc::clone(&self.state);
-        handles.push(tokio::spawn(async move {
+        conn_tasks.lock().unwrap().push(tokio::spawn(async move {
             run_connection(state, 0).await;
         }));
 
@@ -529,7 +614,7 @@ impl DownloadTask {
                 };
                 if let Some(conn_id) = conn_id {
                     let state = Arc::clone(&self.state);
-                    handles.push(tokio::spawn(async move {
+                    conn_tasks.lock().unwrap().push(tokio::spawn(async move {
                         run_connection(state, conn_id).await;
                     }));
                 }
@@ -568,11 +653,14 @@ impl DownloadTask {
             })
         };
 
+        let monitor_tasks = Arc::clone(&conn_tasks);
         let monitor = tokio::spawn(async move {
             let stealer = WorkStealer::new();
             let mut pid = PidController::new(0.0);
             let mut prev_downloaded = 0u64;
             let mut prev_time = Instant::now();
+            let mut prev_conn_bytes: std::collections::HashMap<usize, u64> =
+                std::collections::HashMap::new();
             let mut throttle_start: Option<Instant> = None;
             loop {
                 if state_mon.done.load(Ordering::Acquire) {
@@ -619,11 +707,44 @@ impl DownloadTask {
                 prev_downloaded = downloaded;
                 prev_time = now;
 
+                // Per-connection throughput sampled over the tick window.
+                // This reflects bytes actually received on the wire, not
+                // instantaneous burst rates from chunk-level timing.
+                if dt > 0.0 {
+                    let mut mgr = state_mon.segment_mgr.lock().await;
+                    for conn in mgr.connections.iter_mut() {
+                        let bytes = conn.bytes_downloaded;
+                        let prev = prev_conn_bytes.entry(conn.id).or_insert(bytes);
+                        conn.speed_bytes_per_sec = (bytes.saturating_sub(*prev)) as f64 / dt;
+                        *prev = bytes;
+                    }
+                }
+
                 // Track peak speed (store as u64 bytes/sec)
                 let speed_u64 = speed as u64;
                 let prev_peak = state_mon.peak_speed.load(Ordering::Relaxed);
                 if speed_u64 > prev_peak {
                     state_mon.peak_speed.store(speed_u64, Ordering::Relaxed);
+                }
+                state_mon
+                    .bandwidth_estimate
+                    .store(speed_u64, Ordering::Relaxed);
+
+                // Paused: stop adjusting the pool and skip throttle detection
+                // (speed reads 0 while paused). Emit progress so the TUI stays
+                // fresh, but don't touch connections.
+                if state_mon.paused.load(Ordering::Acquire) {
+                    state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
+                        id: state_mon.id,
+                        bytes_downloaded: downloaded,
+                        total_bytes: total,
+                        speed_bytes_per_sec: 0.0,
+                    }));
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        constants::MONITOR_TICK_MS,
+                    ))
+                    .await;
+                    continue;
                 }
 
                 // Throttling detection — save control file and flag reprobe,
@@ -710,11 +831,7 @@ impl DownloadTask {
 
                     if adjustment <= -1 {
                         if let Some(fast_id) = mgr.fastest_connection() {
-                            if let Some((off, rem)) = mgr.remove_connection(fast_id) {
-                                tracing::debug!(
-                                    "Removed conn {fast_id}, freed {rem}B at offset {off}"
-                                );
-                            }
+                            let _ = mgr.remove_connection(fast_id);
                         }
                     }
 
@@ -735,11 +852,17 @@ impl DownloadTask {
                     pid.record_add(speed);
                     pid.evaluate_improvement(speed);
                     let s = Arc::clone(&state_mon);
-                    tokio::spawn(async move { run_connection(s, new_id).await });
+                    let mt = Arc::clone(&monitor_tasks);
+                    mt.lock()
+                        .unwrap()
+                        .push(tokio::spawn(async move { run_connection(s, new_id).await }));
                 }
                 if let Some(new_id) = steal_new_id {
                     let s = Arc::clone(&state_mon);
-                    tokio::spawn(async move { run_connection(s, new_id).await });
+                    let mt = Arc::clone(&monitor_tasks);
+                    mt.lock()
+                        .unwrap()
+                        .push(tokio::spawn(async move { run_connection(s, new_id).await }));
                 }
 
                 // End-game detection: if few blocks remain, switch to end-game
@@ -768,10 +891,17 @@ impl DownloadTask {
             }
         });
 
-        for h in handles {
+        monitor.await.ok();
+
+        // Await every connection task, including those spawned by the monitor.
+        // A task whose segment was removed/released must be allowed to run to
+        // its final flush before we consider the download complete, otherwise
+        // bytes still buffered in its write_buf are silently dropped, leaving
+        // zero-filled gaps in the file.
+        let tasks = std::mem::take(&mut *conn_tasks.lock().unwrap());
+        for h in tasks {
             h.await.ok();
         }
-        monitor.await.ok();
 
         if let Ok(guard) = self.state.file.lock() {
             if let Some(ref f) = *guard {
@@ -918,9 +1048,19 @@ fn is_retryable_error(e: &anyhow::Error) -> bool {
                 | std::io::ErrorKind::NotConnected
         );
     }
+    if let Some(re) = e.downcast_ref::<ReqwestError>() {
+        if re.is_timeout() || re.is_connect() || re.is_body() || re.is_request() {
+            return true;
+        }
+    }
     let msg = format!("{e}");
     msg.contains("read timeout")
         || msg.contains("connection closed")
+        || msg.contains("decoding response body")
+        || msg.contains("error sending request")
+        || msg.contains("unexpected eof")
+        || msg.contains("peer disconnected")
+        || msg.contains("connection reset")
         || msg.contains("HTTP 408")
         || msg.contains("HTTP 429")
         || msg.contains("HTTP 500")
@@ -945,6 +1085,10 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
     loop {
         if state.done.load(Ordering::Acquire) {
             return;
+        }
+        if state.paused.load(Ordering::Acquire) {
+            tokio::time::sleep(std::time::Duration::from_millis(constants::PAUSE_POLL_MS)).await;
+            continue;
         }
 
         let (offset, length) = {
@@ -998,6 +1142,7 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
             Err(e) => {
                 if !is_retryable_error(&e) {
                     tracing::error!("Conn {conn_id}: permanent error {e}, giving up");
+                    state.segment_mgr.lock().await.release_segment(conn_id);
                     return;
                 }
                 tracing::warn!("Conn {conn_id}: {e}, retrying...");
@@ -1007,6 +1152,7 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
                     retry.reset();
                 } else {
                     tracing::error!("Conn {conn_id}: exhausted retries and mirrors, giving up");
+                    state.segment_mgr.lock().await.release_segment(conn_id);
                     return;
                 }
             }
@@ -1028,6 +1174,14 @@ async fn download_range(
         .pool
         .get_range(&download_url, offset, length, state.id)
         .await?;
+
+    if let Some(sa) = resp.resp.remote_addr() {
+        state
+            .segment_mgr
+            .lock()
+            .await
+            .set_connection_addr(conn_id, sa.ip().to_string());
+    }
 
     let status = resp.status();
     if status == 416 {
@@ -1150,8 +1304,17 @@ async fn process_range_response(
         }
     }
 
+    // A read failure mid-stream must not discard bytes already received but
+    // still sitting in the write buffer: they were counted toward segment
+    // progress, so they must be flushed to disk before returning, otherwise a
+    // resume would skip the buffered gap and corrupt the file.
+    let mut read_err: Option<anyhow::Error> = None;
+
     loop {
         if written >= length {
+            break;
+        }
+        if state.paused.load(Ordering::Acquire) {
             break;
         }
 
@@ -1162,14 +1325,33 @@ async fn process_range_response(
         .await
         {
             Ok(Some(Ok(d))) => d,
-            Ok(Some(Err(e))) => return Err(e.into()),
+            Ok(Some(Err(e))) => {
+                read_err = Some(e.into());
+                break;
+            }
             Ok(None) => break,
-            Err(_) => bail!("read timeout ({}s)", constants::READ_TIMEOUT_SECS),
+            Err(_) => {
+                read_err = Some(anyhow::anyhow!(
+                    "read timeout ({}s)",
+                    constants::READ_TIMEOUT_SECS
+                ));
+                break;
+            }
         };
 
-        // Don't write past our assigned range
+        // Don't write past our assigned range. The segment may have been
+        // shrunk (or freed) by the allocator while this request was in
+        // flight, so check the live limit on every chunk.
         let chunk_len = data.len() as u64;
-        let max_write = length.saturating_sub(written);
+        let limit = {
+            let mgr = state.segment_mgr.lock().await;
+            mgr.write_limit(conn_id)
+        };
+        let limit = match limit {
+            Some(l) if pos < l => l,
+            _ => break,
+        };
+        let max_write = (length.saturating_sub(written)).min(limit - pos);
         let write_size = chunk_len.min(max_write);
 
         if write_size > 0 {
@@ -1256,6 +1438,10 @@ async fn process_range_response(
         }
     }
 
+    if let Some(e) = read_err {
+        return Err(e);
+    }
+
     // Per-block hash validation against Metalink chunk hashes.
     // We read the blocks from the file (sync) first, then update bitfield (async)
     // to avoid holding a std::sync::MutexGuard across .await.
@@ -1325,6 +1511,10 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
     loop {
         if state.done.load(Ordering::Acquire) {
             return;
+        }
+        if state.paused.load(Ordering::Acquire) {
+            tokio::time::sleep(std::time::Duration::from_millis(constants::PAUSE_POLL_MS)).await;
+            continue;
         }
 
         let (total_size, block_idx) = {

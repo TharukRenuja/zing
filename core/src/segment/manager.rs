@@ -41,6 +41,7 @@ pub struct ConnectionInfo {
     pub id: usize,
     pub segment_id: Option<usize>,
     pub speed_bytes_per_sec: f64,
+    pub bytes_downloaded: u64,
     pub started_at: Instant,
     pub last_update: Instant,
     pub addr: String,
@@ -52,6 +53,7 @@ impl ConnectionInfo {
             id,
             segment_id: None,
             speed_bytes_per_sec: 0.0,
+            bytes_downloaded: 0,
             started_at: Instant::now(),
             last_update: Instant::now(),
             addr: String::new(),
@@ -95,6 +97,14 @@ impl SegmentManager {
         id
     }
 
+    pub fn set_connection_addr(&mut self, conn_id: usize, addr: String) {
+        if let Some(conn) = self.connections.get_mut(conn_id) {
+            if conn.addr.is_empty() {
+                conn.addr = addr;
+            }
+        }
+    }
+
     pub fn allocate_segment(&mut self, offset: u64, length: u64, conn_id: usize) -> Option<usize> {
         if length == 0 {
             return None;
@@ -123,6 +133,7 @@ impl SegmentManager {
         }
 
         if let Some(conn) = self.connections.get_mut(conn_id) {
+            conn.bytes_downloaded = conn.bytes_downloaded.saturating_add(bytes);
             let now = Instant::now();
             let dt = now.duration_since(conn.last_update).as_secs_f64();
             conn.last_update = now;
@@ -141,6 +152,14 @@ impl SegmentManager {
         self.segments
             .iter()
             .find(|s| matches!(s.state, SegmentState::Active { conn_id: c } if c == conn_id))
+    }
+
+    /// The absolute end offset (exclusive) that this connection may currently
+    /// write up to, based on its active segment. Returns `None` if the segment
+    /// has been shrunk/removed below the connection's position or is complete.
+    pub fn write_limit(&self, conn_id: usize) -> Option<u64> {
+        self.active_segment_for(conn_id)
+            .map(|s| s.offset + s.length)
     }
 
     pub fn is_all_complete(&self) -> bool {
@@ -252,6 +271,23 @@ impl SegmentManager {
             .iter()
             .filter(|s| s.state == SegmentState::Pending)
             .count()
+    }
+
+    /// Release a connection's active segment back to Pending so another
+    /// connection can claim it. Called when a connection gives up (permanent
+    /// error or exhausted retries). Progress already made is preserved so the
+    /// next claimant resumes from the current offset.
+    pub fn release_segment(&mut self, conn_id: usize) {
+        if let Some(seg) = self
+            .segments
+            .iter_mut()
+            .find(|s| matches!(s.state, SegmentState::Active { conn_id: c } if c == conn_id))
+        {
+            seg.state = SegmentState::Pending;
+        }
+        if let Some(conn) = self.connections.get_mut(conn_id) {
+            conn.segment_id = None;
+        }
     }
 }
 

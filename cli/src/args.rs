@@ -394,6 +394,20 @@ pub enum Commands {
 
     #[command(name = "update", about = "Update zing to the latest version")]
     Update,
+
+    #[command(name = "tui", about = "Launch the terminal UI for downloads")]
+    Tui {
+        #[arg(help = "URLs to download")]
+        urls: Vec<String>,
+
+        #[arg(
+            long = "connections",
+            short = 'n',
+            default_value = "4",
+            help = "Max parallel connections per download"
+        )]
+        connections: usize,
+    },
 }
 
 #[derive(Parser, Debug)]

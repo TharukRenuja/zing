@@ -61,4 +61,9 @@ base64 = "0.22"
 futures = "0.3"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+zing-tui = { path = "../tui", optional = true }
+
+[features]
+default = ["tui"]
+tui = ["dep:zing-tui"]
 

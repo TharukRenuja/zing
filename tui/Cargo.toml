@@ -1,0 +1,16 @@
+[package]
+name = "zing-tui"
+version = "0.1.8"
+edition = "2021"
+description = "Terminal UI for the zing downloader"
+authors = ["Tharuk Renuja"]
+license = "GPL-3.0-only"
+
+[dependencies]
+zing-core = { path = "../core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
+ratatui = "0.30"
+crossterm = "0.28"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+anyhow = "1"

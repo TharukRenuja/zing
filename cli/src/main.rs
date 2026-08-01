@@ -28,6 +28,50 @@ use zing_ext::filename;
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Type passed to `run` carrying the TUI log buffer (created in `main`).
+#[cfg(feature = "tui")]
+type LogHandle = Option<zing_tui::logs::LogBuffer>;
+#[cfg(not(feature = "tui"))]
+type LogHandle = Option<()>;
+
+/// Writes to the TUI log buffer and, optionally, a file.
+#[cfg(feature = "tui")]
+#[derive(Clone)]
+struct TeeWriter {
+    buffer: zing_tui::logs::LogBuffer,
+    file: Option<Arc<std::sync::Mutex<std::fs::File>>>,
+}
+
+#[cfg(feature = "tui")]
+impl std::io::Write for TeeWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.buffer.write(buf)?;
+        if let Some(ref file) = self.file {
+            let mut guard = file.lock().unwrap();
+            std::io::Write::write_all(&mut *guard, buf)?;
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.buffer.flush()?;
+        if let Some(ref file) = self.file {
+            let mut guard = file.lock().unwrap();
+            std::io::Write::flush(&mut *guard)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "tui")]
+impl<'w> tracing_subscriber::fmt::MakeWriter<'w> for TeeWriter {
+    type Writer = TeeWriter;
+
+    fn make_writer(&'w self) -> Self::Writer {
+        self.clone()
+    }
+}
+
 fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()
         .filter_map(|s| {
@@ -501,7 +545,40 @@ fn main() -> Result<()> {
         "info"
     };
 
-    let writer: BoxMakeWriter = if let Some(ref log_path) = args.log {
+    let is_tui = matches!(args.command, Some(Commands::Tui { .. }));
+
+    #[cfg(feature = "tui")]
+    let logs: Option<zing_tui::logs::LogBuffer> = if is_tui {
+        Some(zing_tui::logs::LogBuffer::new(2000))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "tui"))]
+    let logs: Option<()> = None;
+
+    let writer: BoxMakeWriter = if is_tui {
+        #[cfg(feature = "tui")]
+        {
+            let buffer = logs.clone().expect("TUI mode implies a log buffer");
+            match args.log {
+                Some(ref log_path) => match std::fs::File::create(log_path) {
+                    Ok(file) => BoxMakeWriter::new(TeeWriter {
+                        buffer,
+                        file: Some(Arc::new(std::sync::Mutex::new(file))),
+                    }),
+                    Err(e) => {
+                        eprintln!("Warning: cannot create log file '{}': {e}", log_path);
+                        BoxMakeWriter::new(buffer)
+                    }
+                },
+                None => BoxMakeWriter::new(buffer),
+            }
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            BoxMakeWriter::new(std::io::stderr)
+        }
+    } else if let Some(ref log_path) = args.log {
         match std::fs::File::create(log_path) {
             Ok(file) => BoxMakeWriter::new(std::sync::Mutex::new(file)),
             Err(e) => {
@@ -525,11 +602,13 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
 
-    runtime.block_on(async { run(args).await })?;
+    runtime.block_on(async { run(args, logs).await })?;
     Ok(())
 }
 
-async fn run(args: Args) -> Result<()> {
+async fn run(args: Args, logs: LogHandle) -> Result<()> {
+    #[cfg(not(feature = "tui"))]
+    let _ = logs;
     match args.command {
         Some(Commands::Daemon(ref daemon_args)) => {
             return match daemon_args.action {
@@ -597,6 +676,92 @@ async fn run(args: Args) -> Result<()> {
         }
         Some(Commands::Update) => {
             return update::run_update().await;
+        }
+        Some(Commands::Tui { urls, connections }) => {
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = (urls, connections);
+                eprintln!("error: zing was built without TUI support (feature 'tui' not enabled)");
+                std::process::exit(1);
+            }
+            #[cfg(feature = "tui")]
+            {
+                if urls.is_empty() {
+                    eprintln!("error: at least one URL is required");
+                    std::process::exit(1);
+                }
+                use std::sync::Arc;
+                use zing_core::downloader::DownloadTask;
+                use zing_core::engine::event::EventBus;
+
+                let url = &urls[0];
+                let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+                let bus = EventBus::new();
+
+                let filename = url
+                    .rsplit('/')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| s.split('?').next())
+                    .unwrap_or("download")
+                    .to_string();
+
+                let task = Arc::new(DownloadTask::new(
+                    1,
+                    url,
+                    &filename,
+                    false,
+                    false,
+                    connections,
+                    bus,
+                    false,
+                    0,
+                    None,
+                    vec![],
+                    None,
+                    vec![],
+                    0,
+                    5,
+                    500,
+                    30,
+                    300,
+                    None,
+                    false,
+                    None,
+                    None,
+                    0,
+                    30,
+                    5,
+                    None,
+                    None,
+                    None,
+                    false,
+                    true,
+                    true,
+                ));
+
+                let t = task.clone();
+                let rx = shutdown_tx.subscribe();
+                let dl_handle = tokio::spawn(async move {
+                    if let Err(e) = t.run_with_shutdown(rx).await {
+                        tracing::error!("Download failed: {e}");
+                    }
+                });
+
+                let logs = logs.expect("TUI command implies a log buffer");
+                if let Err(e) = zing_tui::run(task, logs).await {
+                    let _ = shutdown_tx.send(());
+                    dl_handle.abort();
+                    return Err(color_eyre::eyre::eyre!(e));
+                }
+                let _ = shutdown_tx.send(());
+                if let Err(e) = dl_handle.await {
+                    if !e.is_cancelled() {
+                        tracing::error!("Download task failed: {e}");
+                    }
+                }
+                return Ok(());
+            }
         }
         None => {
             if args.urls.is_empty() && args.input_file.is_none() && args.metalink.is_none() {
