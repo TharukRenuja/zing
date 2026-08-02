@@ -1,9 +1,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tokio::sync::broadcast;
 use zing_core::downloader::TaskSnapshot;
+use zing_core::segment::manager::ConnectionInfo;
 use zing_tui::task::{TaskControl, TaskUiStatus};
 
 use crate::daemon_client;
@@ -69,6 +71,34 @@ impl TaskControl for RemoteTask {
                         .get("paused")
                         .and_then(|x| x.as_bool())
                         .unwrap_or(status == "Paused");
+                    let now = Instant::now();
+                    let connections = v
+                        .get("connections")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| {
+                                    Some(ConnectionInfo {
+                                        id: c.get("id")?.as_u64()? as usize,
+                                        segment_id: c
+                                            .get("segment_id")?
+                                            .as_u64()
+                                            .map(|s| s as usize),
+                                        speed_bytes_per_sec: c
+                                            .get("speed_bytes_per_sec")?
+                                            .as_f64()?,
+                                        bytes_downloaded: c.get("bytes_downloaded")?.as_u64()?,
+                                        started_at: now
+                                            - Duration::from_secs(
+                                                c.get("started_secs_ago")?.as_u64()?,
+                                            ),
+                                        last_update: now,
+                                        addr: c.get("addr")?.as_str()?.to_string(),
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
                     let snap = TaskSnapshot {
                         url: v
                             .get("url")
@@ -82,7 +112,10 @@ impl TaskControl for RemoteTask {
                             .to_string(),
                         bytes_downloaded: v.get("downloaded").and_then(|x| x.as_u64()).unwrap_or(0),
                         total_bytes: v.get("total_bytes").and_then(|x| x.as_u64()).unwrap_or(0),
-                        speed: v.get("speed").and_then(|x| x.as_u64()).unwrap_or(0),
+                        speed: v
+                            .get("speed")
+                            .and_then(|x| x.as_f64().map(|f| f as u64))
+                            .unwrap_or(0),
                         peak_speed: v
                             .get("peak_speed")
                             .and_then(|x| x.as_f64().map(|f| f as u64))
@@ -90,9 +123,13 @@ impl TaskControl for RemoteTask {
                         done,
                         endgame: false,
                         paused,
-                        connections: Vec::new(),
-                        completed_blocks: 0,
-                        total_blocks: 0,
+                        connections,
+                        completed_blocks: v
+                            .get("completed_blocks")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0) as u32,
+                        total_blocks: v.get("total_blocks").and_then(|x| x.as_u64()).unwrap_or(0)
+                            as u32,
                     };
                     if !snap.filename.is_empty() {
                         *self.label.lock().unwrap() = snap.filename.clone();

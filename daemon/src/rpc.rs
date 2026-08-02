@@ -474,6 +474,9 @@ fn task_to_json(t: &crate::task_manager::TaskInfo) -> Value {
         "done": done,
         "error": error,
         "status": format!("{:?}", t.status),
+        "connections": t.connections,
+        "completed_blocks": t.completed_blocks,
+        "total_blocks": t.total_blocks,
     })
 }
 

@@ -9,61 +9,65 @@ use zing_ext::human::{human_bytes, human_speed};
 use crate::app::Entry;
 use crate::layout;
 
-pub fn render_detail(
-    frame: &mut Frame,
-    area: Rect,
-    snap: &TaskSnapshot,
-    logs: &[String],
-    scroll: usize,
-    show_logs: bool,
-) {
-    match layout::compute(area, show_logs) {
-        None => render_too_small(frame, area),
-        Some(rects) => {
-            render_header(frame, rects.header, snap);
-            render_stats(frame, rects.stats, snap);
-            render_connections(frame, rects.connections, snap, scroll);
-            render_block_map(frame, rects.blockmap, snap);
-            if rects.logs.height >= 2 {
-                render_logs(frame, rects.logs, logs);
-            }
-            render_footer(frame, rects.footer, snap);
-        }
-    }
-}
-
-/// Render the batch/task-list view: a table of all tasks plus aggregate footer.
-pub fn render_list(
+/// Render the unified master-detail screen: an aggregate title over the
+/// selected task's progress/stats/connections/block map, the task table
+/// directly below the block map, logs filling the whole lower space, and a
+/// keymap footer.
+pub fn render_unified(
     frame: &mut Frame,
     area: Rect,
     entries: &[Entry],
     selected: usize,
     logs: &[String],
-    show_logs: bool,
     input: Option<&str>,
 ) {
-    match layout::list(area, show_logs, input.is_some()) {
-        None => render_too_small(frame, area),
-        Some((header, table, logs_rect, footer)) => {
-            render_list_header(frame, header, entries);
-            render_task_table(frame, table, entries, selected);
-            if input.is_some() {
-                render_url_input(frame, logs_rect, input.unwrap_or(""));
-            } else if logs_rect.height >= 2 {
-                render_logs(frame, logs_rect, logs);
-            }
-            render_list_footer(frame, footer, entries);
+    let Some(rects) = layout::unified(area) else {
+        render_too_small(frame, area);
+        return;
+    };
+
+    render_unified_title(frame, rects.title, entries);
+
+    if let Some(snap) = entries.get(selected).and_then(|e| e.snapshot.as_ref()) {
+        render_header(frame, rects.header, snap);
+        render_stats(frame, rects.stats, snap);
+        if rects.connections.height >= 2 {
+            render_connections(frame, rects.connections, snap, 0);
         }
+        render_block_map(frame, rects.blockmap, snap);
     }
+
+    if rects.tasks.height >= 2 {
+        render_tasks_panel(frame, rects.tasks, entries, selected);
+    }
+
+    if let Some(buffer) = input {
+        render_url_input(frame, rects.logs, buffer);
+    } else if rects.logs.height >= 2 {
+        render_logs_panel(frame, rects.logs, logs);
+    }
+
+    render_unified_footer(frame, rects.footer, entries, selected);
 }
 
-fn render_list_header(frame: &mut Frame, area: Rect, entries: &[Entry]) {
+fn render_unified_title(frame: &mut Frame, area: Rect, entries: &[Entry]) {
     let running = entries.iter().filter(|e| e.running()).count();
     let queued = entries.iter().filter(|e| e.queued()).count();
     let done = entries.iter().filter(|e| e.status() == "done").count();
     let paused = entries.iter().filter(|e| e.status() == "paused").count();
 
-    let title = Line::from(vec![
+    let total_downloaded: u64 = entries
+        .iter()
+        .filter_map(|e| e.snapshot.as_ref())
+        .map(|s| s.bytes_downloaded)
+        .sum();
+    let total_speed: u64 = entries
+        .iter()
+        .filter_map(|e| e.snapshot.as_ref())
+        .map(|s| s.speed)
+        .sum();
+
+    let line = Line::from(vec![
         Span::styled(
             " zing ",
             Style::default()
@@ -71,12 +75,10 @@ fn render_list_header(frame: &mut Frame, area: Rect, entries: &[Entry]) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" {} tasks ", entries.len()),
+            format!("{} tasks ", entries.len()),
             Style::default().fg(Color::Gray),
         ),
-    ]);
-
-    let info = Line::from(vec![
+        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!("{running} running"),
             Style::default().fg(Color::Green),
@@ -90,56 +92,46 @@ fn render_list_header(frame: &mut Frame, area: Rect, entries: &[Entry]) {
         Span::styled(format!("{done} done"), Style::default().fg(Color::Cyan)),
         Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{paused} paused"), Style::default().fg(Color::Blue)),
-    ]);
-
-    let total_downloaded: u64 = entries
-        .iter()
-        .filter_map(|e| e.snapshot.as_ref())
-        .map(|s| s.bytes_downloaded)
-        .sum();
-    let total_speed: u64 = entries
-        .iter()
-        .filter_map(|e| e.snapshot.as_ref())
-        .map(|s| s.speed)
-        .sum();
-
-    let totals = Line::from(vec![
-        Span::styled("Downloaded ", Style::default().fg(Color::Gray)),
+        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("downloaded ", Style::default().fg(Color::Gray)),
         Span::styled(
             human_bytes(total_downloaded),
             Style::default().fg(Color::White),
         ),
-        Span::styled("  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Speed ", Style::default().fg(Color::Gray)),
+        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("speed ", Style::default().fg(Color::Gray)),
         Span::styled(human_speed(total_speed), Style::default().fg(Color::Green)),
     ]);
 
-    let [title_area, info_area, totals_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    frame.render_widget(line, area);
+}
 
-    frame.render_widget(title, title_area);
-    frame.render_widget(info, info_area);
-    frame.render_widget(totals, totals_area);
+/// Bordered task table panel, placed directly below the block map.
+fn render_tasks_panel(frame: &mut Frame, area: Rect, entries: &[Entry], selected: usize) {
+    let block = panel_block("Tasks");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height >= 1 {
+        render_task_table(frame, inner, entries, selected);
+    }
+}
+
+/// Bordered log panel filling the whole lower space.
+fn render_logs_panel(frame: &mut Frame, area: Rect, logs: &[String]) {
+    let block = panel_block("Logs");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height >= 1 {
+        render_logs(frame, inner, logs);
+    }
 }
 
 fn render_task_table(frame: &mut Frame, area: Rect, entries: &[Entry], selected: usize) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(" Tasks ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     if entries.is_empty() {
         frame.render_widget(
             Paragraph::new(" No tasks — press 'a' to add a URL ")
                 .style(Style::default().fg(Color::Gray)),
-            inner,
+            area,
         );
         return;
     }
@@ -156,9 +148,16 @@ fn render_task_table(frame: &mut Frame, area: Rect, entries: &[Entry], selected:
         Span::styled("SIZE", header_style),
     ]);
 
-    let max_rows = inner.height.saturating_sub(1) as usize;
+    let max_rows = area.height.saturating_sub(1) as usize;
     let start = selected.saturating_sub(max_rows.saturating_sub(1) / 2);
     let visible: Vec<usize> = (start..entries.len()).take(max_rows).collect();
+
+    let fixed_widths: usize = 4 + 12 + 10 + 12;
+    let file_w = (area.width as usize)
+        .saturating_sub(fixed_widths)
+        .saturating_mul(3)
+        / 5;
+    let file_w = file_w.clamp(8, 40);
 
     let rows: Vec<Row> = visible
         .iter()
@@ -200,7 +199,7 @@ fn render_task_table(frame: &mut Frame, area: Rect, entries: &[Entry], selected:
 
             Row::new(vec![
                 Span::raw(format!("{}", i + 1)),
-                Span::raw(truncate_mid(entry.label(), 40)),
+                Span::raw(truncate_mid(entry.label(), file_w)),
                 Span::styled(status, Style::default().fg(status_color)),
                 Span::styled(
                     format!("{progress:5.1}%"),
@@ -215,15 +214,15 @@ fn render_task_table(frame: &mut Frame, area: Rect, entries: &[Entry], selected:
 
     let widths = [
         Constraint::Length(4),
-        Constraint::Length(42),
+        Constraint::Fill(3),
         Constraint::Length(12),
         Constraint::Length(10),
         Constraint::Length(12),
-        Constraint::Fill(1),
+        Constraint::Fill(2),
     ];
 
     let table = Table::new(rows, widths).header(header);
-    frame.render_widget(table, inner);
+    frame.render_widget(table, area);
 }
 
 fn render_url_input(frame: &mut Frame, area: Rect, buffer: &str) {
@@ -238,8 +237,24 @@ fn render_url_input(frame: &mut Frame, area: Rect, buffer: &str) {
     frame.render_widget(Paragraph::new(text), inner);
 }
 
-fn render_list_footer(frame: &mut Frame, area: Rect, entries: &[Entry]) {
-    let mut text = Line::from(vec![
+fn render_unified_footer(frame: &mut Frame, area: Rect, entries: &[Entry], selected: usize) {
+    let peak = entries
+        .get(selected)
+        .and_then(|e| e.snapshot.as_ref())
+        .map(|s| human_speed(s.peak_speed))
+        .unwrap_or_default();
+    let pause_label = entries
+        .get(selected)
+        .map(|e| {
+            if e.control.is_paused() {
+                "resume"
+            } else {
+                "pause"
+            }
+        })
+        .unwrap_or("pause");
+
+    let text = Line::from(vec![
         Span::styled(
             " q ",
             Style::default()
@@ -257,20 +272,12 @@ fn render_list_footer(frame: &mut Frame, area: Rect, entries: &[Entry]) {
         Span::styled("select", Style::default().fg(Color::Gray)),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            " ↵ ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("detail", Style::default().fg(Color::Gray)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
             " p ",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("pause", Style::default().fg(Color::Gray)),
+        Span::styled(pause_label, Style::default().fg(Color::Gray)),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             " x ",
@@ -296,19 +303,8 @@ fn render_list_footer(frame: &mut Frame, area: Rect, entries: &[Entry]) {
         ),
         Span::styled("add url", Style::default().fg(Color::Gray)),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            " l ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("logs", Style::default().fg(Color::Gray)),
+        Span::raw(format!(" Peak: {peak}")),
     ]);
-
-    let running = entries.iter().filter(|e| e.running()).count();
-    let done = entries.iter().filter(|e| e.status() == "done").count();
-    text.push_span(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
-    text.push_span(Span::raw(format!("{running}/{done} active")));
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -604,7 +600,7 @@ fn render_block_map(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
     };
 
     let label = format!(
-        "Blocks  {}/{}  {pct}%  {} in-flight  end-game: {}  {}/s{}",
+        "Blocks  {}/{}  {pct}%  {} in-flight  end-game: {}  {}{}",
         snap.completed_blocks, snap.total_blocks, in_flight, endgame_str, speed, eta,
     );
 
@@ -685,11 +681,7 @@ fn strip_ansi(text: &str) -> String {
 }
 
 fn render_logs(frame: &mut Frame, area: Rect, logs: &[String]) {
-    let block = panel_block("Logs");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let height = inner.height as usize;
+    let height = area.height as usize;
     let mut recent: Vec<String> = logs.iter().rev().take(height).cloned().collect();
     recent.reverse();
 
@@ -702,64 +694,7 @@ fn render_logs(frame: &mut Frame, area: Rect, logs: &[String]) {
         lines.push(styled_log_line(&line));
     }
 
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
-fn render_footer(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
-    let peak = human_speed(snap.peak_speed);
-
-    let pause_label = if snap.paused { "resume" } else { "pause" };
-    let text = Line::from(vec![
-        Span::styled(
-            " q ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("quit", Style::default().fg(Color::Gray)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            " p ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(pause_label, Style::default().fg(Color::Gray)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            " x ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("stop", Style::default().fg(Color::Gray)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            " j/k ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("scroll", Style::default().fg(Color::Gray)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            " l ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("logs", Style::default().fg(Color::Gray)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::raw(format!(" Peak: {peak}/s")),
-    ]);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title_bottom(text.centered());
-
-    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn truncate_addr(addr: &str, max: usize) -> String {

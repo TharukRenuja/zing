@@ -58,12 +58,6 @@ impl Entry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum View {
-    List,
-    Detail,
-}
-
 enum InputMode {
     None,
     AddUrl { buffer: String },
@@ -72,11 +66,8 @@ enum InputMode {
 pub struct TuiApp {
     entries: Vec<Entry>,
     selected: usize,
-    view: View,
     logs: LogBuffer,
     should_exit: bool,
-    scroll_offset: usize,
-    show_logs: bool,
     done_frames: u32,
     input: InputMode,
     pending_add: Option<String>,
@@ -95,11 +86,8 @@ impl TuiApp {
         let mut app = Self {
             entries: Vec::new(),
             selected: 0,
-            view: View::List,
             logs: opts.logs,
             should_exit: false,
-            scroll_offset: 0,
-            show_logs: true,
             done_frames: 0,
             input: InputMode::None,
             pending_add: None,
@@ -127,30 +115,17 @@ impl TuiApp {
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.should_exit {
             self.refresh().await;
-            let log_lines = self.logs.lines();
 
-            terminal.draw(|frame| match self.view {
-                View::List => widgets::render_list(
+            terminal.draw(|frame| {
+                let log_lines = self.logs.lines();
+                widgets::render_unified(
                     frame,
                     frame.area(),
                     &self.entries,
                     self.selected,
                     &log_lines,
-                    self.show_logs,
                     self.input_string(),
-                ),
-                View::Detail => {
-                    if let Some(snap) = self.selected_snapshot() {
-                        widgets::render_detail(
-                            frame,
-                            frame.area(),
-                            snap,
-                            &log_lines,
-                            self.scroll_offset,
-                            self.show_logs,
-                        );
-                    }
-                }
+                );
             })?;
 
             let mut resized = false;
@@ -202,12 +177,6 @@ impl TuiApp {
         }
     }
 
-    fn selected_snapshot(&self) -> Option<&TaskSnapshot> {
-        self.entries
-            .get(self.selected)
-            .and_then(|e| e.snapshot.as_ref())
-    }
-
     fn all_done(&self) -> bool {
         !self.entries.is_empty()
             && self
@@ -245,29 +214,15 @@ impl TuiApp {
 
         match code {
             KeyCode::Char('q') => self.should_exit = true,
-            KeyCode::Esc => {
-                if self.view == View::Detail {
-                    self.view = View::List;
-                } else {
-                    self.should_exit = true;
-                }
-            }
+            KeyCode::Esc => self.should_exit = true,
             KeyCode::Char('a') if self.factory.is_some() => {
                 self.input = InputMode::AddUrl {
                     buffer: String::new(),
                 };
             }
-            KeyCode::Enter | KeyCode::Tab => {
-                self.view = if self.view == View::List {
-                    View::Detail
-                } else {
-                    View::List
-                };
-            }
             KeyCode::Char('p') | KeyCode::Char(' ') => self.toggle_pause(),
             KeyCode::Char('x') | KeyCode::Char('s') => self.stop_selected(),
             KeyCode::Char('r') => self.remove_selected(),
-            KeyCode::Char('l') => self.show_logs = !self.show_logs,
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {

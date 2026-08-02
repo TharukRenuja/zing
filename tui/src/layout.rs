@@ -1,8 +1,11 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 
 pub const COLUMN_BREAK: u16 = 120;
+/// Total height (border + content) of the bottom log strip. Shows the last
+/// 3 log lines and auto-scrolls as new entries arrive.
+pub const LOG_STRIP_HEIGHT: u16 = 5;
 const MIN_WIDTH: u16 = 40;
-const MIN_HEIGHT: u16 = 12;
+const MIN_HEIGHT: u16 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutMode {
@@ -10,11 +13,18 @@ pub enum LayoutMode {
     Columns,
 }
 
-pub struct PanelRects {
+/// Rect for every region of the unified master-detail screen.
+///
+/// The top shows the selected task's progress/stats/connections/block map
+/// with the task table directly below the block map; a fixed-height log strip
+/// sits at the bottom; the footer holds the keymap.
+pub struct UnifiedRects {
+    pub title: Rect,
     pub header: Rect,
     pub stats: Rect,
     pub connections: Rect,
     pub blockmap: Rect,
+    pub tasks: Rect,
     pub logs: Rect,
     pub footer: Rect,
 }
@@ -27,100 +37,69 @@ pub fn mode_for(area: Rect) -> LayoutMode {
     }
 }
 
-/// Compute the rect for every panel, adapting to terminal size.
+/// Compute the unified layout, adapting to terminal size.
 /// Returns `None` when the terminal is too small to render anything useful.
-pub fn compute(area: Rect, show_logs: bool) -> Option<PanelRects> {
+pub fn unified(area: Rect) -> Option<UnifiedRects> {
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         return None;
     }
 
-    // Auto-collapse the log panel on short terminals so core panels keep room.
-    let logs_height = if show_logs && area.height >= 18 { 6 } else { 0 };
-
-    match mode_for(area) {
-        LayoutMode::Stacked => stacked(area, logs_height),
-        LayoutMode::Columns => columns(area, logs_height),
-    }
-}
-
-/// Rect layout for the batch/task-list view.
-/// Returns `None` when the terminal is too small to render anything useful.
-pub fn list(area: Rect, show_logs: bool, show_input: bool) -> Option<(Rect, Rect, Rect, Rect)> {
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        return None;
-    }
-
-    let logs_height = if show_input || (show_logs && area.height >= 18) {
-        6
-    } else {
-        0
-    };
-
-    let [header, table, logs, footer] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Fill(1),
-        Constraint::Length(logs_height),
-        Constraint::Length(2),
-    ])
-    .areas(area);
-
-    Some((header, table, logs, footer))
-}
-
-fn stacked(area: Rect, logs_height: u16) -> Option<PanelRects> {
-    let [header, stats, connections, blockmap, logs, footer] = Layout::vertical([
-        Constraint::Length(5),
+    // The detail body (stats/connections/block map/tasks) takes all the space
+    // above a fixed-height log strip at the bottom of the screen.
+    let [title, header, body, logs, footer] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(4),
         Constraint::Fill(1),
-        Constraint::Length(3),
-        Constraint::Length(logs_height),
+        Constraint::Length(LOG_STRIP_HEIGHT),
         Constraint::Length(2),
     ])
     .areas(area);
 
-    Some(PanelRects {
-        header,
-        stats,
-        connections,
-        blockmap,
-        logs,
-        footer,
-    })
-}
+    match mode_for(area) {
+        LayoutMode::Stacked => {
+            let [stats, connections, blockmap, tasks] = Layout::vertical([
+                Constraint::Length(4),
+                Constraint::Fill(1),
+                Constraint::Length(3),
+                Constraint::Fill(1),
+            ])
+            .areas(body);
 
-fn columns(area: Rect, logs_height: u16) -> Option<PanelRects> {
-    let [header, body, footer] = Layout::vertical([
-        Constraint::Length(5),
-        Constraint::Fill(1),
-        Constraint::Length(2),
-    ])
-    .areas(area);
+            Some(UnifiedRects {
+                title,
+                header,
+                stats,
+                connections,
+                blockmap,
+                tasks,
+                logs,
+                footer,
+            })
+        }
+        LayoutMode::Columns => {
+            // Left column: stats over the per-connection table. Right column:
+            // the block map with the task table below it.
+            let [left, right] =
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Fill(1)])
+                    .spacing(1)
+                    .areas(body);
 
-    // Left column holds the per-connection table; give it a fixed-ish share
-    // that keeps the table readable, right column fills the rest so the block
-    // map and logs have room on wide terminals.
-    let [left, right] = Layout::horizontal([Constraint::Percentage(50), Constraint::Fill(1)])
-        .spacing(1)
-        .areas(body);
+            let [stats, connections] =
+                Layout::vertical([Constraint::Length(4), Constraint::Fill(1)]).areas(left);
 
-    let [stats, connections] =
-        Layout::vertical([Constraint::Length(4), Constraint::Fill(1)]).areas(left);
+            let [blockmap, tasks] =
+                Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(right);
 
-    // Logs fill all remaining height in the right column instead of a fixed
-    // 6 rows, so a wide terminal shows far more history.
-    let [blockmap, logs] = if logs_height > 0 {
-        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(right)
-    } else {
-        // Logs hidden: give the block map the full right column.
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(0)]).areas(right)
-    };
-
-    Some(PanelRects {
-        header,
-        stats,
-        connections,
-        blockmap,
-        logs,
-        footer,
-    })
+            Some(UnifiedRects {
+                title,
+                header,
+                stats,
+                connections,
+                blockmap,
+                tasks,
+                logs,
+                footer,
+            })
+        }
+    }
 }

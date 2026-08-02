@@ -76,6 +76,22 @@ pub struct TaskInfo {
     pub auto_file_renaming: bool,
     pub allow_overwrite: bool,
     pub worker_gen: u64,
+    pub connections: Vec<ConnInfo>,
+    pub completed_blocks: u32,
+    pub total_blocks: u32,
+}
+
+/// Serializable snapshot of a single active connection for the TUI's
+/// per-connection table (mirrors `core::segment::manager::ConnectionInfo`
+/// without the non-serializable `Instant` fields).
+#[derive(Debug, Clone, Serialize)]
+pub struct ConnInfo {
+    pub id: usize,
+    pub segment_id: Option<usize>,
+    pub speed_bytes_per_sec: f64,
+    pub bytes_downloaded: u64,
+    pub addr: String,
+    pub started_secs_ago: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -253,6 +269,9 @@ impl TaskManager {
             auto_file_renaming,
             allow_overwrite,
             worker_gen: 0,
+            connections: Vec::new(),
+            completed_blocks: 0,
+            total_blocks: 0,
         };
 
         self.insert_info(info).await;
@@ -309,6 +328,9 @@ impl TaskManager {
             auto_file_renaming: entry.auto_file_renaming,
             allow_overwrite: entry.allow_overwrite,
             worker_gen: 0,
+            connections: Vec::new(),
+            completed_blocks: 0,
+            total_blocks: 0,
         };
 
         self.insert_info(info).await;
@@ -336,7 +358,6 @@ impl TaskManager {
         };
 
         let semaphore = self.semaphore.clone();
-        let tasks_arc = Arc::clone(&self.tasks);
         let tasks_arc2 = Arc::clone(&self.tasks);
         let bus = self.bus.clone();
         let mut event_rx = self.bus.subscribe();
@@ -374,30 +395,7 @@ impl TaskManager {
             use tokio::sync::broadcast::error::RecvError;
             loop {
                 match event_rx.recv().await {
-                    Ok(EngineEvent::TaskProgress(p)) if p.id == id => {
-                        let mut tasks = tasks_arc.lock().await;
-                        if let Some(t) = tasks.get_mut(&id) {
-                            if t.worker_gen == gen {
-                                t.total_bytes = p.total_bytes;
-                                t.downloaded = p.bytes_downloaded;
-                                t.speed = p.speed_bytes_per_sec;
-                                t.peak_speed = t.peak_speed.max(p.speed_bytes_per_sec);
-                            }
-                        }
-                    }
-                    Ok(EngineEvent::TaskCompleted {
-                        id: tid,
-                        total_bytes,
-                        ..
-                    }) if tid == id => {
-                        let mut tasks = tasks_arc.lock().await;
-                        if let Some(t) = tasks.get_mut(&id) {
-                            if t.worker_gen == gen {
-                                t.downloaded = total_bytes;
-                            }
-                        }
-                        break;
-                    }
+                    Ok(EngineEvent::TaskCompleted { id: tid, .. }) if tid == id => break,
                     Ok(EngineEvent::TaskFailed { id: tid, .. }) if tid == id => break,
                     Err(RecvError::Closed) => break,
                     _ => {}
@@ -436,7 +434,7 @@ impl TaskManager {
                 return;
             }
 
-            let task = DownloadTask::new(
+            let task = Arc::new(DownloadTask::new(
                 id,
                 &url,
                 &filename,
@@ -468,7 +466,7 @@ impl TaskManager {
                 false, // digest_auth
                 end_game,
                 throttle_reprobe,
-            );
+            ));
             task.set_conflict_policy(if allow_overwrite {
                 ConflictPolicy::Overwrite
             } else if auto_file_renaming {
@@ -477,7 +475,47 @@ impl TaskManager {
                 ConflictPolicy::Overwrite
             });
 
+            // Poll `task.snapshot()` on a fixed interval so the daemon can relay
+            // live per-connection data (addresses, speeds, block map) to the
+            // TUI without wiring every core progress event into `TaskInfo`.
+            let snapshot_task = task.clone();
+            let poll_tasks = Arc::clone(&tasks_arc2);
+            let snapshot_poller = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    let snap = snapshot_task.snapshot().await;
+                    let mut tasks = poll_tasks.lock().await;
+                    if let Some(t) = tasks.get_mut(&id) {
+                        if t.worker_gen == gen {
+                            if snap.total_bytes > 0 {
+                                t.total_bytes = Some(snap.total_bytes);
+                            }
+                            t.downloaded = snap.bytes_downloaded;
+                            t.speed = snap.speed as f64;
+                            t.peak_speed = t.peak_speed.max(snap.peak_speed as f64);
+                            t.completed_blocks = snap.completed_blocks;
+                            t.total_blocks = snap.total_blocks;
+                            t.connections = snap
+                                .connections
+                                .iter()
+                                .map(|c| ConnInfo {
+                                    id: c.id,
+                                    segment_id: c.segment_id,
+                                    speed_bytes_per_sec: c.speed_bytes_per_sec,
+                                    bytes_downloaded: c.bytes_downloaded,
+                                    addr: c.addr.clone(),
+                                    started_secs_ago: c.started_at.elapsed().as_secs(),
+                                })
+                                .collect();
+                        }
+                    }
+                }
+            });
+
             let result = task.run_with_shutdown(shutdown_rx).await;
+            snapshot_poller.abort();
 
             let was_success = {
                 let mut tasks = tasks_arc2.lock().await;
