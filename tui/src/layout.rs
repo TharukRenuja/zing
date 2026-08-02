@@ -43,6 +43,30 @@ pub fn compute(area: Rect, show_logs: bool) -> Option<PanelRects> {
     }
 }
 
+/// Rect layout for the batch/task-list view.
+/// Returns `None` when the terminal is too small to render anything useful.
+pub fn list(area: Rect, show_logs: bool, show_input: bool) -> Option<(Rect, Rect, Rect, Rect)> {
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        return None;
+    }
+
+    let logs_height = if show_input || (show_logs && area.height >= 18) {
+        6
+    } else {
+        0
+    };
+
+    let [header, table, logs, footer] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(logs_height),
+        Constraint::Length(2),
+    ])
+    .areas(area);
+
+    Some((header, table, logs, footer))
+}
+
 fn stacked(area: Rect, logs_height: u16) -> Option<PanelRects> {
     let [header, stats, connections, blockmap, logs, footer] = Layout::vertical([
         Constraint::Length(5),

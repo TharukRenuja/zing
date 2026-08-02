@@ -12,6 +12,8 @@ pub struct Config {
     pub end_game: Option<bool>,
     #[serde(default)]
     pub throttle_reprobe: Option<bool>,
+    #[serde(default)]
+    pub max_concurrent_downloads: Option<usize>,
 }
 
 fn default_update_interval() -> Option<u64> {

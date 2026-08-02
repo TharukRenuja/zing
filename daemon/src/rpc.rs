@@ -308,6 +308,14 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .remove("throttle_reprobe")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let auto_file_renaming = map
+        .remove("auto_file_renaming")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let allow_overwrite = map
+        .remove("allow_overwrite")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let id = manager
         .add_task(
@@ -330,6 +338,8 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
             on_download_error,
             end_game,
             throttle_reprobe,
+            auto_file_renaming,
+            allow_overwrite,
         )
         .await;
 
@@ -347,20 +357,7 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
 
 async fn handle_list(_params: Option<Value>, manager: &TaskManager) -> RpcResponse {
     let tasks = manager.list_tasks().await;
-    let task_list: Vec<Value> = tasks
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "id": t.id,
-                "url": t.url,
-                "filename": t.filename,
-                "total_bytes": t.total_bytes,
-                "downloaded": t.downloaded,
-                "speed": t.speed,
-                "status": format!("{:?}", t.status),
-            })
-        })
-        .collect();
+    let task_list: Vec<Value> = tasks.iter().map(task_to_json).collect();
 
     RpcResponse {
         id: None,
@@ -443,15 +440,7 @@ async fn handle_tell_status(params: Option<Value>, manager: &TaskManager) -> Rpc
     match manager.get_task(id).await {
         Some(task) => RpcResponse {
             id: None,
-            result: Some(serde_json::json!({
-                "id": task.id,
-                "url": task.url,
-                "filename": task.filename,
-                "total_bytes": task.total_bytes,
-                "downloaded": task.downloaded,
-                "speed": task.speed,
-                "status": format!("{:?}", task.status),
-            })),
+            result: Some(task_to_json(&task)),
             error: None,
         },
         None => RpcResponse {
@@ -463,6 +452,29 @@ async fn handle_tell_status(params: Option<Value>, manager: &TaskManager) -> Rpc
             }),
         },
     }
+}
+
+fn task_to_json(t: &crate::task_manager::TaskInfo) -> Value {
+    use crate::task_manager::TaskStatus;
+    let paused = matches!(t.status, TaskStatus::Paused);
+    let done = matches!(t.status, TaskStatus::Completed | TaskStatus::Failed(_));
+    let error = match &t.status {
+        TaskStatus::Failed(msg) => Some(msg.clone()),
+        _ => None,
+    };
+    serde_json::json!({
+        "id": t.id,
+        "url": t.url,
+        "filename": t.filename,
+        "total_bytes": t.total_bytes,
+        "downloaded": t.downloaded,
+        "speed": t.speed,
+        "peak_speed": t.peak_speed,
+        "paused": paused,
+        "done": done,
+        "error": error,
+        "status": format!("{:?}", t.status),
+    })
 }
 
 #[cfg(test)]
@@ -574,6 +586,8 @@ mod tests {
             None,
             true,
             true,
+            false,
+            false,
         )
         .await;
 
@@ -608,6 +622,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
 
@@ -653,6 +669,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
 
@@ -687,6 +705,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
 

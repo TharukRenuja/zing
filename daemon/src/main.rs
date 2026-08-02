@@ -127,6 +127,26 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Read `max_concurrent_downloads` from the CLI config file (0 = unlimited).
+async fn read_max_concurrent() -> usize {
+    let path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("zing")
+        .join("config.json");
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(v) => v
+            .get("max_concurrent_downloads")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
 async fn run_daemon(stop_signal: Option<tokio::sync::oneshot::Receiver<()>>) {
     tracing::info!("zing daemon starting (PID {})", std::process::id());
 
@@ -147,35 +167,15 @@ async fn run_daemon(stop_signal: Option<tokio::sync::oneshot::Receiver<()>>) {
         }
     }
 
-    let task_manager = TaskManager::new();
+    let max_concurrent = read_max_concurrent().await;
+    let task_manager = TaskManager::with_max_concurrent(max_concurrent);
 
     let session = task_manager.load_session().await;
     if !session.is_empty() {
         tracing::info!("Restoring {} task(s) from session", session.len());
         for entry in session {
-            task_manager
-                .add_task(
-                    &entry.url,
-                    &entry.filename,
-                    entry.is_auto_name,
-                    entry.max_connections,
-                    entry.insecure,
-                    entry.max_download_rate,
-                    entry.proxy_url,
-                    entry.mirrors,
-                    entry.bw_schedule,
-                    entry.headers,
-                    entry.max_filesize,
-                    entry.checksum,
-                    entry.low_speed_limit,
-                    entry.low_speed_time,
-                    entry.save_interval_secs,
-                    entry.on_download_complete,
-                    entry.on_download_error,
-                    entry.end_game,
-                    entry.throttle_reprobe,
-                )
-                .await;
+            let id = task_manager.restore_task(entry).await;
+            tracing::info!("Restored task {id}");
         }
     }
 

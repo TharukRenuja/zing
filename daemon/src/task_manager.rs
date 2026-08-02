@@ -3,14 +3,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
-use zing_core::downloader::DownloadTask;
+use tokio::sync::{broadcast, Mutex, Semaphore};
+use zing_core::downloader::{ConflictPolicy, DownloadTask};
 use zing_core::engine::event::{EngineEvent, EventBus, TaskId};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
+    #[serde(default)]
+    pub id: TaskId,
     pub url: String,
     pub filename: String,
     pub is_auto_name: bool,
@@ -32,6 +34,12 @@ pub struct SessionEntry {
     pub end_game: bool,
     #[serde(default = "default_true")]
     pub throttle_reprobe: bool,
+    #[serde(default)]
+    pub auto_file_renaming: bool,
+    #[serde(default)]
+    pub allow_overwrite: bool,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 fn default_true() -> bool {
@@ -46,6 +54,7 @@ pub struct TaskInfo {
     pub total_bytes: Option<u64>,
     pub downloaded: u64,
     pub speed: f64,
+    pub peak_speed: f64,
     pub status: TaskStatus,
     pub is_auto_name: bool,
     pub max_connections: usize,
@@ -64,6 +73,9 @@ pub struct TaskInfo {
     pub on_download_error: Option<String>,
     pub end_game: bool,
     pub throttle_reprobe: bool,
+    pub auto_file_renaming: bool,
+    pub allow_overwrite: bool,
+    pub worker_gen: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +93,7 @@ pub struct TaskManager {
     cancel_txs: Arc<Mutex<HashMap<TaskId, broadcast::Sender<()>>>>,
     bus: EventBus,
     session_path: PathBuf,
+    semaphore: Option<Arc<Semaphore>>,
 }
 
 impl std::fmt::Debug for TaskManager {
@@ -100,7 +113,16 @@ impl TaskManager {
             cancel_txs: Arc::new(Mutex::new(HashMap::new())),
             bus: EventBus::new(),
             session_path,
+            semaphore: None,
         }
+    }
+
+    pub fn with_max_concurrent(max_concurrent: usize) -> Self {
+        let mut mgr = Self::new();
+        if max_concurrent > 0 {
+            mgr.semaphore = Some(Arc::new(Semaphore::new(max_concurrent)));
+        }
+        mgr
     }
 
     pub fn event_bus(&self) -> &EventBus {
@@ -118,6 +140,7 @@ impl TaskManager {
                 )
             })
             .map(|t| SessionEntry {
+                id: t.id,
                 url: t.url.clone(),
                 filename: t.filename.clone(),
                 is_auto_name: t.is_auto_name,
@@ -137,6 +160,9 @@ impl TaskManager {
                 on_download_error: t.on_download_error.clone(),
                 end_game: t.end_game,
                 throttle_reprobe: t.throttle_reprobe,
+                auto_file_renaming: t.auto_file_renaming,
+                allow_overwrite: t.allow_overwrite,
+                paused: matches!(t.status, TaskStatus::Paused),
             })
             .collect();
         if let Ok(json) = serde_json::to_string_pretty(&entries) {
@@ -150,6 +176,25 @@ impl TaskManager {
             Err(_) => return vec![],
         };
         serde_json::from_str(&content).unwrap_or_default()
+    }
+
+    async fn insert_info(&self, info: TaskInfo) {
+        let id = info.id;
+        {
+            let mut tasks = self.tasks.lock().await;
+            tasks.insert(id, info);
+        }
+        self.save_session().await;
+    }
+
+    fn seed_next_id(min: u64) {
+        let mut cur = NEXT_ID.load(Ordering::Relaxed);
+        while cur < min {
+            match NEXT_ID.compare_exchange(cur, min, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(actual) => cur = actual,
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -174,6 +219,8 @@ impl TaskManager {
         on_download_error: Option<String>,
         end_game: bool,
         throttle_reprobe: bool,
+        auto_file_renaming: bool,
+        allow_overwrite: bool,
     ) -> TaskId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -184,6 +231,7 @@ impl TaskManager {
             total_bytes: None,
             downloaded: 0,
             speed: 0.0,
+            peak_speed: 0.0,
             status: TaskStatus::Pending,
             is_auto_name,
             max_connections,
@@ -202,36 +250,125 @@ impl TaskManager {
             on_download_error: on_download_error.clone(),
             end_game,
             throttle_reprobe,
+            auto_file_renaming,
+            allow_overwrite,
+            worker_gen: 0,
         };
 
-        {
-            let mut tasks = self.tasks.lock().await;
-            tasks.insert(id, info);
-        }
-        self.save_session().await;
-
+        self.insert_info(info).await;
         self.bus.emit(EngineEvent::TaskCreated {
             id,
             url: url.to_string(),
         });
+        self.spawn_worker(id).await;
+        id
+    }
 
+    /// Restore a task from a persisted session entry, keeping its original id.
+    /// Paused tasks are restored in the `Paused` state and are NOT started.
+    pub async fn restore_task(&self, entry: SessionEntry) -> TaskId {
+        let id = if entry.id > 0 {
+            Self::seed_next_id(entry.id + 1);
+            entry.id
+        } else {
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        };
+
+        let status = if entry.paused {
+            TaskStatus::Paused
+        } else {
+            TaskStatus::Pending
+        };
+
+        let info = TaskInfo {
+            id,
+            url: entry.url.clone(),
+            filename: entry.filename.clone(),
+            total_bytes: None,
+            downloaded: 0,
+            speed: 0.0,
+            peak_speed: 0.0,
+            status,
+            is_auto_name: entry.is_auto_name,
+            max_connections: entry.max_connections,
+            insecure: entry.insecure,
+            max_download_rate: entry.max_download_rate,
+            proxy_url: entry.proxy_url.clone(),
+            mirrors: entry.mirrors.clone(),
+            bw_schedule: entry.bw_schedule.clone(),
+            headers: entry.headers.clone(),
+            max_filesize: entry.max_filesize,
+            checksum: entry.checksum.clone(),
+            low_speed_limit: entry.low_speed_limit,
+            low_speed_time: entry.low_speed_time,
+            save_interval_secs: entry.save_interval_secs,
+            on_download_complete: entry.on_download_complete.clone(),
+            on_download_error: entry.on_download_error.clone(),
+            end_game: entry.end_game,
+            throttle_reprobe: entry.throttle_reprobe,
+            auto_file_renaming: entry.auto_file_renaming,
+            allow_overwrite: entry.allow_overwrite,
+            worker_gen: 0,
+        };
+
+        self.insert_info(info).await;
+        self.bus
+            .emit(EngineEvent::TaskCreated { id, url: entry.url });
+        if !entry.paused {
+            self.spawn_worker(id).await;
+        }
+        id
+    }
+
+    /// Spawn the download worker for `id`. The task id is allocated exactly once
+    /// (in `add_task`/`restore_task`); this only (re)drives the worker for it.
+    /// New tasks stay `Pending` until a `max_concurrent_downloads` permit is free.
+    async fn spawn_worker(&self, id: TaskId) {
+        let (info, gen) = {
+            let mut tasks = self.tasks.lock().await;
+            match tasks.get_mut(&id) {
+                Some(t) => {
+                    t.worker_gen += 1;
+                    (t.clone(), t.worker_gen)
+                }
+                None => return,
+            }
+        };
+
+        let semaphore = self.semaphore.clone();
         let tasks_arc = Arc::clone(&self.tasks);
-        let mut event_rx = self.bus.subscribe();
-
         let tasks_arc2 = Arc::clone(&self.tasks);
         let bus = self.bus.clone();
-        let url = url.to_string();
-        let filename = filename.to_string();
-        let checksum2 = checksum.clone();
-        let (cancel_tx, shutdown_rx) = broadcast::channel(16);
-        let hook_complete = on_download_complete.clone();
-        let hook_error = on_download_error.clone();
-
-        {
-            let mut cancel_map = self.cancel_txs.lock().await;
-            cancel_map.insert(id, cancel_tx);
-        }
+        let mut event_rx = self.bus.subscribe();
         let cancel_txs = Arc::clone(&self.cancel_txs);
+        let (cancel_tx, shutdown_rx) = broadcast::channel(16);
+        {
+            let mut cancel_map = cancel_txs.lock().await;
+            cancel_map.insert(id, cancel_tx.clone());
+        }
+        let mgr = self.clone();
+
+        let url = info.url.clone();
+        let filename = info.filename.clone();
+        let is_auto_name = info.is_auto_name;
+        let max_connections = info.max_connections;
+        let insecure = info.insecure;
+        let max_download_rate = info.max_download_rate;
+        let proxy_url = info.proxy_url.clone();
+        let mirrors = info.mirrors.clone();
+        let bw_schedule = info.bw_schedule.clone();
+        let headers = info.headers.clone();
+        let max_filesize = info.max_filesize;
+        let checksum2 = info.checksum.clone();
+        let low_speed_limit = info.low_speed_limit;
+        let low_speed_time = info.low_speed_time;
+        let save_interval_secs = info.save_interval_secs;
+        let end_game = info.end_game;
+        let throttle_reprobe = info.throttle_reprobe;
+        let auto_file_renaming = info.auto_file_renaming;
+        let allow_overwrite = info.allow_overwrite;
+        let hook_complete = info.on_download_complete.clone();
+        let hook_error = info.on_download_error.clone();
 
         let evt_listener = tokio::spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
@@ -240,9 +377,12 @@ impl TaskManager {
                     Ok(EngineEvent::TaskProgress(p)) if p.id == id => {
                         let mut tasks = tasks_arc.lock().await;
                         if let Some(t) = tasks.get_mut(&id) {
-                            t.total_bytes = p.total_bytes;
-                            t.downloaded = p.bytes_downloaded;
-                            t.speed = p.speed_bytes_per_sec;
+                            if t.worker_gen == gen {
+                                t.total_bytes = p.total_bytes;
+                                t.downloaded = p.bytes_downloaded;
+                                t.speed = p.speed_bytes_per_sec;
+                                t.peak_speed = t.peak_speed.max(p.speed_bytes_per_sec);
+                            }
                         }
                     }
                     Ok(EngineEvent::TaskCompleted {
@@ -252,7 +392,9 @@ impl TaskManager {
                     }) if tid == id => {
                         let mut tasks = tasks_arc.lock().await;
                         if let Some(t) = tasks.get_mut(&id) {
-                            t.downloaded = total_bytes;
+                            if t.worker_gen == gen {
+                                t.downloaded = total_bytes;
+                            }
                         }
                         break;
                     }
@@ -264,6 +406,36 @@ impl TaskManager {
         });
 
         tokio::spawn(async move {
+            // Wait for a concurrency slot (tasks queue here as `Pending`). The
+            // permit must be held for the whole worker lifetime, so it is bound
+            // in the outer scope rather than inside an `if let` block.
+            let permit = if let Some(ref sem) = semaphore {
+                Some(sem.acquire().await.expect("concurrency semaphore closed"))
+            } else {
+                None
+            };
+            let _permit = permit;
+
+            let should_run = {
+                let mut tasks = tasks_arc2.lock().await;
+                if let Some(t) = tasks.get_mut(&id) {
+                    if t.worker_gen == gen && t.status == TaskStatus::Pending {
+                        t.status = TaskStatus::Downloading;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if !should_run {
+                evt_listener.abort();
+                mgr.save_session().await;
+                return;
+            }
+
             let task = DownloadTask::new(
                 id,
                 &url,
@@ -279,12 +451,12 @@ impl TaskManager {
                 bw_schedule.clone(),
                 headers.clone(),
                 max_filesize,
-                5,
-                500,
-                30,
-                300,
+                5,   // retry_count
+                500, // retry_wait_ms
+                30,  // connect_timeout_secs
+                300, // max_time_secs
                 None,
-                true,
+                true, // use_cd
                 None,
                 None,
                 low_speed_limit,
@@ -297,70 +469,81 @@ impl TaskManager {
                 end_game,
                 throttle_reprobe,
             );
-
-            {
-                let mut tasks = tasks_arc2.lock().await;
-                if let Some(t) = tasks.get_mut(&id) {
-                    t.status = TaskStatus::Downloading;
-                }
-            }
+            task.set_conflict_policy(if allow_overwrite {
+                ConflictPolicy::Overwrite
+            } else if auto_file_renaming {
+                ConflictPolicy::AutoRename
+            } else {
+                ConflictPolicy::Overwrite
+            });
 
             let result = task.run_with_shutdown(shutdown_rx).await;
 
             let was_success = {
                 let mut tasks = tasks_arc2.lock().await;
-                match &result {
-                    Ok(()) => {
-                        if let Some(t) = tasks.get_mut(&id) {
-                            if t.status != TaskStatus::Paused {
-                                // Verify checksum if provided
-                                if let Some(ref chk) = checksum2 {
-                                    let path = std::path::Path::new(&t.filename);
-                                    match zing_ext::checksum::verify_file(path, chk) {
-                                        Ok(true) => {
-                                            tracing::info!("Checksum: OK ({chk})");
-                                        }
-                                        Ok(false) => {
-                                            let err = format!("Checksum mismatch: expected {chk}");
-                                            t.status = TaskStatus::Failed(err.clone());
-                                            bus.emit(EngineEvent::TaskFailed { id, error: err });
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("Checksum verification skipped: {e}");
+                let is_current = tasks.get(&id).map(|t| t.worker_gen == gen).unwrap_or(false);
+                if !is_current {
+                    false
+                } else {
+                    match &result {
+                        Ok(()) => {
+                            if let Some(t) = tasks.get_mut(&id) {
+                                if t.status != TaskStatus::Paused {
+                                    // Verify checksum if provided
+                                    if let Some(ref chk) = checksum2 {
+                                        let path = std::path::Path::new(&t.filename);
+                                        match zing_ext::checksum::verify_file(path, chk) {
+                                            Ok(true) => {
+                                                tracing::info!("Checksum: OK ({chk})");
+                                            }
+                                            Ok(false) => {
+                                                let err =
+                                                    format!("Checksum mismatch: expected {chk}");
+                                                t.status = TaskStatus::Failed(err.clone());
+                                                bus.emit(EngineEvent::TaskFailed {
+                                                    id,
+                                                    error: err,
+                                                });
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "Checksum verification skipped: {e}"
+                                                );
+                                            }
                                         }
                                     }
-                                }
-                                if matches!(t.status, TaskStatus::Failed(_)) {
-                                    false
+                                    if matches!(t.status, TaskStatus::Failed(_)) {
+                                        false
+                                    } else {
+                                        t.downloaded = t.total_bytes.unwrap_or(t.downloaded);
+                                        t.status = TaskStatus::Completed;
+                                        bus.emit(EngineEvent::TaskCompleted {
+                                            id,
+                                            total_bytes: t.downloaded,
+                                            duration: std::time::Duration::ZERO,
+                                        });
+                                        true
+                                    }
                                 } else {
-                                    t.downloaded = t.total_bytes.unwrap_or(t.downloaded);
-                                    t.status = TaskStatus::Completed;
-                                    bus.emit(EngineEvent::TaskCompleted {
-                                        id,
-                                        total_bytes: t.downloaded,
-                                        duration: std::time::Duration::ZERO,
-                                    });
                                     true
                                 }
                             } else {
                                 true
                             }
-                        } else {
-                            true
                         }
-                    }
-                    Err(e) => {
-                        if let Some(t) = tasks.get_mut(&id) {
-                            if t.status != TaskStatus::Paused {
-                                t.status = TaskStatus::Failed(format!("{e}"));
+                        Err(e) => {
+                            if let Some(t) = tasks.get_mut(&id) {
+                                if t.status != TaskStatus::Paused {
+                                    t.status = TaskStatus::Failed(format!("{e}"));
+                                }
                             }
+                            tracing::error!("Task {id} failed: {e}");
+                            bus.emit(EngineEvent::TaskFailed {
+                                id,
+                                error: format!("{e}"),
+                            });
+                            false
                         }
-                        tracing::error!("Task {id} failed: {e}");
-                        bus.emit(EngineEvent::TaskFailed {
-                            id,
-                            error: format!("{e}"),
-                        });
-                        false
                     }
                 }
             };
@@ -381,33 +564,46 @@ impl TaskManager {
                 }
             }
 
-            let mut cancel_map = cancel_txs.lock().await;
-            cancel_map.remove(&id);
+            // Only remove our own cancel channel; a resumed worker uses a new one.
+            let is_current = {
+                let tasks = tasks_arc2.lock().await;
+                tasks.get(&id).map(|t| t.worker_gen == gen).unwrap_or(false)
+            };
+            if is_current {
+                let mut cancel_map = cancel_txs.lock().await;
+                cancel_map.remove(&id);
+            }
 
             evt_listener.abort();
+            mgr.save_session().await;
         });
-
-        id
     }
 
     pub async fn pause_task(&self, id: TaskId) -> Result<(), String> {
-        let cancel_map = self.cancel_txs.lock().await;
-        let tx = cancel_map
-            .get(&id)
-            .ok_or_else(|| format!("Task {id} not found"))?;
-        tx.send(())
-            .map_err(|_| format!("Task {id} already finished"))?;
-        drop(cancel_map);
+        {
+            let cancel_map = self.cancel_txs.lock().await;
+            if let Some(tx) = cancel_map.get(&id) {
+                // The worker may not be listening yet (queued as Pending), so
+                // ignore the "no receivers" error — status is set regardless.
+                let _ = tx.send(());
+            }
+        }
 
         {
             let mut tasks = self.tasks.lock().await;
-            if let Some(t) = tasks.get_mut(&id) {
-                t.status = TaskStatus::Paused;
-                self.bus.emit(EngineEvent::Paused {
-                    id,
-                    bytes_downloaded: t.downloaded,
-                    total_bytes: t.total_bytes.unwrap_or(0),
-                });
+            match tasks.get_mut(&id) {
+                Some(t) => {
+                    if t.status == TaskStatus::Paused {
+                        return Ok(());
+                    }
+                    t.status = TaskStatus::Paused;
+                    self.bus.emit(EngineEvent::Paused {
+                        id,
+                        bytes_downloaded: t.downloaded,
+                        total_bytes: t.total_bytes.unwrap_or(0),
+                    });
+                }
+                None => return Err(format!("Task {id} not found")),
             }
         }
         self.save_session().await;
@@ -434,69 +630,22 @@ impl TaskManager {
     }
 
     pub async fn resume_task(&self, id: TaskId) -> Result<(), String> {
-        let mut tasks = self.tasks.lock().await;
-        let task = tasks
-            .get_mut(&id)
-            .ok_or_else(|| format!("Task {id} not found"))?;
-        if task.status != TaskStatus::Paused {
-            return Err(format!(
-                "Task {id} is not paused (status: {:?})",
-                task.status
-            ));
+        {
+            let mut tasks = self.tasks.lock().await;
+            let task = tasks
+                .get_mut(&id)
+                .ok_or_else(|| format!("Task {id} not found"))?;
+            if task.status != TaskStatus::Paused {
+                return Err(format!(
+                    "Task {id} is not paused (status: {:?})",
+                    task.status
+                ));
+            }
+            task.status = TaskStatus::Pending;
         }
-        // Re-add the task to re-spawn it with original config
-        let url = task.url.clone();
-        let filename = task.filename.clone();
-        let is_auto_name = task.is_auto_name;
-        let max_connections = task.max_connections;
-        let insecure = task.insecure;
-        let max_download_rate = task.max_download_rate;
-        let proxy_url = task.proxy_url.clone();
-        let mirrors = task.mirrors.clone();
-        let bw_schedule = task.bw_schedule.clone();
-        let headers = task.headers.clone();
-        let max_filesize = task.max_filesize;
-        let checksum = task.checksum.clone();
-        let low_speed_limit = task.low_speed_limit;
-        let low_speed_time = task.low_speed_time;
-        let save_interval_secs = task.save_interval_secs;
-        let on_download_complete = task.on_download_complete.clone();
-        let on_download_error = task.on_download_error.clone();
-        let end_game = task.end_game;
-        let throttle_reprobe = task.throttle_reprobe;
-        drop(tasks);
-
-        let new_id = self
-            .add_task(
-                &url,
-                &filename,
-                is_auto_name,
-                max_connections,
-                insecure,
-                max_download_rate,
-                proxy_url,
-                mirrors,
-                bw_schedule,
-                headers,
-                max_filesize,
-                checksum,
-                low_speed_limit,
-                low_speed_time,
-                save_interval_secs,
-                on_download_complete,
-                on_download_error,
-                end_game,
-                throttle_reprobe,
-            )
-            .await;
-
-        // Remove the old paused entry
-        self.remove_task(id).await.ok();
-        if new_id != id {
-            // Update the cancel map and task map to point to the new ID
-            // The old task will remain as Paused but the new one will run
-            tracing::info!("Resumed task {id} as new task {new_id}");
-        }
+        self.save_session().await;
+        // Re-drive the SAME task id (no new id is allocated).
+        self.spawn_worker(id).await;
         Ok(())
     }
 
@@ -560,6 +709,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
 
@@ -618,6 +769,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
 
@@ -662,6 +815,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
 
@@ -695,6 +850,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
         let id2 = mgr
@@ -718,6 +875,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
 
@@ -751,6 +910,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
         let id2 = mgr
@@ -774,6 +935,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
         assert!(id2 > id1, "task IDs should increment");
@@ -810,6 +973,8 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
+                false,
             )
             .await;
 
@@ -820,5 +985,150 @@ mod tests {
 
         let missing = mgr.get_task(999).await;
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_resume_keeps_same_id() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}/file", addr);
+
+        tokio::spawn(async move {
+            loop {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 4096];
+                        let _ = stream.read(&mut buf).await;
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
+                    });
+                }
+            }
+        });
+
+        let mgr = TaskManager::new();
+        let id = mgr
+            .add_task(
+                &url,
+                "/tmp/test",
+                false,
+                4,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+                None,
+                0,
+                30,
+                5,
+                None,
+                None,
+                true,
+                true,
+                false,
+                false,
+            )
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        mgr.pause_task(id).await.unwrap();
+        assert_eq!(mgr.get_task(id).await.unwrap().status, TaskStatus::Paused);
+
+        mgr.resume_task(id).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            mgr.get_task(id).await.unwrap().status,
+            TaskStatus::Downloading
+        );
+    }
+
+    #[tokio::test]
+    async fn test_max_concurrent_queues_pending() {
+        use tokio::io::AsyncReadExt;
+
+        // Holding server: connections are accepted and held open, so the first
+        // task stays Downloading and never releases its concurrency permit.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}/file", addr);
+        tokio::spawn(async move {
+            loop {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 4096];
+                        let _ = stream.read(&mut buf).await;
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
+                    });
+                }
+            }
+        });
+
+        let mgr = TaskManager::with_max_concurrent(1);
+        let id1 = mgr
+            .add_task(
+                &url,
+                "/tmp/f1",
+                false,
+                2,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+                None,
+                0,
+                30,
+                5,
+                None,
+                None,
+                true,
+                true,
+                false,
+                false,
+            )
+            .await;
+        let id2 = mgr
+            .add_task(
+                &url,
+                "/tmp/f2",
+                false,
+                2,
+                false,
+                0,
+                None,
+                vec![],
+                None,
+                vec![],
+                0,
+                None,
+                0,
+                30,
+                5,
+                None,
+                None,
+                true,
+                true,
+                false,
+                false,
+            )
+            .await;
+
+        // Let the first worker acquire the permit and start downloading.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let t1 = mgr.get_task(id1).await.unwrap();
+        let t2 = mgr.get_task(id2).await.unwrap();
+        assert_eq!(t1.status, TaskStatus::Downloading);
+        assert_eq!(t2.status, TaskStatus::Pending);
     }
 }

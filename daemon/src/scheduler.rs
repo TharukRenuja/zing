@@ -255,6 +255,8 @@ impl Scheduler {
                             None,
                             true,
                             true,
+                            false, // auto_file_renaming
+                            false, // allow_overwrite
                         )
                         .await;
                 }

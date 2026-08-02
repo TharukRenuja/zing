@@ -16,13 +16,45 @@ use crate::util;
 use anyhow::{bail, Result};
 use reqwest::Error as ReqwestError;
 use std::collections::HashSet;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use zing_ext::metalink::ChunkHashes;
+
+/// What to do when the target file already exists and the download is not a
+/// resumable one (no control file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictDecision {
+    Overwrite,
+    Rename,
+    Cancel,
+}
+
+pub type ConflictFuture<'a> = Pin<Box<dyn Future<Output = ConflictDecision> + Send + 'a>>;
+pub type ConflictCallback = dyn Fn(&str) -> ConflictFuture<'static> + Send + Sync;
+
+/// Policy for resolving an existing-file conflict before a fresh download.
+#[derive(Clone)]
+pub enum ConflictPolicy {
+    /// Truncate and re-download (current behavior).
+    Overwrite,
+    /// Pick the next available `name-1.ext`, `name-2.ext`, ...
+    AutoRename,
+    /// Ask the caller (e.g. interactive prompt) for a decision.
+    Ask(Arc<ConflictCallback>),
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for ConflictPolicy {
+    fn default() -> Self {
+        ConflictPolicy::Overwrite
+    }
+}
 
 struct SharedState {
     pub id: TaskId,
@@ -60,6 +92,7 @@ struct SharedState {
     pub claimed_blocks: tokio::sync::Mutex<HashSet<u32>>,
     pub digest_auth: bool,
     pub auth_credentials: tokio::sync::Mutex<Option<(String, String)>>,
+    pub conflict_policy: std::sync::Mutex<ConflictPolicy>,
 }
 
 impl SharedState {
@@ -126,6 +159,11 @@ impl DownloadTask {
     pub async fn set_auth_credentials(&self, username: &str, password: &str) {
         *self.state.auth_credentials.lock().await =
             Some((username.to_string(), password.to_string()));
+    }
+
+    /// Set how to resolve a conflict when the target file already exists.
+    pub fn set_conflict_policy(&self, policy: ConflictPolicy) {
+        *self.state.conflict_policy.lock().unwrap() = policy;
     }
 
     /// Pause the download. In-flight reads finish their current chunk, but
@@ -265,6 +303,7 @@ impl DownloadTask {
                 claimed_blocks: tokio::sync::Mutex::new(HashSet::new()),
                 digest_auth,
                 auth_credentials: tokio::sync::Mutex::new(None),
+                conflict_policy: std::sync::Mutex::new(ConflictPolicy::default()),
             }),
         }
     }
@@ -363,13 +402,21 @@ impl DownloadTask {
         result
     }
 
+    async fn resolve_conflict(&self, filename: &str) -> Result<ConflictDecision> {
+        let policy = self.state.conflict_policy.lock().unwrap().clone();
+        match policy {
+            ConflictPolicy::Overwrite => Ok(ConflictDecision::Overwrite),
+            ConflictPolicy::AutoRename => Ok(ConflictDecision::Rename),
+            ConflictPolicy::Ask(callback) => Ok((callback)(filename).await),
+        }
+    }
+
     pub async fn run(&self) -> Result<()> {
         let current_url = self.state.url.lock().await.clone();
 
         if self.state.to_stdout {
             return self.run_to_stdout(&current_url).await;
         }
-
         let profile = probe::probe(
             &self.state.pool,
             &current_url,
@@ -435,6 +482,22 @@ impl DownloadTask {
         let filename = self.state.filename.lock().await.clone();
         let control_path = ControlFile::control_path(Path::new(&filename));
         let resume = ControlFile::load(&control_path).await.ok();
+
+        // Existing-file conflict handling: only for fresh downloads (no control file).
+        // The CD rename above has already produced the final target filename.
+        if resume.is_none() && Path::new(&filename).exists() {
+            match self.resolve_conflict(&filename).await? {
+                ConflictDecision::Overwrite => {}
+                ConflictDecision::Rename => {
+                    let new_name = pick_rename_name(&filename);
+                    tracing::info!("File exists, renamed to: {new_name}");
+                    *self.state.filename.lock().await = new_name;
+                }
+                ConflictDecision::Cancel => {
+                    bail!("File already exists: {filename}");
+                }
+            }
+        }
 
         if let Some(ref cf) = resume {
             // Verify the download file still exists and hasn't been truncated/corrupted
@@ -1706,6 +1769,25 @@ fn humantime_idle(d: std::time::Duration) -> String {
     }
 }
 
+fn pick_rename_name(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let parent = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let mut counter = 1;
+    loop {
+        let candidate = if ext.is_empty() {
+            parent.join(format!("{stem}-{counter}"))
+        } else {
+            parent.join(format!("{stem}-{counter}.{ext}"))
+        };
+        if !candidate.exists() {
+            return candidate.to_string_lossy().to_string();
+        }
+        counter += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1814,5 +1896,24 @@ mod tests {
         let num_conns = 1u32;
         let threshold = endgame_threshold.min(num_conns.saturating_mul(2));
         assert_eq!(threshold, 2); // min(8, 2) = 2
+    }
+
+    #[test]
+    fn test_pick_rename_name() {
+        let dir = std::env::temp_dir().join("zing-rename-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("file.pdf");
+        std::fs::write(&base, b"x").unwrap();
+
+        let first = pick_rename_name(&base.to_string_lossy());
+        assert!(first.ends_with("file-1.pdf"));
+        assert!(!std::path::Path::new(&first).exists());
+
+        // Simulate the first candidate already existing
+        std::fs::write(&first, b"x").unwrap();
+        let second = pick_rename_name(&base.to_string_lossy());
+        assert!(second.ends_with("file-2.pdf"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

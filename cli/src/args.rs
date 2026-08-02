@@ -229,7 +229,7 @@ pub struct Args {
 
     #[arg(
         long = "auto-file-renaming",
-        help = "Auto-rename file if exists (e.g. file(1).ext)"
+        help = "Auto-rename file if exists (e.g. file-1.ext)"
     )]
     pub auto_file_renaming: bool,
 
@@ -269,6 +269,12 @@ pub struct Args {
         help = "Use server-provided filename from Content-Disposition"
     )]
     pub content_disposition: bool,
+
+    #[arg(
+        long = "no-content-disposition",
+        help = "Do not use server-provided Content-Disposition filename"
+    )]
+    pub no_content_disposition: bool,
 
     #[arg(
         long = "load-cookies",
@@ -529,6 +535,45 @@ pub enum Commands {
             help = "Save cookies to file after download"
         )]
         save_cookies: Option<String>,
+
+        #[arg(
+            long = "standalone",
+            help = "Force standalone mode even if the daemon is running"
+        )]
+        standalone: bool,
+
+        #[arg(
+            long = "max-concurrent",
+            default_value = "0",
+            help = "Max concurrent downloads in the batch (0 = unlimited)"
+        )]
+        max_concurrent: usize,
+
+        #[arg(
+            long = "content-disposition",
+            short = 'C',
+            help = "Use server-provided filename from Content-Disposition"
+        )]
+        content_disposition: bool,
+
+        #[arg(
+            long = "no-content-disposition",
+            help = "Do not use server-provided Content-Disposition filename",
+            conflicts_with = "content_disposition"
+        )]
+        no_content_disposition: bool,
+
+        #[arg(
+            long = "auto-file-renaming",
+            help = "Auto-rename file if exists (e.g. file-1.ext)"
+        )]
+        auto_file_renaming: bool,
+
+        #[arg(
+            long = "allow-overwrite",
+            help = "Overwrite existing files without prompting"
+        )]
+        allow_overwrite: bool,
     },
 }
 

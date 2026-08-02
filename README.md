@@ -101,8 +101,14 @@ zing -b "08:00,500KB 18:00,2MB" https://example.com/file.zip
 zing -H "Authorization: Bearer token" https://example.com/private.zip
 zing -A "MyApp/1.0" https://example.com/file.zip
 
-# Auto-rename if file exists (file(1).ext, file(2).ext, …)
+# Auto-rename if file exists (file-1.ext, file-2.ext, …)
 zing --auto-file-renaming https://example.com/file.zip
+
+# Overwrite an existing file without prompting
+zing --allow-overwrite https://example.com/file.zip
+
+# Use the server's Content-Disposition filename (on by default; disable with --no-content-disposition)
+zing -C https://example.com/download
 
 # Download multiple files concurrently
 zing --max-concurrent 3 url1 url2 url3
@@ -138,7 +144,7 @@ zing --standalone https://example.com/file.zip
 - **Token bucket rate limiter** and **bandwidth scheduling** for time-of-day limits
 - **Retry with exponential backoff + jitter** and multi-URL mirror fallback
 - **Checksum verification** (auto-detect by length), **digest auth** (RFC 7616), **TLS client certificates**
-- **Auto-naming** from URL or server, **auto-file-renaming** when a file exists, **dry-run** preview
+- **Auto-naming** from URL or server (Content-Disposition on by default), **conflict handling** that prompts to overwrite/rename/cancel (or `--auto-file-renaming` / `--allow-overwrite`), **dry-run** preview
 
 </details>
 

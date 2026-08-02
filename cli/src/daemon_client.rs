@@ -95,6 +95,45 @@ pub async fn send_request(method: &str, params: Option<Value>) -> Result<Value, 
     Ok(value.get("result").cloned().unwrap_or(Value::Null))
 }
 
+/// Add a download to the daemon. Returns the new task id.
+pub async fn add_uri(params: serde_json::Value) -> Result<u64, String> {
+    let resp = send_request("zing.addUri", Some(params)).await?;
+    resp.get("id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "daemon did not return a task id".to_string())
+}
+
+/// List all tasks known to the daemon.
+#[allow(dead_code)] // used by daemon-mode TUI re-sync in future work
+pub async fn list_tasks() -> Result<Vec<Value>, String> {
+    let resp = send_request("zing.list", None).await?;
+    Ok(resp
+        .get("tasks")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Fetch the current status of one task.
+pub async fn tell_status(id: u64) -> Result<Value, String> {
+    send_request("zing.tellStatus", Some(serde_json::json!({ "id": id }))).await
+}
+
+pub async fn pause_task(id: u64) -> Result<(), String> {
+    send_request("zing.pause", Some(serde_json::json!({ "id": id }))).await?;
+    Ok(())
+}
+
+pub async fn resume_task(id: u64) -> Result<(), String> {
+    send_request("zing.resume", Some(serde_json::json!({ "id": id }))).await?;
+    Ok(())
+}
+
+pub async fn remove_task(id: u64) -> Result<(), String> {
+    send_request("zing.remove", Some(serde_json::json!({ "id": id }))).await?;
+    Ok(())
+}
+
 pub async fn subscribe_and_show_progress(task_id: u64, progress_type: crate::args::ProgressType) {
     let addr = transport::default_addr();
     let stream = match transport::connect(&addr).await {

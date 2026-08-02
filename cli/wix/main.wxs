@@ -17,6 +17,7 @@
             Languages='1033'
             Compressed='yes'
             InstallScope='perMachine'
+            InstallPrivileges='elevated'
             SummaryCodepage='1252'
             Platform='$(var.Platform)'/>
 

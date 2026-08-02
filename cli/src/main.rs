@@ -1,6 +1,7 @@
 mod args;
 mod config;
 mod daemon_client;
+mod remote_task;
 mod update;
 
 use args::{Args, Commands, ConfigAction, DaemonAction, ProgressType, ScheduleAction};
@@ -106,21 +107,31 @@ fn build_headers(args: &Args) -> Vec<(String, String)> {
     headers
 }
 
-fn auto_rename_filename(path: &str, counter: usize) -> String {
-    let p = std::path::Path::new(path);
-    let parent = p.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
-    if ext.is_empty() {
-        parent
-            .join(format!("{}({})", stem, counter))
-            .to_string_lossy()
-            .to_string()
+fn conflict_policy_from_args(args: &Args) -> zing_core::downloader::ConflictPolicy {
+    use zing_core::downloader::{ConflictDecision, ConflictPolicy};
+    if args.allow_overwrite {
+        ConflictPolicy::Overwrite
+    } else if args.auto_file_renaming {
+        ConflictPolicy::AutoRename
     } else {
-        parent
-            .join(format!("{}({}).{}", stem, counter, ext))
-            .to_string_lossy()
-            .to_string()
+        ConflictPolicy::Ask(Arc::new(|filename: &str| {
+            let filename = filename.to_string();
+            Box::pin(async move {
+                let mut answer = String::new();
+                eprintln!("\nFile already exists: {filename}");
+                eprint!("  [O]verwrite, [R]ename, or [C]ancel? ");
+                use std::io::Write;
+                let _ = std::io::stderr().flush();
+                match std::io::stdin().read_line(&mut answer) {
+                    Ok(_) => match answer.trim().to_ascii_lowercase().as_str() {
+                        "o" | "overwrite" | "y" | "yes" => ConflictDecision::Overwrite,
+                        "r" | "rename" => ConflictDecision::Rename,
+                        _ => ConflictDecision::Cancel,
+                    },
+                    Err(_) => ConflictDecision::Cancel,
+                }
+            })
+        }))
     }
 }
 
@@ -701,26 +712,166 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             no_throttle_reprobe,
             load_cookies,
             save_cookies,
+            standalone,
+            max_concurrent,
+            content_disposition,
+            no_content_disposition,
+            auto_file_renaming,
+            allow_overwrite,
         }) => {
             #[cfg(not(feature = "tui"))]
             {
-                let _ = (urls, connections);
+                let _ = (
+                    urls,
+                    connections,
+                    standalone,
+                    max_concurrent,
+                    content_disposition,
+                    no_content_disposition,
+                    auto_file_renaming,
+                    allow_overwrite,
+                );
                 eprintln!("error: zing was built without TUI support (feature 'tui' not enabled)");
                 std::process::exit(1);
             }
             #[cfg(feature = "tui")]
             {
+                use crate::remote_task::RemoteTask;
+                use std::sync::Arc;
+                use zing_core::downloader::{ConflictPolicy, DownloadTask};
+                use zing_core::engine::event::EventBus;
+                use zing_tui::task::{LocalTask, TaskControl};
+                use zing_tui::{TaskFactory, TuiOptions};
+
                 if urls.is_empty() {
                     eprintln!("error: at least one URL is required");
                     std::process::exit(1);
                 }
-                use std::sync::Arc;
-                use zing_core::downloader::DownloadTask;
-                use zing_core::engine::event::EventBus;
 
-                let url = &urls[0];
-                let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
-                let bus = EventBus::new();
+                let _ = auto_file_renaming;
+
+                // Daemon mode: when a compatible daemon is running and the user
+                // did not force --standalone, delegate downloads to it. The TUI
+                // drives remote tasks over RPC instead of in-process ones.
+                let daemon_ok = if !standalone && daemon_client::daemon_is_running().await {
+                    match daemon_client::daemon_version().await {
+                        Ok(v) if v == env!("CARGO_PKG_VERSION") => true,
+                        Ok(v) => {
+                            tracing::warn!(
+                                "Daemon v{v} is older than zing v{} — run `zing daemon restart` to upgrade it",
+                                env!("CARGO_PKG_VERSION")
+                            );
+                            false
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Could not verify daemon version ({e}); assuming outdated — run `zing daemon restart`"
+                            );
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+
+                if daemon_ok {
+                    tracing::info!("zing daemon detected, TUI driving daemon tasks");
+
+                    let cfg = Config::load(None);
+                    let download_dir = dir.clone().unwrap_or_else(|| cfg.download_dir());
+                    tokio::fs::create_dir_all(&download_dir)
+                        .await
+                        .map_err(|e| {
+                            color_eyre::eyre::eyre!(
+                                "Cannot create download directory '{}': {e}",
+                                download_dir.display()
+                            )
+                        })?;
+                    let download_dir_str = download_dir.to_string_lossy().to_string();
+
+                    let mut headers = parse_headers(&header);
+                    if let Some(user) = &user {
+                        if !digest {
+                            let creds = if let Some((u, p)) = user.split_once(':') {
+                                format!("{u}:{p}")
+                            } else {
+                                user.clone()
+                            };
+                            let encoded =
+                                base64::engine::general_purpose::STANDARD.encode(creds.as_bytes());
+                            headers.push(("Authorization".into(), format!("Basic {encoded}")));
+                        }
+                    }
+                    let daemon_headers: Vec<String> =
+                        headers.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+
+                    let use_cd = content_disposition || !no_content_disposition;
+                    let build_params = move |url: &str| {
+                        serde_json::json!({
+                            "url": url,
+                            "filename": output.as_ref().and_then(|p| p.to_str()).filter(|s| !s.is_empty()),
+                            "dir": download_dir_str,
+                            "connections": connections,
+                            "insecure": insecure,
+                            "max_download_rate": max_download_rate,
+                            "max_filesize": max_filesize,
+                            "proxy": proxy,
+                            "mirror": mirror,
+                            "headers": daemon_headers,
+                            "low_speed_limit": 0,
+                            "low_speed_time": 30,
+                            "save_interval_secs": 5,
+                            "content_disposition": use_cd,
+                            "auto_file_renaming": true,
+                            "allow_overwrite": allow_overwrite,
+                        })
+                    };
+
+                    let mut tasks: Vec<Arc<dyn TaskControl>> = Vec::with_capacity(urls.len());
+                    for url in &urls {
+                        let params = build_params(url);
+                        match daemon_client::add_uri(params).await {
+                            Ok(id) => {
+                                let label = zing_ext::filename::from_url(url);
+                                tasks
+                                    .push(RemoteTask::new(id, url.clone(), label)
+                                        as Arc<dyn TaskControl>);
+                            }
+                            Err(e) => {
+                                return Err(color_eyre::eyre::eyre!(
+                                    "Daemon error adding {url}: {e}"
+                                ))
+                            }
+                        }
+                    }
+
+                    let factory: TaskFactory = Arc::new(move |url: &str| {
+                        let url = url.to_string();
+                        let params = build_params(&url);
+                        Box::pin(async move {
+                            let id = daemon_client::add_uri(params).await?;
+                            let label = zing_ext::filename::from_url(&url);
+                            Ok(RemoteTask::new(id, url.clone(), label) as Arc<dyn TaskControl>)
+                        })
+                    });
+
+                    let logs = logs.expect("TUI command implies a log buffer");
+                    if let Err(e) = zing_tui::run(TuiOptions {
+                        tasks,
+                        logs,
+                        max_concurrent,
+                        factory: Some(factory),
+                    })
+                    .await
+                    {
+                        return Err(color_eyre::eyre::eyre!("{e}"));
+                    }
+                    return Ok(());
+                }
+
+                if standalone {
+                    tracing::info!("Forced standalone TUI mode");
+                }
 
                 let cfg = Config::load(None);
                 let download_dir = dir.clone().unwrap_or_else(|| cfg.download_dir());
@@ -732,14 +883,6 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                             download_dir.display()
                         )
                     })?;
-
-                let filename = match &output {
-                    Some(name) => name.to_string_lossy().to_string(),
-                    None => download_dir
-                        .join(filename::from_url(url))
-                        .to_string_lossy()
-                        .to_string(),
-                };
 
                 let mut headers = parse_headers(&header);
                 if let Some(user) = &user {
@@ -784,66 +927,109 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     cfg.throttle_reprobe.unwrap_or(true)
                 };
 
-                let task = Arc::new(DownloadTask::new(
-                    1,
-                    url,
-                    &filename,
-                    false,
-                    false,
-                    connections,
-                    bus,
-                    insecure,
-                    max_download_rate,
-                    proxy.clone(),
-                    mirror.clone(),
-                    None,
-                    headers,
-                    max_filesize,
-                    retry,
-                    retry_wait,
-                    connect_timeout,
-                    max_time,
-                    user_agent.clone(),
-                    false,
-                    cookie_jar,
-                    save_cookies.clone(),
-                    0,
-                    30,
-                    5,
-                    None,
-                    None,
-                    None,
-                    digest,
-                    endgame_enabled,
-                    throttle_reprobe_enabled,
-                ));
-                if digest {
-                    if let Some(ref creds) = user {
-                        if let Some((u, p)) = creds.split_once(':') {
-                            task.set_auth_credentials(u, p).await;
+                // In the TUI there is no interactive prompt, so conflicts default
+                // to auto-rename unless the user explicitly chose overwrite.
+                let conflict_policy = if allow_overwrite {
+                    ConflictPolicy::Overwrite
+                } else {
+                    ConflictPolicy::AutoRename
+                };
+
+                let use_cd = content_disposition || !no_content_disposition;
+
+                let auth_creds = if digest {
+                    user.as_ref()
+                        .and_then(|c| c.split_once(':'))
+                        .map(|(u, p)| (u.to_string(), p.to_string()))
+                } else {
+                    None
+                };
+
+                let bus = EventBus::new();
+
+                // Build a task for a URL. Kept in a closure so the initial batch
+                // and the interactive "add URL" prompt share identical config.
+                let build_task = move |url: &str| -> Result<Arc<DownloadTask>, String> {
+                    let filename = match &output {
+                        Some(name) => name.to_string_lossy().to_string(),
+                        None => download_dir
+                            .join(filename::from_url(url))
+                            .to_string_lossy()
+                            .to_string(),
+                    };
+                    let task_id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
+                    let task = Arc::new(DownloadTask::new(
+                        task_id,
+                        url,
+                        &filename,
+                        output.is_none(),
+                        false,
+                        connections,
+                        bus.clone(),
+                        insecure,
+                        max_download_rate,
+                        proxy.clone(),
+                        mirror.clone(),
+                        None,
+                        headers.clone(),
+                        max_filesize,
+                        retry,
+                        retry_wait,
+                        connect_timeout,
+                        max_time,
+                        user_agent.clone(),
+                        use_cd,
+                        cookie_jar.clone(),
+                        save_cookies.clone(),
+                        0,
+                        30,
+                        5,
+                        None,
+                        None,
+                        None,
+                        digest,
+                        endgame_enabled,
+                        throttle_reprobe_enabled,
+                    ));
+                    task.set_conflict_policy(conflict_policy.clone());
+                    Ok(task)
+                };
+
+                let factory: TaskFactory = Arc::new(move |url: &str| {
+                    let url = url.to_string();
+                    let auth = auth_creds.clone();
+                    let bt = build_task.clone();
+                    Box::pin(async move {
+                        let task = bt(&url)?;
+                        if let Some((u, p)) = auth {
+                            task.set_auth_credentials(&u, &p).await;
+                        }
+                        Ok(LocalTask::new(task) as Arc<dyn TaskControl>)
+                    })
+                });
+
+                let mut tasks: Vec<Arc<dyn TaskControl>> = Vec::with_capacity(urls.len());
+                for url in &urls {
+                    match factory(url).await {
+                        Ok(task) => tasks.push(task),
+                        Err(e) => {
+                            return Err(color_eyre::eyre::eyre!(
+                                "Cannot create task for {url}: {e}"
+                            ))
                         }
                     }
                 }
 
-                let t = task.clone();
-                let rx = shutdown_tx.subscribe();
-                let dl_handle = tokio::spawn(async move {
-                    if let Err(e) = t.run_with_shutdown(rx).await {
-                        tracing::error!("Download failed: {e}");
-                    }
-                });
-
                 let logs = logs.expect("TUI command implies a log buffer");
-                if let Err(e) = zing_tui::run(task, logs).await {
-                    let _ = shutdown_tx.send(());
-                    dl_handle.abort();
-                    return Err(color_eyre::eyre::eyre!(e));
-                }
-                let _ = shutdown_tx.send(());
-                if let Err(e) = dl_handle.await {
-                    if !e.is_cancelled() {
-                        tracing::error!("Download task failed: {e}");
-                    }
+                if let Err(e) = zing_tui::run(TuiOptions {
+                    tasks,
+                    logs,
+                    max_concurrent,
+                    factory: Some(factory),
+                })
+                .await
+                {
+                    return Err(color_eyre::eyre::eyre!("{e}"));
                 }
                 return Ok(());
             }
@@ -952,6 +1138,8 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 "save_interval_secs": args.save_interval,
                 "on_download_complete": args.on_download_complete,
                 "on_download_error": args.on_download_error,
+                "auto_file_renaming": args.auto_file_renaming,
+                "allow_overwrite": args.allow_overwrite,
             });
             match daemon_client::send_request("zing.addUri", Some(params)).await {
                 Ok(resp) => {
@@ -1177,7 +1365,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let is_auto_name =
             args.output.is_none() && metalink.is_none_or(|m| i == 0 && m.is_auto_name);
 
-        let mut filename = match &args.output {
+        let filename = match &args.output {
             Some(name) => name.to_string_lossy().to_string(),
             None => {
                 let base = if i == 0 {
@@ -1196,23 +1384,9 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             }
         };
 
-        // Auto-file-renaming
-        if args.auto_file_renaming && !args.allow_overwrite {
-            let path = Path::new(&filename);
-            if path.exists() {
-                let mut counter = 1;
-                let base_filename = filename.clone();
-                loop {
-                    let new_name = auto_rename_filename(&base_filename, counter);
-                    if !Path::new(&new_name).exists() {
-                        tracing::info!("File exists, auto-renamed to: {}", new_name);
-                        filename = new_name;
-                        break;
-                    }
-                    counter += 1;
-                }
-            }
-        }
+        // Existing-file conflict policy (resolved inside the downloader, after
+        // the probe + Content-Disposition rename produce the final filename).
+        let conflict_policy = conflict_policy_from_args(&args);
 
         let effective_mirrors = metalink.map_or_else(|| args.mirror.clone(), |m| m.mirrors.clone());
         let effective_checksum = metalink
@@ -1234,7 +1408,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let on_complete = args.on_download_complete.clone();
         let on_error = args.on_download_error.clone();
         let user_agent = args.user_agent.clone();
-        let use_cd = args.content_disposition;
+        let use_cd = args.content_disposition || !args.no_content_disposition;
         let jar = cookie_jar.clone();
         let save_cookies = args.save_cookies.clone();
         let connections = args.connections;
@@ -1324,6 +1498,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     endgame_enabled,
                     throttle_reprobe_enabled,
                 );
+                task.set_conflict_policy(conflict_policy.clone());
                 if digest {
                     if let Some(ref creds) = user_creds {
                         if let Some((u, p)) = creds.split_once(':') {
@@ -1943,6 +2118,16 @@ async fn run_config_edit() -> Result<()> {
         .map(|v| if v { "enabled" } else { "disabled" })
         .unwrap_or("default (enabled)");
     println!("  throttle_reprobe:         {throttle_str}");
+    println!(
+        "  max_concurrent_downloads: {}",
+        cfg.max_concurrent_downloads
+            .map(|v| if v == 0 {
+                "unlimited".to_string()
+            } else {
+                v.to_string()
+            })
+            .unwrap_or_else(|| "unlimited".to_string())
+    );
 
     use dialoguer::{theme::ColorfulTheme, Input, Select};
 
@@ -2016,6 +2201,17 @@ async fn run_config_edit() -> Result<()> {
         .items(&["Yes (default)", "No"])
         .interact()?;
     cfg.throttle_reprobe = Some(throttle_idx == 0);
+
+    let mc_input: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Max concurrent downloads (0 = unlimited)")
+        .with_initial_text(
+            cfg.max_concurrent_downloads
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "0".to_string()),
+        )
+        .allow_empty(false)
+        .interact_text()?;
+    cfg.max_concurrent_downloads = Some(mc_input.parse::<usize>().unwrap_or(0));
 
     if let Err(e) = cfg.save() {
         eprintln!("Failed to save config: {e}");
