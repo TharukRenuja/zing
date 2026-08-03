@@ -116,7 +116,34 @@ if [ -d /usr/share/fish/vendor_completions.d ]; then
   echo "  fish completions"
 fi
 
+# Register the daemon as a systemd *user* service so downloads can run in the
+# background. This must run as the invoking user (not root): systemctl --user
+# needs that user's session bus, which means the command must not go through
+# the same sudo used for the /usr/local/bin copies above.
+if [ "$os" = "linux" ] && [ -x "$dst/zing" ]; then
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    uid="$(id -u "$SUDO_USER")"
+    home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+    echo "Installing daemon service for user $SUDO_USER..."
+    if ! sudo -u "$SUDO_USER" env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
+        "$dst/zing" daemon install; then
+      echo "warning: could not register the daemon service"
+      echo "         run manually as your user: zing daemon install"
+    fi
+  elif [ "$(id -u)" -ne 0 ]; then
+    echo "Installing daemon service..."
+    if ! "$dst/zing" daemon install; then
+      echo "warning: could not register the daemon service"
+      echo "         run manually: zing daemon install"
+    fi
+  else
+    echo "warning: running as root, daemon service not registered"
+    echo "         after install, run as your user: zing daemon install"
+  fi
+fi
+
 rm -rf "$tmp"
 
 echo "zing ${VERSION} installed to $dst"
 echo "Restart your terminal or run: hash -r"
+echo "The daemon service is ready: use 'zing daemon status' to check it."

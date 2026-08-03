@@ -33,40 +33,52 @@ impl Default for ServerProfile {
 }
 
 pub async fn probe(pool: &ConnectionPool, url: &str, max_connections: usize) -> ServerProfile {
-    // HEAD request for RTT + metadata
-    let head_start = Instant::now();
-    let head_resp = match pool.client().head(url).send().await {
+    let start = Instant::now();
+    let resp = match pool
+        .client()
+        .get(url)
+        .header("Range", "bytes=0-65535")
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
-            tracing::debug!("Probe HEAD failed: {e}");
+            tracing::debug!("Probe failed: {e}");
             return ServerProfile::default();
         }
     };
-    let rtt = head_start.elapsed();
-    let protocol = ConnectionPool::detect_protocol(&head_resp);
-    let content_disposition = head_resp
+    let rtt = start.elapsed();
+    let protocol = ConnectionPool::detect_protocol(&resp);
+    let content_disposition = resp
         .headers()
         .get("content-disposition")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    // Get file size — HEAD Content-Length is optional, fall back to range probe
-    // HEAD Content-Length may return 0, always use range probe for size
-    let total_size = probe_content_size(pool, url).await;
-
-    // Check Range support via small range probe (first 4KB)
-    let supports_ranges = if total_size.is_some_and(|s| s > 0) {
-        check_range_support(pool, url).await
+    // A single range request yields range support (206), total size
+    // (Content-Range) and a bandwidth estimate from the 64KB body.
+    let supports_ranges = resp.status() == 206;
+    let total_size = if supports_ranges {
+        resp.headers()
+            .get("content-range")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split('/').next_back())
+            .and_then(|n| n.parse::<u64>().ok())
     } else {
-        false
+        resp.content_length().filter(|n| *n > 0)
     };
 
-    // Bandwidth estimate: download first 64KB
     let bandwidth_estimate = if supports_ranges {
-        estimate_bandwidth(pool, url, rtt).await
-    } else if total_size.is_some_and(|s| s > 0) {
-        // Without ranges, can only estimate with a small GET
-        estimate_bandwidth(pool, url, rtt).await
+        let body_start = Instant::now();
+        let len = match resp.bytes().await {
+            Ok(b) => b.len() as f64,
+            Err(e) => {
+                tracing::debug!("Probe body read failed: {e}");
+                return ServerProfile::default();
+            }
+        };
+        let body_secs = body_start.elapsed().as_secs_f64().max(0.001);
+        Some(len / body_secs)
     } else {
         None
     };
@@ -101,58 +113,6 @@ pub async fn probe(pool: &ConnectionPool, url: &str, max_connections: usize) -> 
         recommended_mode,
         content_disposition,
     }
-}
-
-async fn probe_content_size(pool: &ConnectionPool, url: &str) -> Option<u64> {
-    let resp = pool
-        .client()
-        .get(url)
-        .header("Range", "bytes=0-0")
-        .send()
-        .await
-        .ok()?;
-    if resp.status() == 206 {
-        let cr = resp.headers().get("content-range")?;
-        let s = cr.to_str().ok()?;
-        let after = s.split('/').next_back()?;
-        after.parse::<u64>().ok()
-    } else {
-        None
-    }
-}
-
-async fn check_range_support(pool: &ConnectionPool, url: &str) -> bool {
-    let resp = pool
-        .client()
-        .get(url)
-        .header("Range", "bytes=0-4095")
-        .send()
-        .await;
-    match resp {
-        Ok(r) => r.status() == 206,
-        Err(_) => false,
-    }
-}
-
-async fn estimate_bandwidth(pool: &ConnectionPool, url: &str, rtt: Duration) -> Option<f64> {
-    let start = Instant::now();
-    let resp = pool
-        .client()
-        .get(url)
-        .header("Range", "bytes=0-65535")
-        .send()
-        .await
-        .ok()?;
-
-    if resp.status() != 206 {
-        return None;
-    }
-
-    let elapsed = start.elapsed();
-    let body_time = elapsed.checked_sub(rtt).unwrap_or(elapsed);
-    let body_secs = body_time.as_secs_f64().max(0.001);
-
-    Some(65536.0 / body_secs)
 }
 
 /// Probe all mirrors (including the primary URL) and sort them by RTT.

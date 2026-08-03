@@ -27,6 +27,10 @@ staging/
 *.log
 *.bak
 
+# Benchmark artifacts
+bench-results/
+zing-test/
+
 # macOS
 .DS_Store
 .Trash

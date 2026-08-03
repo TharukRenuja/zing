@@ -76,6 +76,7 @@ struct SharedState {
     pub start_time: tokio::sync::Mutex<Instant>,
     pub total_downloaded: AtomicU64,
     pub done: AtomicBool,
+    pub completion: tokio::sync::Notify,
     pub reprobe: AtomicBool,
     pub peak_speed: AtomicU64,
     pub bandwidth_estimate: AtomicU64,
@@ -284,6 +285,7 @@ impl DownloadTask {
                 start_time: tokio::sync::Mutex::new(Instant::now()),
                 total_downloaded: AtomicU64::new(0),
                 done: AtomicBool::new(false),
+                completion: tokio::sync::Notify::new(),
                 reprobe: AtomicBool::new(false),
                 peak_speed: AtomicU64::new(0),
                 bandwidth_estimate: AtomicU64::new(0),
@@ -653,10 +655,14 @@ impl DownloadTask {
         }));
 
         for &batch_count in &batches[1..] {
+            if self.state.segment_mgr.lock().await.is_all_complete() {
+                break;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(
                 constants::SLOW_START_BATCH_DELAY_MS,
             ))
             .await;
+            let mut spawned = 0;
             for _ in 0..batch_count {
                 let target = {
                     let mgr = self.state.segment_mgr.lock().await;
@@ -680,6 +686,20 @@ impl DownloadTask {
                     conn_tasks.lock().unwrap().push(tokio::spawn(async move {
                         run_connection(state, conn_id).await;
                     }));
+                    spawned += 1;
+                }
+            }
+            if spawned == 0 {
+                let splittable = {
+                    let mgr = self.state.segment_mgr.lock().await;
+                    mgr.connections.iter().any(|c| {
+                        mgr.active_segment_for(c.id)
+                            .map(|s| s.remaining() >= constants::SEGMENT_INITIAL_SPLIT_SIZE)
+                            .unwrap_or(false)
+                    })
+                };
+                if !splittable {
+                    break;
                 }
             }
         }
@@ -949,8 +969,12 @@ impl DownloadTask {
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_millis(constants::MONITOR_TICK_MS))
-                    .await;
+                tokio::select! {
+                    _ = state_mon.completion.notified() => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(
+                        constants::MONITOR_TICK_MS,
+                    )) => {}
+                }
             }
         });
 
@@ -1134,6 +1158,11 @@ fn is_retryable_error(e: &anyhow::Error) -> bool {
 }
 
 async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
+    run_connection_work(state.clone(), conn_id).await;
+    state.completion.notify_one();
+}
+
+async fn run_connection_work(state: Arc<SharedState>, conn_id: usize) {
     let mut retry = RetryManager::new(
         state.retry_count,
         std::time::Duration::from_millis(state.retry_wait_ms),
@@ -1200,7 +1229,16 @@ async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
                         low_speed_warned = true;
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let has_more_work = {
+                    let mgr = state.segment_mgr.lock().await;
+                    mgr.active_segment_for(conn_id)
+                        .map(|s| s.remaining() > 0)
+                        .unwrap_or(false)
+                        || mgr.pending_segment_count() > 0
+                };
+                if has_more_work {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
             }
             Err(e) => {
                 if !is_retryable_error(&e) {

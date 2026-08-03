@@ -9,6 +9,18 @@ if [ ! -w "$dst" ]; then
   fi
 fi
 
+echo "Stopping daemon service..."
+if [ -x "$dst/zing" ]; then
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    uid="$(id -u "$SUDO_USER")"
+    home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+    sudo -u "$SUDO_USER" env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
+        "$dst/zing" daemon uninstall 2>/dev/null || true
+  elif [ "$(id -u)" -ne 0 ]; then
+    "$dst/zing" daemon uninstall 2>/dev/null || true
+  fi
+fi
+
 echo "Removing binaries..."
 $maybe_sudo rm -f "$dst/zing" "$dst/zing-daemon"
 

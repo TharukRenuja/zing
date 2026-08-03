@@ -81,7 +81,6 @@
                             <ServiceControl
                                 Id='ServiceController'
                                 Name='zing-daemon'
-                                Start='install'
                                 Stop='both'
                                 Remove='uninstall'
                                 Wait='yes'/>
