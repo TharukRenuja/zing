@@ -39,8 +39,18 @@ case "$os" in
 esac
 
 if [ "$VERSION" = "latest" ]; then
-  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed 's/.*: "//;s/".*//')
+  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep -o '"tag_name": "[^"]*"' | head -1 | sed 's/"tag_name": "//;s/"$//')
 fi
+
+if [ -z "$VERSION" ]; then
+  echo "error: failed to determine latest version"
+  exit 1
+fi
+
+case "$VERSION" in
+  v*) ;;
+  *) echo "error: invalid version format: $VERSION"; exit 1 ;;
+esac
 
 download_url="https://github.com/${REPO}/releases/download/${VERSION}/zing-${VERSION}-${suffix}.${ext}"
 
@@ -48,7 +58,11 @@ tmp=$(mktemp -d)
 archive="${tmp}/zing.${ext}"
 
 echo "Downloading zing ${VERSION} for ${suffix}..."
-curl -fsSL "$download_url" -o "$archive"
+if ! curl -fsSL "$download_url" -o "$archive"; then
+  echo "error: failed to download from $download_url"
+  rm -rf "$tmp"
+  exit 1
+fi
 
 case "$ext" in
   tar.gz)
