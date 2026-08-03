@@ -36,10 +36,10 @@ URLS=(
   "90MB|94371840|https://speed.cloudflare.com/__down?bytes=94371840"
 )
 URLS_LARGE=(
-  "Ubuntu-24.04|6106400000|https://releases.ubuntu.com/24.04/ubuntu-24.04.2-desktop-amd64.iso"
-  "Fedora-41|2200000000|https://download.fedoraproject.org/pub/fedora/linux/releases/41/Workstation/x86_64/iso/Fedora-Workstation-Live-x86_64-41-1.4.iso"
-  "Debian-12|630000000|https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.9.0-amd64-netinst.iso"
-  "Cloudflare-5G|5000000000|https://speed.cloudflare.com/__down?bytes=5000000000"
+  "Ubuntu-24.04|6630000000|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso"
+  "Fedora-42|2370000000|https://download.fedoraproject.org/pub/fedora/linux/releases/42/Workstation/x86_64/iso/Fedora-Workstation-Live-42-1.1.x86_64.iso"
+  "Debian-12|705000000|https://cdimage.debian.org/images/archive/12.12.0/amd64/iso-cd/debian-12.12.0-amd64-netinst.iso"
+  "Cloudflare-2G|2000000000|https://speed.cloudflare.com/__down?bytes=2000000000"
 )
 # Override the test set (e.g. for loopback validation): BENCH_URLS="a|n|http://..."
 if [ -n "${BENCH_URLS:-}" ]; then
@@ -254,7 +254,12 @@ estimate() {
         b=${e#*|}; b=${b%%|*}
         bytes=$((bytes + b))
     done
-    awk "BEGIN{printf \"%.1f GB across %d tools x %d rounds\n\", $bytes*${#TOOLS[@]}*$ROUNDS/1e9, ${#TOOLS[@]}, $ROUNDS}"
+    if [ "$LARGE" -eq 1 ]; then
+        # With cleanup, peak disk ≈ one copy of each file (current tool's files)
+        awk "BEGIN{printf \"%.1f GB on disk (4 files, cleaned per tool)\", $bytes/1e9}"
+    else
+        awk "BEGIN{printf \"%.1f GB across %d tools x %d rounds\n\", $bytes*${#TOOLS[@]}*$ROUNDS/1e9, ${#TOOLS[@]}, $ROUNDS}"
+    fi
 }
 
 # --------------------------------------------------------------------------
