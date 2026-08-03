@@ -35,6 +35,12 @@ URLS=(
   "80MB|83886080|https://speed.cloudflare.com/__down?bytes=83886080"
   "90MB|94371840|https://speed.cloudflare.com/__down?bytes=94371840"
 )
+URLS_LARGE=(
+  "Ubuntu-24.04|6106400000|https://releases.ubuntu.com/24.04/ubuntu-24.04.2-desktop-amd64.iso"
+  "Fedora-41|2200000000|https://download.fedoraproject.org/pub/fedora/linux/releases/41/Workstation/x86_64/iso/Fedora-Workstation-Live-x86_64-41-1.4.iso"
+  "Debian-12|630000000|https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.9.0-amd64-netinst.iso"
+  "Cloudflare-5G|5000000000|https://speed.cloudflare.com/__down?bytes=5000000000"
+)
 # Override the test set (e.g. for loopback validation): BENCH_URLS="a|n|http://..."
 if [ -n "${BENCH_URLS:-}" ]; then
     mapfile -t URLS <<< "$(printf '%s\n' $BENCH_URLS)"
@@ -85,6 +91,13 @@ export ZING_BIN CONNECTIONS OUTFILE PIDFILE
 
 clean_outdir() {
     rm -f "$2/$OUTFILE" "$2/.$OUTFILE.aria2" "$2"/"$OUTFILE".*
+}
+
+clean_previous() { # $1=name $2=current_tool — delete other tools' copies
+    for t in "${TOOLS[@]}"; do
+        [ "$t" = "$2" ] && continue
+        rm -f "$TEST_ROOT/$1/$t/$OUTFILE"
+    done
 }
 
 dispatch() { # $1=tool $2=url $3=outdir
@@ -250,11 +263,20 @@ main() {
     if [ "${1:-}" = "--fresh" ]; then rm -rf "$RESULTS_DIR"; fi
     [ -d "$RESULTS_DIR" ] || mkdir -p "$RESULTS_DIR"
 
+    LARGE=0
+    for arg in "$@"; do
+        case "$arg" in --large) LARGE=1 ;; esac
+    done
+    if [ "$LARGE" -eq 1 ]; then
+        URLS=("${URLS_LARGE[@]}")
+        ROUNDS=1
+    fi
+
     echo "zing benchmark"
     echo "  zing:   $("$ZING_BIN" --version 2>/dev/null | head -1) ($ZING_BIN)"
     echo "  aria2c: $(aria2c --version | head -1)"
     echo "  curl:   $(curl --version | head -1)"
-    echo "  rounds: $ROUNDS, connections: $CONNECTIONS, pause: ${PAUSE}s"
+    echo "  rounds: $ROUNDS, connections: $CONNECTIONS, pause: ${PAUSE}s$([ "$LARGE" -eq 1 ] && echo " (large files)")"
     echo "  data:   $(estimate)"
     echo "  output: $TEST_ROOT"
 
@@ -308,6 +330,8 @@ main() {
                 elif [ -n "$SHA" ] && [ "$SHA" != "${ref_sha[$key]}" ]; then
                     echo "  !!! INTEGRITY MISMATCH: $name round $round $tool differs"
                 fi
+                # cleanup: remove previous tool's file to save disk space
+                [ "$LARGE" -eq 1 ] && clean_previous "$name" "$tool"
                 sleep "$PAUSE"
             done
         done
