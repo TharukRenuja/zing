@@ -740,7 +740,7 @@ impl DownloadTask {
         let control_path_mon = control_path.clone();
         // Periodic save task
         let save_interval = self.state.save_interval_secs;
-        let _periodic_save = {
+        let periodic_save = {
             let state = Arc::clone(&self.state);
             let cp = control_path.clone();
             tokio::spawn(async move {
@@ -1044,6 +1044,7 @@ impl DownloadTask {
                 total_bytes: total,
                 duration: self.state.start_time.lock().await.elapsed(),
             });
+            periodic_save.abort();
             let _ = tokio::fs::remove_file(&control_path).await;
             self.state.save_cookies().await;
         } else {
