@@ -37,9 +37,9 @@ URLS=(
 )
 URLS_LARGE=(
   "Ubuntu-24.04|6630000000|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso"
+  "Ubuntu-Server|3400000000|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso"
   "Fedora-42|2370000000|https://download.fedoraproject.org/pub/fedora/linux/releases/42/Workstation/x86_64/iso/Fedora-Workstation-Live-42-1.1.x86_64.iso"
   "Debian-12|705000000|https://cdimage.debian.org/images/archive/12.12.0/amd64/iso-cd/debian-12.12.0-amd64-netinst.iso"
-  "Cloudflare-2G|2000000000|https://speed.cloudflare.com/__down?bytes=2000000000"
 )
 # Override the test set (e.g. for loopback validation): BENCH_URLS="a|n|http://..."
 if [ -n "${BENCH_URLS:-}" ]; then
@@ -291,7 +291,7 @@ main() {
     bad=0
     for e in "${URLS[@]}"; do
         name=${e%%|*}; url=${e#*|*|}
-        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 \
+        code=$(curl -sL -o /dev/null -w "%{http_code}" --max-time 20 \
             -H "Range: bytes=0-1023" "$url")
         if [ "$code" = "200" ] || [ "$code" = "206" ]; then
             echo "  $name OK (HTTP $code)"
