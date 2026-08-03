@@ -30,6 +30,7 @@ staging/
 # Benchmark artifacts
 bench-results/
 zing-test/
+colab_bench.ipynb
 
 # macOS
 .DS_Store
