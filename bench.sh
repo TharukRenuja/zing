@@ -36,10 +36,10 @@ URLS=(
   "90MB|94371840|https://speed.cloudflare.com/__down?bytes=94371840"
 )
 URLS_LARGE=(
-  "Ubuntu-24.04|6655619072|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso"
-  "Ubuntu-Server|3405469696|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso"
-  "Fedora-42|2398523392|https://download.fedoraproject.org/pub/fedora/linux/releases/42/Workstation/x86_64/iso/Fedora-Workstation-Live-42-1.1.x86_64.iso"
-  "Debian-12|704643072|https://cdimage.debian.org/images/archive/12.12.0/amd64/iso-cd/debian-12.12.0-amd64-netinst.iso"
+  "Ubuntu-24.04|6630000000|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso"
+  "Ubuntu-Server|3400000000|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso"
+  "Fedora-42|2370000000|https://download.fedoraproject.org/pub/fedora/linux/releases/42/Workstation/x86_64/iso/Fedora-Workstation-Live-42-1.1.x86_64.iso"
+  "Debian-12|705000000|https://cdimage.debian.org/images/archive/12.12.0/amd64/iso-cd/debian-12.12.0-amd64-netinst.iso"
 )
 # Override the test set (e.g. for loopback validation): BENCH_URLS="a|n|http://..."
 if [ -n "${BENCH_URLS:-}" ]; then
