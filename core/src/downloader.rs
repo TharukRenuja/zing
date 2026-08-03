@@ -90,6 +90,7 @@ struct SharedState {
     pub endgame_enabled: bool,
     pub throttle_reprobe_enabled: bool,
     pub paused: AtomicBool,
+    pub pause_notify: tokio::sync::Notify,
     pub claimed_blocks: tokio::sync::Mutex<HashSet<u32>>,
     pub digest_auth: bool,
     pub auth_credentials: tokio::sync::Mutex<Option<(String, String)>>,
@@ -172,6 +173,7 @@ impl DownloadTask {
     /// the connection pool until [`DownloadTask::resume`] is called.
     pub fn pause(&self) {
         self.state.paused.store(true, Ordering::Release);
+        self.state.pause_notify.notify_waiters();
     }
 
     /// Resume a paused download.
@@ -181,6 +183,24 @@ impl DownloadTask {
 
     pub fn is_paused(&self) -> bool {
         self.state.paused.load(Ordering::Acquire)
+    }
+
+    /// Flush the current bitfield to the control file so the download can be
+    /// resumed from the exact byte offset even if the worker exits.
+    pub async fn save_control_file(&self) {
+        let filename = self.state.filename.lock().await.clone();
+        let control_path = ControlFile::control_path(Path::new(&filename));
+        let bf = self.state.block_bitfield.lock().await;
+        let cf = ControlFile {
+            version: 2,
+            total_size: bf.total_size,
+            block_size: bf.block_size,
+            bitfield: bf.clone(),
+        };
+        drop(bf);
+        if let Err(e) = cf.save(&control_path).await {
+            tracing::error!("Failed to save control file on pause: {e}");
+        }
     }
 
     /// Request a graceful stop. Connections finish their current segment and
@@ -302,6 +322,7 @@ impl DownloadTask {
                 endgame_enabled,
                 throttle_reprobe_enabled,
                 paused: AtomicBool::new(false),
+                pause_notify: tokio::sync::Notify::new(),
                 claimed_blocks: tokio::sync::Mutex::new(HashSet::new()),
                 digest_auth,
                 auth_credentials: tokio::sync::Mutex::new(None),
@@ -1042,15 +1063,50 @@ impl DownloadTask {
         let mut downloaded: u64 = 0;
         let start = Instant::now();
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-
-            if let Some(ref limiter) = self.state.rate_limiter {
-                limiter.consume(chunk.len() as u64).await;
+        loop {
+            if self.state.paused.load(Ordering::Acquire) {
+                break;
             }
 
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
+            let pause_notified = self.state.pause_notify.notified();
+            tokio::pin!(pause_notified);
+
+            let data = tokio::select! {
+                biased;
+                _ = &mut pause_notified => {
+                    break;
+                }
+                result = tokio::time::timeout(
+                    std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
+                    stream.next(),
+                ) => {
+                    match result {
+                        Ok(Some(Ok(d))) => d,
+                        Ok(Some(Err(e))) => return Err(e.into()),
+                        Ok(None) => {
+                            file.flush().await?;
+                            self.state.bus.emit(EngineEvent::TaskCompleted {
+                                id: self.state.id,
+                                total_bytes: downloaded,
+                                duration: start.elapsed(),
+                            });
+                            self.state.save_cookies().await;
+                            return Ok(());
+                        }
+                        Err(_) => bail!(
+                            "read timeout ({}s)",
+                            constants::READ_TIMEOUT_SECS
+                        ),
+                    }
+                }
+            };
+
+            if let Some(ref limiter) = self.state.rate_limiter {
+                limiter.consume(data.len() as u64).await;
+            }
+
+            file.write_all(&data).await?;
+            downloaded += data.len() as u64;
 
             let elapsed = start.elapsed().as_secs_f64();
             let speed = if elapsed > 0.0 {
@@ -1068,12 +1124,12 @@ impl DownloadTask {
         }
 
         file.flush().await?;
-        self.state.bus.emit(EngineEvent::TaskCompleted {
+        self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
             id: self.state.id,
-            total_bytes: downloaded,
-            duration: start.elapsed(),
-        });
-        self.state.save_cookies().await;
+            bytes_downloaded: downloaded,
+            total_bytes: None,
+            speed_bytes_per_sec: 0.0,
+        }));
         Ok(())
     }
 
@@ -1090,13 +1146,49 @@ impl DownloadTask {
         let mut downloaded: u64 = 0;
         let start = Instant::now();
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            if let Some(ref limiter) = self.state.rate_limiter {
-                limiter.consume(chunk.len() as u64).await;
+        loop {
+            if self.state.paused.load(Ordering::Acquire) {
+                break;
             }
-            stdout.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
+
+            let pause_notified = self.state.pause_notify.notified();
+            tokio::pin!(pause_notified);
+
+            let data = tokio::select! {
+                biased;
+                _ = &mut pause_notified => {
+                    break;
+                }
+                result = tokio::time::timeout(
+                    std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
+                    stream.next(),
+                ) => {
+                    match result {
+                        Ok(Some(Ok(d))) => d,
+                        Ok(Some(Err(e))) => return Err(e.into()),
+                        Ok(None) => {
+                            stdout.flush().await?;
+                            self.state.bus.emit(EngineEvent::TaskCompleted {
+                                id: self.state.id,
+                                total_bytes: downloaded,
+                                duration: start.elapsed(),
+                            });
+                            self.state.save_cookies().await;
+                            return Ok(());
+                        }
+                        Err(_) => bail!(
+                            "read timeout ({}s)",
+                            constants::READ_TIMEOUT_SECS
+                        ),
+                    }
+                }
+            };
+
+            if let Some(ref limiter) = self.state.rate_limiter {
+                limiter.consume(data.len() as u64).await;
+            }
+            stdout.write_all(&data).await?;
+            downloaded += data.len() as u64;
             let elapsed = start.elapsed().as_secs_f64();
             let speed = if elapsed > 0.0 {
                 downloaded as f64 / elapsed
@@ -1112,12 +1204,12 @@ impl DownloadTask {
         }
 
         stdout.flush().await?;
-        self.state.bus.emit(EngineEvent::TaskCompleted {
+        self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
             id: self.state.id,
-            total_bytes: downloaded,
-            duration: start.elapsed(),
-        });
-        self.state.save_cookies().await;
+            bytes_downloaded: downloaded,
+            total_bytes: None,
+            speed_bytes_per_sec: 0.0,
+        }));
         Ok(())
     }
 }
@@ -1209,6 +1301,9 @@ async fn run_connection_work(state: Arc<SharedState>, conn_id: usize) {
         match download_range(&state, conn_id, offset, length).await {
             Ok(written) => {
                 retry.reset();
+                if state.paused.load(Ordering::Acquire) {
+                    continue;
+                }
                 if written > 0 {
                     last_progress = Instant::now();
                     low_speed_warned = false;
@@ -1271,10 +1366,25 @@ async fn download_range(
     tracing::trace!("Conn {conn_id}: Range bytes {offset}-{end}");
 
     let download_url = state.url.lock().await.clone();
-    let resp = state
-        .pool
-        .get_range(&download_url, offset, length, state.id)
-        .await?;
+
+    // Race the HTTP request against a pause notification so we can abort the
+    // in-flight request immediately when paused.
+    let pause_notified = state.pause_notify.notified();
+    tokio::pin!(pause_notified);
+
+    let resp = tokio::select! {
+        biased;
+        _ = &mut pause_notified => {
+            return Ok(0);
+        }
+        result = state.pool.get_range(&download_url, offset, length, state.id) => {
+            result?
+        }
+    };
+
+    if state.paused.load(Ordering::Acquire) {
+        return Ok(0);
+    }
 
     if let Some(sa) = resp.resp.remote_addr() {
         state
@@ -1419,24 +1529,33 @@ async fn process_range_response(
             break;
         }
 
-        let data = match tokio::time::timeout(
-            std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
-            stream.next(),
-        )
-        .await
-        {
-            Ok(Some(Ok(d))) => d,
-            Ok(Some(Err(e))) => {
-                read_err = Some(e.into());
+        let pause_notified = state.pause_notify.notified();
+        tokio::pin!(pause_notified);
+
+        let data = tokio::select! {
+            biased;
+            _ = &mut pause_notified => {
                 break;
             }
-            Ok(None) => break,
-            Err(_) => {
-                read_err = Some(anyhow::anyhow!(
-                    "read timeout ({}s)",
-                    constants::READ_TIMEOUT_SECS
-                ));
-                break;
+            result = tokio::time::timeout(
+                std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
+                stream.next(),
+            ) => {
+                match result {
+                    Ok(Some(Ok(d))) => d,
+                    Ok(Some(Err(e))) => {
+                        read_err = Some(e.into());
+                        break;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        read_err = Some(anyhow::anyhow!(
+                            "read timeout ({}s)",
+                            constants::READ_TIMEOUT_SECS
+                        ));
+                        break;
+                    }
+                }
             }
         };
 
@@ -1636,6 +1755,9 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
         {
             let mut claimed = state.claimed_blocks.lock().await;
             if !claimed.insert(block_idx) {
+                if state.paused.load(Ordering::Acquire) {
+                    return;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 continue;
             }
@@ -1652,6 +1774,9 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
             Ok(written) => {
                 if written > 0 {
                     state.total_downloaded.fetch_add(written, Ordering::Relaxed);
+                }
+                if state.paused.load(Ordering::Acquire) {
+                    return;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
@@ -1706,16 +1831,25 @@ async fn download_endgame_block(
     let mut written: u64 = 0;
 
     loop {
-        let data = match tokio::time::timeout(
-            std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
-            stream.next(),
-        )
-        .await
-        {
-            Ok(Some(Ok(d))) => d,
-            Ok(Some(Err(e))) => return Err(e.into()),
-            Ok(None) => break,
-            Err(_) => bail!("read timeout ({}s)", constants::READ_TIMEOUT_SECS),
+        let pause_notified = state.pause_notify.notified();
+        tokio::pin!(pause_notified);
+
+        let data = tokio::select! {
+            biased;
+            _ = &mut pause_notified => {
+                return Ok(written);
+            }
+            result = tokio::time::timeout(
+                std::time::Duration::from_secs(constants::READ_TIMEOUT_SECS),
+                stream.next(),
+            ) => {
+                match result {
+                    Ok(Some(Ok(d))) => d,
+                    Ok(Some(Err(e))) => return Err(e.into()),
+                    Ok(None) => break,
+                    Err(_) => bail!("read timeout ({}s)", constants::READ_TIMEOUT_SECS),
+                }
+            }
         };
 
         let write_size = data.len() as u64;

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, Semaphore};
 use zing_core::downloader::{ConflictPolicy, DownloadTask};
 use zing_core::engine::event::{EngineEvent, EventBus, TaskId};
+use zing_core::storage::ControlFile;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -100,6 +101,7 @@ pub enum TaskStatus {
     Downloading,
     Paused,
     Completed,
+    Stopped,
     Failed(String),
 }
 
@@ -107,6 +109,7 @@ pub enum TaskStatus {
 pub struct TaskManager {
     tasks: Arc<Mutex<HashMap<TaskId, TaskInfo>>>,
     cancel_txs: Arc<Mutex<HashMap<TaskId, broadcast::Sender<()>>>>,
+    download_tasks: Arc<Mutex<HashMap<TaskId, Arc<DownloadTask>>>>,
     bus: EventBus,
     session_path: PathBuf,
     semaphore: Option<Arc<Semaphore>>,
@@ -127,6 +130,7 @@ impl TaskManager {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             cancel_txs: Arc::new(Mutex::new(HashMap::new())),
+            download_tasks: Arc::new(Mutex::new(HashMap::new())),
             bus: EventBus::new(),
             session_path,
             semaphore: None,
@@ -359,6 +363,7 @@ impl TaskManager {
 
         let semaphore = self.semaphore.clone();
         let tasks_arc2 = Arc::clone(&self.tasks);
+        let dl_tasks_arc = Arc::clone(&self.download_tasks);
         let bus = self.bus.clone();
         let mut event_rx = self.bus.subscribe();
         let cancel_txs = Arc::clone(&self.cancel_txs);
@@ -474,6 +479,13 @@ impl TaskManager {
             } else {
                 ConflictPolicy::Overwrite
             });
+
+            // Store the DownloadTask so pause_task can call task.pause()
+            // instead of sending a shutdown signal.
+            {
+                let mut dl_tasks = dl_tasks_arc.lock().await;
+                dl_tasks.insert(id, task.clone());
+            }
 
             // Poll `task.snapshot()` on a fixed interval so the daemon can relay
             // live per-connection data (addresses, speeds, block map) to the
@@ -610,6 +622,19 @@ impl TaskManager {
             if is_current {
                 let mut cancel_map = cancel_txs.lock().await;
                 cancel_map.remove(&id);
+                // If the task was paused, keep the DownloadTask reference so
+                // resume_task can call task.resume() instead of spawn_worker.
+                let is_paused = {
+                    let tasks = tasks_arc2.lock().await;
+                    tasks
+                        .get(&id)
+                        .map(|t| t.status == TaskStatus::Paused)
+                        .unwrap_or(false)
+                };
+                if !is_paused {
+                    let mut dl_tasks = dl_tasks_arc.lock().await;
+                    dl_tasks.remove(&id);
+                }
             }
 
             evt_listener.abort();
@@ -619,11 +644,10 @@ impl TaskManager {
 
     pub async fn pause_task(&self, id: TaskId) -> Result<(), String> {
         {
-            let cancel_map = self.cancel_txs.lock().await;
-            if let Some(tx) = cancel_map.get(&id) {
-                // The worker may not be listening yet (queued as Pending), so
-                // ignore the "no receivers" error — status is set regardless.
-                let _ = tx.send(());
+            let dl_tasks = self.download_tasks.lock().await;
+            if let Some(task) = dl_tasks.get(&id) {
+                task.pause();
+                task.save_control_file().await;
             }
         }
 
@@ -648,17 +672,74 @@ impl TaskManager {
         Ok(())
     }
 
-    pub async fn remove_task(&self, id: TaskId) -> Result<(), String> {
+    pub async fn stop_task(&self, id: TaskId) -> Result<(), String> {
+        // Signal the core task to stop (sets done=true, connections exit)
         {
-            let cancel_map = self.cancel_txs.lock().await;
-            if let Some(tx) = cancel_map.get(&id) {
-                let _ = tx.send(());
+            let dl_tasks = self.download_tasks.lock().await;
+            if let Some(task) = dl_tasks.get(&id) {
+                task.stop();
             }
         }
-        let mut cancel_map = self.cancel_txs.lock().await;
-        cancel_map.remove(&id);
-        drop(cancel_map);
 
+        // Delete control file and downloaded file
+        {
+            let tasks = self.tasks.lock().await;
+            if let Some(t) = tasks.get(&id) {
+                let control_path = ControlFile::control_path(std::path::Path::new(&t.filename));
+                let _ = tokio::fs::remove_file(&control_path).await;
+                let _ = tokio::fs::remove_file(&t.filename).await;
+            }
+        }
+
+        // Mark as Stopped
+        {
+            let mut tasks = self.tasks.lock().await;
+            match tasks.get_mut(&id) {
+                Some(t) => {
+                    if t.status == TaskStatus::Stopped {
+                        return Ok(());
+                    }
+                    t.status = TaskStatus::Stopped;
+                    self.bus.emit(EngineEvent::TaskFailed {
+                        id,
+                        error: "Stopped".into(),
+                    });
+                }
+                None => return Err(format!("Task {id} not found")),
+            }
+        }
+        self.save_session().await;
+        Ok(())
+    }
+
+    pub async fn remove_task(&self, id: TaskId) -> Result<(), String> {
+        // Signal the core task to stop (sets done=true, connections exit)
+        {
+            let dl_tasks = self.download_tasks.lock().await;
+            if let Some(task) = dl_tasks.get(&id) {
+                task.stop();
+            }
+        }
+
+        // Delete control file and downloaded file
+        {
+            let tasks = self.tasks.lock().await;
+            if let Some(t) = tasks.get(&id) {
+                let control_path = ControlFile::control_path(std::path::Path::new(&t.filename));
+                let _ = tokio::fs::remove_file(&control_path).await;
+                let _ = tokio::fs::remove_file(&t.filename).await;
+            }
+        }
+
+        // Remove from all maps
+        {
+            let mut cancel_map = self.cancel_txs.lock().await;
+            cancel_map.remove(&id);
+        }
+        {
+            let mut dl_tasks = self.download_tasks.lock().await;
+            dl_tasks.remove(&id);
+        }
         {
             let mut tasks = self.tasks.lock().await;
             tasks.remove(&id);
@@ -668,6 +749,12 @@ impl TaskManager {
     }
 
     pub async fn resume_task(&self, id: TaskId) -> Result<(), String> {
+        // Check if we have a stored DownloadTask (still running, just paused)
+        let has_running_task = {
+            let dl_tasks = self.download_tasks.lock().await;
+            dl_tasks.get(&id).is_some()
+        };
+
         {
             let mut tasks = self.tasks.lock().await;
             let task = tasks
@@ -682,8 +769,23 @@ impl TaskManager {
             task.status = TaskStatus::Pending;
         }
         self.save_session().await;
-        // Re-drive the SAME task id (no new id is allocated).
-        self.spawn_worker(id).await;
+
+        if has_running_task {
+            // Resume the existing paused task (connections continue from where they left off)
+            {
+                let mut tasks = self.tasks.lock().await;
+                if let Some(t) = tasks.get_mut(&id) {
+                    t.status = TaskStatus::Downloading;
+                }
+            }
+            let dl_tasks = self.download_tasks.lock().await;
+            if let Some(task) = dl_tasks.get(&id) {
+                task.resume();
+            }
+        } else {
+            // Task was fully stopped — need to re-drive it from scratch
+            self.spawn_worker(id).await;
+        }
         Ok(())
     }
 

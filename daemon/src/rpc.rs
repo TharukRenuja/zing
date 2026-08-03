@@ -56,6 +56,7 @@ pub async fn handle_request(
         "zing.tellStatus" => handle_tell_status(req.params, manager).await,
         "zing.pause" => handle_pause(req.params, manager).await,
         "zing.resume" => handle_resume(req.params, manager).await,
+        "zing.stop" => handle_stop(req.params, manager).await,
         "zing.remove" => handle_remove(req.params, manager).await,
         "zing.version" => RpcResponse {
             id: req.id,
@@ -410,6 +411,28 @@ async fn handle_resume(params: Option<Value>, manager: &TaskManager) -> RpcRespo
     }
 }
 
+async fn handle_stop(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
+    let id = params
+        .and_then(|v| v.get("id").and_then(|id| id.as_u64()))
+        .unwrap_or(0);
+
+    match manager.stop_task(id).await {
+        Ok(()) => RpcResponse {
+            id: None,
+            result: Some(serde_json::json!({ "id": id, "status": "stopped" })),
+            error: None,
+        },
+        Err(e) => RpcResponse {
+            id: None,
+            result: None,
+            error: Some(RpcError {
+                code: -32000,
+                message: e,
+            }),
+        },
+    }
+}
+
 async fn handle_remove(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
     let id = params
         .and_then(|v| v.get("id").and_then(|id| id.as_u64()))
@@ -457,7 +480,10 @@ async fn handle_tell_status(params: Option<Value>, manager: &TaskManager) -> Rpc
 fn task_to_json(t: &crate::task_manager::TaskInfo) -> Value {
     use crate::task_manager::TaskStatus;
     let paused = matches!(t.status, TaskStatus::Paused);
-    let done = matches!(t.status, TaskStatus::Completed | TaskStatus::Failed(_));
+    let done = matches!(
+        t.status,
+        TaskStatus::Completed | TaskStatus::Failed(_) | TaskStatus::Stopped
+    );
     let error = match &t.status {
         TaskStatus::Failed(msg) => Some(msg.clone()),
         _ => None,

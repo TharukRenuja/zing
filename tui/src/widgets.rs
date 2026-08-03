@@ -28,8 +28,56 @@ pub fn render_unified(
 
     render_unified_title(frame, rects.title, entries);
 
-    if let Some(snap) = entries.get(selected).and_then(|e| e.snapshot.as_ref()) {
-        render_header(frame, rects.header, snap);
+    if entries.len() > 1 {
+        let total_downloaded: u64 = entries
+            .iter()
+            .filter_map(|e| e.snapshot.as_ref())
+            .map(|s| s.bytes_downloaded)
+            .sum();
+        let total_size: u64 = entries
+            .iter()
+            .filter_map(|e| e.snapshot.as_ref())
+            .map(|s| s.total_bytes)
+            .sum();
+        let total_speed: u64 = entries
+            .iter()
+            .filter_map(|e| e.snapshot.as_ref())
+            .map(|s| s.speed)
+            .sum();
+        let all_done = entries
+            .iter()
+            .filter_map(|e| e.snapshot.as_ref())
+            .all(|s| s.done);
+        let any_paused = entries
+            .iter()
+            .filter_map(|e| e.snapshot.as_ref())
+            .any(|s| s.paused);
+
+        let aggregate = TaskSnapshot {
+            url: String::new(),
+            filename: "All Tasks".to_string(),
+            bytes_downloaded: total_downloaded,
+            total_bytes: total_size,
+            speed: total_speed,
+            peak_speed: 0,
+            done: all_done,
+            endgame: false,
+            paused: any_paused,
+            connections: Vec::new(),
+            completed_blocks: 0,
+            total_blocks: 0,
+        };
+        render_header(frame, rects.header, &aggregate, "Progress");
+
+        if let Some(snap) = entries.get(selected).and_then(|e| e.snapshot.as_ref()) {
+            render_stats(frame, rects.stats, snap);
+            if rects.connections.height >= 2 {
+                render_connections(frame, rects.connections, snap, 0);
+            }
+            render_block_map(frame, rects.blockmap, snap);
+        }
+    } else if let Some(snap) = entries.get(selected).and_then(|e| e.snapshot.as_ref()) {
+        render_header(frame, rects.header, snap, "Progress");
         render_stats(frame, rects.stats, snap);
         if rects.connections.height >= 2 {
             render_connections(frame, rects.connections, snap, 0);
@@ -67,7 +115,24 @@ fn render_unified_title(frame: &mut Frame, area: Rect, entries: &[Entry]) {
         .map(|s| s.speed)
         .sum();
 
-    let line = Line::from(vec![
+    let logo_spans: Vec<Span> = vec![
+        Span::styled(
+            "Z",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "⚡",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "NG",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+    ];
+
+    let stats_spans: Vec<Span> = vec![
         Span::styled(
             " zing ",
             Style::default()
@@ -101,9 +166,14 @@ fn render_unified_title(frame: &mut Frame, area: Rect, entries: &[Entry]) {
         Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
         Span::styled("speed ", Style::default().fg(Color::Gray)),
         Span::styled(human_speed(total_speed), Style::default().fg(Color::Green)),
-    ]);
+    ];
 
-    frame.render_widget(line, area);
+    // Split: left = stats, right = logo (5 cols: Z + ⚡ + NG)
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(5)]).areas(area);
+
+    frame.render_widget(Line::from(stats_spans), left_area);
+    frame.render_widget(Line::from(logo_spans), right_area);
 }
 
 /// Bordered task table panel, placed directly below the block map.
@@ -253,6 +323,16 @@ fn render_unified_footer(frame: &mut Frame, area: Rect, entries: &[Entry], selec
             }
         })
         .unwrap_or("pause");
+    let pause_all_label = {
+        let any_active_not_paused = entries.iter().any(|e| {
+            matches!(e.status(), "downloading" | "paused" | "queued") && !e.control.is_paused()
+        });
+        if any_active_not_paused {
+            "pause all"
+        } else {
+            "resume all"
+        }
+    };
 
     let text = Line::from(vec![
         Span::styled(
@@ -278,6 +358,14 @@ fn render_unified_footer(frame: &mut Frame, area: Rect, entries: &[Entry], selec
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(pause_label, Style::default().fg(Color::Gray)),
+        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            " P ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(pause_all_label, Style::default().fg(Color::Gray)),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             " x ",
@@ -347,7 +435,7 @@ fn render_too_small(frame: &mut Frame, area: Rect) {
     frame.render_widget(text, area);
 }
 
-fn render_header(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
+fn render_header(frame: &mut Frame, area: Rect, snap: &TaskSnapshot, panel_title: &str) {
     let name = snap.filename.rsplit('/').next().unwrap_or(&snap.filename);
     let label = if name.is_empty() { "download" } else { name };
 
@@ -369,17 +457,42 @@ fn render_header(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
         "downloading"
     };
 
+    // Title line: label + status on left, version on right
     let title = Line::from(vec![
-        Span::styled(
-            " zing ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
         Span::raw(format!(" {label}")),
         Span::styled(format!(" ({status})"), Style::default().fg(Color::Gray)),
     ]);
 
+    let version = Span::styled(
+        format!("v{}", env!("CARGO_PKG_VERSION")),
+        Style::default().fg(Color::DarkGray),
+    );
+
+    let gauge_color = if snap.done { Color::Cyan } else { Color::Green };
+
+    let gauge = Gauge::default()
+        .block(panel_block(panel_title))
+        .gauge_style(Style::default().fg(gauge_color))
+        .label(format!("{pct}%  {downloaded} / {total}  {speed}/s"))
+        .percent(pct);
+
+    let [title_area, info_area, gauge_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+
+    // Split title row: left = label+status, right = version
+    let version_width: u16 = 8;
+    let [title_left_area, title_right_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(version_width)])
+            .areas(title_area);
+
+    frame.render_widget(title, title_left_area);
+    frame.render_widget(Line::from(version).right_aligned(), title_right_area);
+
+    // Info line: downloaded/speed/percent
     let info = Line::from(vec![
         Span::styled("Downloaded ", Style::default().fg(Color::Gray)),
         Span::styled(downloaded.as_str(), Style::default().fg(Color::White)),
@@ -391,24 +504,8 @@ fn render_header(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
         Span::styled("  ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{pct}%"), Style::default().fg(Color::Yellow)),
     ]);
-
-    let gauge_color = if snap.done { Color::Cyan } else { Color::Green };
-
-    let gauge = Gauge::default()
-        .block(panel_block("Progress"))
-        .gauge_style(Style::default().fg(gauge_color).bg(Color::Reset))
-        .label(format!("{pct}%  {downloaded} / {total}  {speed}/s"))
-        .percent(pct);
-
-    let [title_area, info_area, gauge_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-
-    frame.render_widget(title, title_area);
     frame.render_widget(info, info_area);
+
     frame.render_widget(gauge, gauge_area);
 }
 

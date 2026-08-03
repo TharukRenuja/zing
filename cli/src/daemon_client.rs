@@ -129,6 +129,11 @@ pub async fn resume_task(id: u64) -> Result<(), String> {
     Ok(())
 }
 
+pub async fn stop_task(id: u64) -> Result<(), String> {
+    send_request("zing.stop", Some(serde_json::json!({ "id": id }))).await?;
+    Ok(())
+}
+
 pub async fn remove_task(id: u64) -> Result<(), String> {
     send_request("zing.remove", Some(serde_json::json!({ "id": id }))).await?;
     Ok(())

@@ -48,7 +48,7 @@ pub fn unified(area: Rect) -> Option<UnifiedRects> {
     // above a fixed-height log strip at the bottom of the screen.
     let [title, header, body, logs, footer] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(4),
+        Constraint::Length(5),
         Constraint::Fill(1),
         Constraint::Length(LOG_STRIP_HEIGHT),
         Constraint::Length(2),

@@ -164,6 +164,7 @@ impl TaskControl for RemoteTask {
     }
 
     fn pause(&self) {
+        self.paused.store(true, Ordering::Release);
         let id = self.id;
         tokio::spawn(async move {
             let _ = daemon_client::pause_task(id).await;
@@ -171,6 +172,7 @@ impl TaskControl for RemoteTask {
     }
 
     fn resume(&self) {
+        self.paused.store(false, Ordering::Release);
         let id = self.id;
         tokio::spawn(async move {
             let _ = daemon_client::resume_task(id).await;
@@ -180,7 +182,7 @@ impl TaskControl for RemoteTask {
     fn stop(&self) {
         let id = self.id;
         tokio::spawn(async move {
-            let _ = daemon_client::pause_task(id).await;
+            let _ = daemon_client::stop_task(id).await;
         });
     }
 
@@ -201,6 +203,7 @@ impl TaskControl for RemoteTask {
             "Pending" => TaskUiStatus::Queued,
             "Paused" => TaskUiStatus::Paused,
             "Completed" => TaskUiStatus::Done,
+            "Stopped" => TaskUiStatus::Stopped,
             s if s.starts_with("Failed") => TaskUiStatus::Failed,
             _ => TaskUiStatus::Downloading,
         }

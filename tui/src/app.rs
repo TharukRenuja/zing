@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use ratatui::DefaultTerminal;
 use tokio::sync::broadcast;
 use zing_core::downloader::TaskSnapshot;
@@ -113,6 +115,13 @@ impl TuiApp {
     }
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        crossterm::execute!(std::io::stdout(), EnableBracketedPaste)?;
+        let result = self.run_inner(terminal).await;
+        crossterm::execute!(std::io::stdout(), DisableBracketedPaste)?;
+        result
+    }
+
+    async fn run_inner(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.should_exit {
             self.refresh().await;
 
@@ -129,11 +138,21 @@ impl TuiApp {
             })?;
 
             let mut resized = false;
-            if event::poll(Duration::from_millis(200))? {
+            let poll_timeout = if self.is_input_mode() {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(200)
+            };
+            if event::poll(poll_timeout)? {
                 match event::read()? {
                     Event::Key(key) => {
                         if key.kind == KeyEventKind::Press {
                             self.handle_key(key.code, key.modifiers);
+                        }
+                    }
+                    Event::Paste(text) => {
+                        if let InputMode::AddUrl { buffer } = &mut self.input {
+                            buffer.push_str(&text);
                         }
                     }
                     Event::Resize(_, _) => {
@@ -152,7 +171,7 @@ impl TuiApp {
             }
 
             if !resized {
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                tokio::time::sleep(Duration::from_millis(16)).await;
             }
         }
         // Gracefully stop still-running tasks so `.zing` control files persist.
@@ -169,8 +188,10 @@ impl TuiApp {
         if let Some(url) = self.pending_add.take() {
             self.add_url(url).await;
         }
-        for entry in &mut self.entries {
-            entry.snapshot = Some(entry.control.snapshot().await);
+        if !self.is_input_mode() {
+            for entry in &mut self.entries {
+                entry.snapshot = Some(entry.control.snapshot().await);
+            }
         }
         if self.selected >= self.entries.len() {
             self.selected = self.entries.len().saturating_sub(1);
@@ -190,6 +211,10 @@ impl TuiApp {
             InputMode::AddUrl { buffer } => Some(buffer.as_str()),
             _ => None,
         }
+    }
+
+    fn is_input_mode(&self) -> bool {
+        matches!(self.input, InputMode::AddUrl { .. })
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
@@ -221,6 +246,7 @@ impl TuiApp {
                 };
             }
             KeyCode::Char('p') | KeyCode::Char(' ') => self.toggle_pause(),
+            KeyCode::Char('P') => self.toggle_pause_all(),
             KeyCode::Char('x') | KeyCode::Char('s') => self.stop_selected(),
             KeyCode::Char('r') => self.remove_selected(),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
@@ -247,6 +273,21 @@ impl TuiApp {
                 e.control.resume();
             } else {
                 e.control.pause();
+            }
+        }
+    }
+
+    fn toggle_pause_all(&self) {
+        // Only consider active tasks (downloading/paused/queued) for the toggle.
+        // Done/failed/stopped tasks should not affect the decision.
+        let any_active_not_paused = self.entries.iter().any(|e| {
+            matches!(e.status(), "downloading" | "paused" | "queued") && !e.control.is_paused()
+        });
+        for e in &self.entries {
+            if any_active_not_paused {
+                e.control.pause();
+            } else {
+                e.control.resume();
             }
         }
     }
