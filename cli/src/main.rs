@@ -1631,6 +1631,29 @@ pub(crate) async fn run_daemon_start() -> Result<()> {
             .map(|p| p.parent().unwrap_or(&p).join(daemon_name()))
             .unwrap_or_else(|_| PathBuf::from(daemon_name()));
 
+        let daemon_path = if daemon_path.exists() {
+            daemon_path
+        } else {
+            // Daemon not next to current exe — search PATH
+            let name = daemon_name();
+            std::env::var_os("PATH")
+                .and_then(|paths| {
+                    std::env::split_paths(&paths).find_map(|dir| {
+                        let p = dir.join(name);
+                        p.exists().then_some(p)
+                    })
+                })
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!(
+                        "Cannot find {name} in PATH or next to {exe}",
+                        name = name,
+                        exe = std::env::current_exe()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default(),
+                    )
+                })?
+        };
+
         tracing::info!("Starting zing daemon: {}", daemon_path.display());
         let child = std::process::Command::new(&daemon_path)
             .spawn()
@@ -1702,11 +1725,26 @@ fn daemon_service_path() -> PathBuf {
 
 #[cfg(unix)]
 fn daemon_service_content() -> String {
-    let daemon_path = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(&p).join(daemon_name()))
-        .unwrap_or_else(|_| PathBuf::from(daemon_name()))
-        .to_string_lossy()
-        .to_string();
+    let daemon_path = {
+        let sibling = std::env::current_exe()
+            .map(|p| p.parent().unwrap_or(&p).join(daemon_name()))
+            .unwrap_or_else(|_| PathBuf::from(daemon_name()));
+        if sibling.exists() {
+            sibling
+        } else {
+            let name = daemon_name();
+            std::env::var_os("PATH")
+                .and_then(|paths| {
+                    std::env::split_paths(&paths).find_map(|dir| {
+                        let p = dir.join(name);
+                        p.exists().then_some(p)
+                    })
+                })
+                .unwrap_or(sibling)
+        }
+    }
+    .to_string_lossy()
+    .to_string();
 
     format!(
         r#"[Unit]
