@@ -21,7 +21,7 @@ pub struct RemoteTask {
     url: String,
     last_snapshot: Mutex<Option<TaskSnapshot>>,
     last_status: Mutex<String>,
-    paused: AtomicBool,
+    paused: Arc<AtomicBool>,
 }
 
 impl RemoteTask {
@@ -32,7 +32,7 @@ impl RemoteTask {
             label: Mutex::new(label),
             last_snapshot: Mutex::new(None),
             last_status: Mutex::new("Pending".to_string()),
-            paused: AtomicBool::new(false),
+            paused: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -167,7 +167,9 @@ impl TaskControl for RemoteTask {
         self.paused.store(true, Ordering::Release);
         let id = self.id;
         tokio::spawn(async move {
-            let _ = daemon_client::pause_task(id).await;
+            if let Err(e) = daemon_client::pause_task(id).await {
+                tracing::warn!("pause RPC failed for task {id}: {e}");
+            }
         });
     }
 
@@ -175,21 +177,27 @@ impl TaskControl for RemoteTask {
         self.paused.store(false, Ordering::Release);
         let id = self.id;
         tokio::spawn(async move {
-            let _ = daemon_client::resume_task(id).await;
+            if let Err(e) = daemon_client::resume_task(id).await {
+                tracing::warn!("resume RPC failed for task {id}: {e}");
+            }
         });
     }
 
     fn stop(&self) {
         let id = self.id;
         tokio::spawn(async move {
-            let _ = daemon_client::stop_task(id).await;
+            if let Err(e) = daemon_client::stop_task(id).await {
+                tracing::warn!("stop RPC failed for task {id}: {e}");
+            }
         });
     }
 
     fn remove(&self) {
         let id = self.id;
         tokio::spawn(async move {
-            let _ = daemon_client::remove_task(id).await;
+            if let Err(e) = daemon_client::remove_task(id).await {
+                tracing::warn!("remove RPC failed for task {id}: {e}");
+            }
         });
     }
 

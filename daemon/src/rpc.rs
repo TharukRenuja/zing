@@ -52,6 +52,7 @@ pub async fn handle_request(
     }
     match req.method.as_str() {
         "zing.addUri" => handle_add_uri(req.params, manager).await,
+        "zing.setMaxConcurrent" => handle_set_max_concurrent(req.params, manager).await,
         "zing.list" => handle_list(req.params, manager).await,
         "zing.tellStatus" => handle_tell_status(req.params, manager).await,
         "zing.pause" => handle_pause(req.params, manager).await,
@@ -164,6 +165,18 @@ fn event_to_json(event: &EngineEvent) -> Value {
             "protocol": protocol,
         }),
         _ => serde_json::json!({ "event": "other" }),
+    }
+}
+
+async fn handle_set_max_concurrent(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
+    let max = params
+        .and_then(|v| v.get("max_concurrent").and_then(|v| v.as_u64()))
+        .unwrap_or(0) as usize;
+    manager.set_max_concurrent(max).await;
+    RpcResponse {
+        id: None,
+        result: Some(serde_json::json!({ "max_concurrent": max })),
+        error: None,
     }
 }
 

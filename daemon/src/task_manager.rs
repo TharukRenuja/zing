@@ -112,7 +112,7 @@ pub struct TaskManager {
     download_tasks: Arc<Mutex<HashMap<TaskId, Arc<DownloadTask>>>>,
     bus: EventBus,
     session_path: PathBuf,
-    semaphore: Option<Arc<Semaphore>>,
+    semaphore: Arc<Mutex<Option<Arc<Semaphore>>>>,
 }
 
 impl std::fmt::Debug for TaskManager {
@@ -133,16 +133,25 @@ impl TaskManager {
             download_tasks: Arc::new(Mutex::new(HashMap::new())),
             bus: EventBus::new(),
             session_path,
-            semaphore: None,
+            semaphore: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn with_max_concurrent(max_concurrent: usize) -> Self {
         let mut mgr = Self::new();
         if max_concurrent > 0 {
-            mgr.semaphore = Some(Arc::new(Semaphore::new(max_concurrent)));
+            mgr.semaphore = Arc::new(Mutex::new(Some(Arc::new(Semaphore::new(max_concurrent)))));
         }
         mgr
+    }
+
+    pub async fn set_max_concurrent(&self, max_concurrent: usize) {
+        if max_concurrent > 0 {
+            let mut guard = self.semaphore.lock().await;
+            if guard.is_none() {
+                *guard = Some(Arc::new(Semaphore::new(max_concurrent)));
+            }
+        }
     }
 
     pub fn event_bus(&self) -> &EventBus {
@@ -361,7 +370,7 @@ impl TaskManager {
             }
         };
 
-        let semaphore = self.semaphore.clone();
+        let semaphore = self.semaphore.lock().await.clone();
         let tasks_arc2 = Arc::clone(&self.tasks);
         let dl_tasks_arc = Arc::clone(&self.download_tasks);
         let bus = self.bus.clone();

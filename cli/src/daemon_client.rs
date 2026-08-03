@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use zing_core::transport;
 
@@ -139,7 +140,20 @@ pub async fn remove_task(id: u64) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn subscribe_and_show_progress(task_id: u64, progress_type: crate::args::ProgressType) {
+pub async fn set_max_concurrent(max: usize) -> Result<(), String> {
+    send_request(
+        "zing.setMaxConcurrent",
+        Some(serde_json::json!({ "max_concurrent": max })),
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn subscribe_and_show_progress(
+    task_id: u64,
+    progress_type: crate::args::ProgressType,
+    mp: Arc<indicatif::MultiProgress>,
+) {
     let addr = transport::default_addr();
     let stream = match transport::connect(&addr).await {
         Ok(s) => s,
@@ -203,7 +217,7 @@ pub async fn subscribe_and_show_progress(task_id: u64, progress_type: crate::arg
                         .and_then(|v| v.as_str())
                         .unwrap_or("download");
                     let display = zing_ext::filename::from_url(url);
-                    let bar = indicatif::ProgressBar::new(0);
+                    let bar = mp.add(indicatif::ProgressBar::new(0));
                     bar.set_prefix(display);
                     bar.set_style(bar_style_unknown_size());
                     bar.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -233,7 +247,7 @@ pub async fn subscribe_and_show_progress(task_id: u64, progress_type: crate::arg
                             }
                         }
                     } else {
-                        let bar = indicatif::ProgressBar::new(total.unwrap_or(0));
+                        let bar = mp.add(indicatif::ProgressBar::new(total.unwrap_or(0)));
                         if total.is_some_and(|t| t > 0) {
                             bar.set_style(bar_style_sized(true));
                         } else {

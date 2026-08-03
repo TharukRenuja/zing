@@ -10,9 +10,6 @@ pub const MIN_THROTTLE_SPEED: u64 = 10 * 1024;
 /// Monitor tick interval in milliseconds.
 pub const MONITOR_TICK_MS: u64 = 250;
 
-/// Poll interval for paused connections (checking the pause flag) in milliseconds.
-pub const PAUSE_POLL_MS: u64 = 200;
-
 /// Control file save interval in seconds.
 pub const SAVE_INTERVAL_SECS: u64 = 2;
 

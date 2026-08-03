@@ -88,6 +88,10 @@ impl TaskControl for LocalTask {
 
     fn pause(&self) {
         self.task.pause();
+        let task = self.task.clone();
+        tokio::spawn(async move {
+            task.save_control_file().await;
+        });
     }
 
     fn resume(&self) {

@@ -1118,6 +1118,10 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             .into_iter()
             .map(|(k, v)| format!("{k}: {v}"))
             .collect();
+        let mp = Arc::new(indicatif::MultiProgress::new());
+        if args.max_concurrent > 0 {
+            let _ = daemon_client::set_max_concurrent(args.max_concurrent).await;
+        }
         for url_str in &urls {
             let params = serde_json::json!({
                 "url": url_str,
@@ -1151,8 +1155,9 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         tracing::info!("Downloading: {name}");
                     }
                     let pt = progress_type;
+                    let mp = mp.clone();
                     handles.push(tokio::spawn(async move {
-                        daemon_client::subscribe_and_show_progress(id, pt).await;
+                        daemon_client::subscribe_and_show_progress(id, pt, mp).await;
                     }));
                 }
                 Err(e) => tracing::error!("Daemon error: {e}"),

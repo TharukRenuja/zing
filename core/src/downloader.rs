@@ -90,7 +90,8 @@ struct SharedState {
     pub endgame_enabled: bool,
     pub throttle_reprobe_enabled: bool,
     pub paused: AtomicBool,
-    pub pause_notify: tokio::sync::Notify,
+    pub pause_tx: tokio::sync::watch::Sender<bool>,
+    pub pause_rx: tokio::sync::watch::Receiver<bool>,
     pub claimed_blocks: tokio::sync::Mutex<HashSet<u32>>,
     pub digest_auth: bool,
     pub auth_credentials: tokio::sync::Mutex<Option<(String, String)>>,
@@ -173,16 +174,22 @@ impl DownloadTask {
     /// the connection pool until [`DownloadTask::resume`] is called.
     pub fn pause(&self) {
         self.state.paused.store(true, Ordering::Release);
-        self.state.pause_notify.notify_waiters();
+        let _ = self.state.pause_tx.send(true);
     }
 
     /// Resume a paused download.
     pub fn resume(&self) {
         self.state.paused.store(false, Ordering::Release);
+        let _ = self.state.pause_tx.send(false);
     }
 
     pub fn is_paused(&self) -> bool {
         self.state.paused.load(Ordering::Acquire)
+    }
+
+    /// Clone the pause receiver for use in connection loops.
+    pub fn pause_rx(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.state.pause_rx.clone()
     }
 
     /// Flush the current bitfield to the control file so the download can be
@@ -284,6 +291,8 @@ impl DownloadTask {
             }
         }
 
+        let (pause_tx, pause_rx) = tokio::sync::watch::channel(false);
+
         Self {
             state: Arc::new(SharedState {
                 id,
@@ -322,7 +331,8 @@ impl DownloadTask {
                 endgame_enabled,
                 throttle_reprobe_enabled,
                 paused: AtomicBool::new(false),
-                pause_notify: tokio::sync::Notify::new(),
+                pause_tx,
+                pause_rx,
                 claimed_blocks: tokio::sync::Mutex::new(HashSet::new()),
                 digest_auth,
                 auth_credentials: tokio::sync::Mutex::new(None),
@@ -1062,18 +1072,16 @@ impl DownloadTask {
         let mut stream = resp.into_inner().bytes_stream();
         let mut downloaded: u64 = 0;
         let start = Instant::now();
+        let mut pause_rx = self.state.pause_rx.clone();
 
         loop {
             if self.state.paused.load(Ordering::Acquire) {
                 break;
             }
 
-            let pause_notified = self.state.pause_notify.notified();
-            tokio::pin!(pause_notified);
-
             let data = tokio::select! {
                 biased;
-                _ = &mut pause_notified => {
+                _ = pause_rx.changed() => {
                     break;
                 }
                 result = tokio::time::timeout(
@@ -1145,18 +1153,16 @@ impl DownloadTask {
         let mut stream = resp.into_inner().bytes_stream();
         let mut downloaded: u64 = 0;
         let start = Instant::now();
+        let mut pause_rx = self.state.pause_rx.clone();
 
         loop {
             if self.state.paused.load(Ordering::Acquire) {
                 break;
             }
 
-            let pause_notified = self.state.pause_notify.notified();
-            tokio::pin!(pause_notified);
-
             let data = tokio::select! {
                 biased;
-                _ = &mut pause_notified => {
+                _ = pause_rx.changed() => {
                     break;
                 }
                 result = tokio::time::timeout(
@@ -1265,13 +1271,14 @@ async fn run_connection_work(state: Arc<SharedState>, conn_id: usize) {
     let low_speed_time = state.low_speed_time;
     let mut last_progress = Instant::now();
     let mut low_speed_warned = false;
+    let mut pause_rx = state.pause_rx.clone();
 
     loop {
         if state.done.load(Ordering::Acquire) {
             return;
         }
         if state.paused.load(Ordering::Acquire) {
-            tokio::time::sleep(std::time::Duration::from_millis(constants::PAUSE_POLL_MS)).await;
+            let _ = pause_rx.changed().await;
             continue;
         }
 
@@ -1367,14 +1374,13 @@ async fn download_range(
 
     let download_url = state.url.lock().await.clone();
 
-    // Race the HTTP request against a pause notification so we can abort the
+    // Race the HTTP request against a pause signal so we can abort the
     // in-flight request immediately when paused.
-    let pause_notified = state.pause_notify.notified();
-    tokio::pin!(pause_notified);
+    let mut pause_rx = state.pause_rx.clone();
 
     let resp = tokio::select! {
         biased;
-        _ = &mut pause_notified => {
+        _ = pause_rx.changed() => {
             return Ok(0);
         }
         result = state.pool.get_range(&download_url, offset, length, state.id) => {
@@ -1520,6 +1526,7 @@ async fn process_range_response(
     // progress, so they must be flushed to disk before returning, otherwise a
     // resume would skip the buffered gap and corrupt the file.
     let mut read_err: Option<anyhow::Error> = None;
+    let mut pause_rx = state.pause_rx.clone();
 
     loop {
         if written >= length {
@@ -1529,12 +1536,9 @@ async fn process_range_response(
             break;
         }
 
-        let pause_notified = state.pause_notify.notified();
-        tokio::pin!(pause_notified);
-
         let data = tokio::select! {
             biased;
-            _ = &mut pause_notified => {
+            _ = pause_rx.changed() => {
                 break;
             }
             result = tokio::time::timeout(
@@ -1728,12 +1732,13 @@ async fn process_range_response(
 /// preventing redundant requests for the same block.
 async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
     let block_size = crate::storage::control::BLOCK_SIZE;
+    let mut pause_rx = state.pause_rx.clone();
     loop {
         if state.done.load(Ordering::Acquire) {
             return;
         }
         if state.paused.load(Ordering::Acquire) {
-            tokio::time::sleep(std::time::Duration::from_millis(constants::PAUSE_POLL_MS)).await;
+            let _ = pause_rx.changed().await;
             continue;
         }
 
@@ -1829,14 +1834,12 @@ async fn download_endgame_block(
     use futures::StreamExt;
     let mut stream = resp.into_inner().bytes_stream();
     let mut written: u64 = 0;
+    let mut pause_rx = state.pause_rx.clone();
 
     loop {
-        let pause_notified = state.pause_notify.notified();
-        tokio::pin!(pause_notified);
-
         let data = tokio::select! {
             biased;
-            _ = &mut pause_notified => {
+            _ = pause_rx.changed() => {
                 return Ok(written);
             }
             result = tokio::time::timeout(
