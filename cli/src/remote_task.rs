@@ -25,14 +25,15 @@ pub struct RemoteTask {
 }
 
 impl RemoteTask {
-    pub fn new(id: u64, url: String, label: String) -> Arc<Self> {
+    pub fn with_status(id: u64, url: String, label: String, initial_status: &str) -> Arc<Self> {
+        let paused = initial_status == "Paused";
         Arc::new(Self {
             id,
             url,
             label: Mutex::new(label),
             last_snapshot: Mutex::new(None),
-            last_status: Mutex::new("Pending".to_string()),
-            paused: Arc::new(AtomicBool::new(false)),
+            last_status: Mutex::new(initial_status.to_string()),
+            paused: Arc::new(AtomicBool::new(paused)),
         })
     }
 

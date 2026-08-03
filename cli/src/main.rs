@@ -833,9 +833,20 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         match daemon_client::add_uri(params).await {
                             Ok(id) => {
                                 let label = zing_ext::filename::from_url(url);
-                                tasks
-                                    .push(RemoteTask::new(id, url.clone(), label)
-                                        as Arc<dyn TaskControl>);
+                                let initial_status = daemon_client::tell_status(id)
+                                    .await
+                                    .ok()
+                                    .and_then(|v| {
+                                        v.get("status").and_then(|s| s.as_str()).map(String::from)
+                                    })
+                                    .unwrap_or_else(|| "Pending".to_string());
+                                tasks.push(RemoteTask::with_status(
+                                    id,
+                                    url.clone(),
+                                    label,
+                                    &initial_status,
+                                )
+                                    as Arc<dyn TaskControl>);
                             }
                             Err(e) => {
                                 return Err(color_eyre::eyre::eyre!(
@@ -851,7 +862,17 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         Box::pin(async move {
                             let id = daemon_client::add_uri(params).await?;
                             let label = zing_ext::filename::from_url(&url);
-                            Ok(RemoteTask::new(id, url.clone(), label) as Arc<dyn TaskControl>)
+                            let initial_status = daemon_client::tell_status(id)
+                                .await
+                                .ok()
+                                .and_then(|v| {
+                                    v.get("status").and_then(|s| s.as_str()).map(String::from)
+                                })
+                                .unwrap_or_else(|| "Pending".to_string());
+                            Ok(
+                                RemoteTask::with_status(id, url.clone(), label, &initial_status)
+                                    as Arc<dyn TaskControl>,
+                            )
                         })
                     });
 
