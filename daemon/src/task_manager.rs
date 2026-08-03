@@ -110,6 +110,7 @@ pub struct TaskManager {
     tasks: Arc<Mutex<HashMap<TaskId, TaskInfo>>>,
     cancel_txs: Arc<Mutex<HashMap<TaskId, broadcast::Sender<()>>>>,
     download_tasks: Arc<Mutex<HashMap<TaskId, Arc<DownloadTask>>>>,
+    worker_handles: Arc<Mutex<HashMap<TaskId, tokio::task::JoinHandle<()>>>>,
     bus: EventBus,
     session_path: PathBuf,
     semaphore: Arc<Mutex<Option<Arc<Semaphore>>>>,
@@ -131,6 +132,7 @@ impl TaskManager {
             tasks: Arc::new(Mutex::new(HashMap::new())),
             cancel_txs: Arc::new(Mutex::new(HashMap::new())),
             download_tasks: Arc::new(Mutex::new(HashMap::new())),
+            worker_handles: Arc::new(Mutex::new(HashMap::new())),
             bus: EventBus::new(),
             session_path,
             semaphore: Arc::new(Mutex::new(None)),
@@ -405,6 +407,8 @@ impl TaskManager {
         let hook_complete = info.on_download_complete.clone();
         let hook_error = info.on_download_error.clone();
 
+        let handles_arc = Arc::clone(&self.worker_handles);
+
         let evt_listener = tokio::spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
             loop {
@@ -417,7 +421,7 @@ impl TaskManager {
             }
         });
 
-        tokio::spawn(async move {
+        let worker_handle = tokio::spawn(async move {
             // Wait for a concurrency slot (tasks queue here as `Pending`). The
             // permit must be held for the whole worker lifetime, so it is bound
             // in the outer scope rather than inside an `if let` block.
@@ -648,7 +652,16 @@ impl TaskManager {
 
             evt_listener.abort();
             mgr.save_session().await;
+            // Remove our handle so resume_task knows we exited
+            let mut handles = handles_arc.lock().await;
+            handles.remove(&id);
         });
+
+        // Store the worker handle so resume_task can check if it's alive
+        {
+            let mut handles = self.worker_handles.lock().await;
+            handles.insert(id, worker_handle);
+        }
     }
 
     pub async fn pause_task(&self, id: TaskId) -> Result<(), String> {
@@ -758,10 +771,11 @@ impl TaskManager {
     }
 
     pub async fn resume_task(&self, id: TaskId) -> Result<(), String> {
-        // Check if we have a stored DownloadTask (still running, just paused)
-        let has_running_task = {
-            let dl_tasks = self.download_tasks.lock().await;
-            dl_tasks.get(&id).is_some()
+        // Check if the worker is still alive (handles differ from DownloadTask
+        // existence: streaming-mode workers exit on pause but keep the DownloadTask).
+        let worker_alive = {
+            let handles = self.worker_handles.lock().await;
+            handles.get(&id).map(|h| !h.is_finished()).unwrap_or(false)
         };
 
         {
@@ -779,8 +793,8 @@ impl TaskManager {
         }
         self.save_session().await;
 
-        if has_running_task {
-            // Resume the existing paused task (connections continue from where they left off)
+        if worker_alive {
+            // Worker is still running (segmented mode) — just signal resume
             {
                 let mut tasks = self.tasks.lock().await;
                 if let Some(t) = tasks.get_mut(&id) {
@@ -792,7 +806,7 @@ impl TaskManager {
                 task.resume();
             }
         } else {
-            // Task was fully stopped — need to re-drive it from scratch
+            // Worker exited (streaming mode) — re-create it from saved state
             self.spawn_worker(id).await;
         }
         Ok(())
