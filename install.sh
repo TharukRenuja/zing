@@ -257,6 +257,26 @@ if [ "$os" = "linux" ]; then
   echo "Restarting services..."
   restart_daemon
   restart_tray
+
+  # Start the tray if it isn't running yet.
+  tray_running=""
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    uid="$(id -u "$SUDO_USER")"
+    tray_running=$(sudo -u "$SUDO_USER" pgrep -x zing-tray 2>/dev/null || true)
+  elif [ "$(id -u)" -ne 0 ]; then
+    tray_running=$(pgrep -x zing-tray 2>/dev/null || true)
+  fi
+  if [ -z "$tray_running" ] && [ -x "$dst/$tray" ]; then
+    echo "Starting zing-tray..."
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+      uid="$(id -u "$SUDO_USER")"
+      home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+      sudo -u "$SUDO_USER" env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
+        G_MESSAGES_DEBUG="" "$dst/$tray" </dev/null >/dev/null 2>&1 &
+    elif [ "$(id -u)" -ne 0 ]; then
+      G_MESSAGES_DEBUG="" "$dst/$tray" </dev/null >/dev/null 2>&1 &
+    fi
+  fi
 fi
 
 echo "zing ${VERSION} installed to $dst"
