@@ -87,7 +87,10 @@ impl Browser {
 
     fn manifest_path(&self) -> Result<PathBuf, String> {
         let unsupported = || -> Result<PathBuf, String> {
-            Err(format!("{} uses the registry for native hosts (unsupported yet)", self.name()))
+            Err(format!(
+                "{} uses the registry for native hosts (unsupported yet)",
+                self.name()
+            ))
         };
         let cfg_dir = dirs::config_dir();
         let home_dir = dirs::home_dir();
