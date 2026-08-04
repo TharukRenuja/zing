@@ -7,6 +7,7 @@ pub mod engine;
 pub mod probe;
 pub mod ratelimit;
 pub mod retry;
+pub mod rpc;
 pub mod segment;
 pub mod storage;
 pub mod transport;
