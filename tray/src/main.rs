@@ -36,10 +36,7 @@ fn main() {
                 // Suppress libayatana-appindicator deprecation warning during GTK init.
                 unsafe {
                     let saved_stderr = libc::dup(libc::STDERR_FILENO);
-                    let devnull = libc::open(
-                        c"/dev/null".as_ptr().cast(),
-                        libc::O_WRONLY,
-                    );
+                    let devnull = libc::open(c"/dev/null".as_ptr().cast(), libc::O_WRONLY);
                     if devnull >= 0 {
                         libc::dup2(devnull, libc::STDERR_FILENO);
                         libc::close(devnull);

@@ -418,7 +418,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             set_executable(&tmp_path);
             sudo_install(&tmp_path, &fname)?;
             eprintln!("  Installed: {fname} -> /usr/local/bin/{fname}");
-            let _ = create_desktop_entry(&fname, std::path::Path::new(&format!("/usr/local/bin/{fname}")));
+            let _ = create_desktop_entry(
+                &fname,
+                std::path::Path::new(&format!("/usr/local/bin/{fname}")),
+            );
         }
         "install" => {
             let fname = zing_ext::filename::from_url(url);
@@ -444,7 +447,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                     .unwrap_or_else(|| fname.clone());
                 sudo_install(&tmp_path, &stem)?;
                 eprintln!("  Installed: {fname} -> /usr/local/bin/{stem}");
-                let _ = create_desktop_entry(&fname, std::path::Path::new(&format!("/usr/local/bin/{stem}")));
+                let _ = create_desktop_entry(
+                    &fname,
+                    std::path::Path::new(&format!("/usr/local/bin/{stem}")),
+                );
             } else if ["gz", "xz", "bz2", "zst", "zip"].contains(&ext) || lower.contains(".tar.") {
                 eprintln!("  Extracting...");
                 let extract_dir = tmp.path().join("extracted");
@@ -511,7 +517,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                     set_executable(&bin_path);
                     sudo_install(&bin_path, &bin_name)?;
                     eprintln!("  Installed: {bin_name} -> /usr/local/bin/{bin_name}");
-                    let _ = create_desktop_entry(&bin_name, std::path::Path::new(&format!("/usr/local/bin/{bin_name}")));
+                    let _ = create_desktop_entry(
+                        &bin_name,
+                        std::path::Path::new(&format!("/usr/local/bin/{bin_name}")),
+                    );
                 } else {
                     eprintln!("  No binary found in extracted archive");
                 }
@@ -527,7 +536,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                 set_executable(&tmp_path);
                 sudo_install(&tmp_path, &fname)?;
                 eprintln!("  Installed: {fname} -> /usr/local/bin/{fname}");
-                let _ = create_desktop_entry(&fname, std::path::Path::new(&format!("/usr/local/bin/{fname}")));
+                let _ = create_desktop_entry(
+                    &fname,
+                    std::path::Path::new(&format!("/usr/local/bin/{fname}")),
+                );
             }
         }
         _ => {
