@@ -86,75 +86,12 @@ impl Browser {
     }
 
     fn manifest_path(&self) -> Result<PathBuf, String> {
-        let unsupported = || -> Result<PathBuf, String> {
-            Err(format!(
-                "{} uses the registry for native hosts (unsupported yet)",
-                self.name()
-            ))
-        };
-        let cfg_dir = dirs::config_dir();
-        let home_dir = dirs::home_dir();
         let dir = match self {
-            Browser::Chrome => {
-                #[cfg(target_os = "linux")]
-                {
-                    cfg_dir.map(|d| d.join("google-chrome").join("NativeMessagingHosts"))
-                }
-                #[cfg(target_os = "windows")]
-                {
-                    return unsupported();
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    home_dir.map(|d| {
-                        d.join("Library")
-                            .join("Application Support")
-                            .join("Google")
-                            .join("Chrome")
-                            .join("NativeMessagingHosts")
-                    })
-                }
-            }
-            Browser::Edge => {
-                #[cfg(target_os = "linux")]
-                {
-                    cfg_dir.map(|d| d.join("microsoft-edge").join("NativeMessagingHosts"))
-                }
-                #[cfg(target_os = "windows")]
-                {
-                    return unsupported();
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    home_dir.map(|d| {
-                        d.join("Library")
-                            .join("Application Support")
-                            .join("Microsoft Edge")
-                            .join("NativeMessagingHosts")
-                    })
-                }
-            }
-            Browser::Firefox => {
-                #[cfg(target_os = "linux")]
-                {
-                    home_dir.map(|d| d.join(".mozilla").join("native-messaging-hosts"))
-                }
-                #[cfg(target_os = "windows")]
-                {
-                    return unsupported();
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    home_dir.map(|d| {
-                        d.join("Library")
-                            .join("Application Support")
-                            .join("Mozilla")
-                            .join("NativeMessagingHosts")
-                    })
-                }
-            }
+            Browser::Chrome => native_host_dir("google-chrome"),
+            Browser::Edge => native_host_dir("microsoft-edge"),
+            Browser::Firefox => firefox_native_host_dir(),
         };
-        dir.map(|d| d.join(format!("{}.json", host_name())))
+        dir?.map(|d| d.join(format!("{}.json", host_name())))
             .ok_or_else(|| "cannot determine home/config directory".to_string())
     }
 
@@ -196,4 +133,33 @@ impl Browser {
 /// The native host name shared by the extension and the manifests.
 pub const fn host_name() -> &'static str {
     "com.zing.native_host"
+}
+
+#[cfg(target_os = "windows")]
+fn unsupported() -> Result<Option<PathBuf>, String> {
+    Err("native hosts use the registry on Windows (unsupported yet)".to_string())
+}
+
+/// Directory containing native-messaging host manifests for Chromium-based
+/// browsers (Chrome / Edge). Falls back from the config dir to the home dir.
+#[cfg(not(target_os = "windows"))]
+fn native_host_dir(browser: &str) -> Result<Option<PathBuf>, String> {
+    let base = dirs::config_dir().or_else(dirs::home_dir);
+    Ok(base.map(|d| d.join(browser).join("NativeMessagingHosts")))
+}
+
+#[cfg(target_os = "windows")]
+fn native_host_dir(_browser: &str) -> Result<Option<PathBuf>, String> {
+    unsupported()
+}
+
+/// Firefox native-messaging hosts live under the home dir.
+#[cfg(not(target_os = "windows"))]
+fn firefox_native_host_dir() -> Result<Option<PathBuf>, String> {
+    Ok(dirs::home_dir().map(|d| d.join(".mozilla").join("native-messaging-hosts")))
+}
+
+#[cfg(target_os = "windows")]
+fn firefox_native_host_dir() -> Result<Option<PathBuf>, String> {
+    unsupported()
 }
