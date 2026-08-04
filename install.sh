@@ -72,15 +72,6 @@ fi
 case "$ext" in
   tar.gz)
     tar xzf "$archive" -C "$tmp"
-    for f in "$tmp"/zing-*; do
-      b=$(basename "$f")
-      case "$b" in
-        zing-daemon-*) cp "$f" "${tmp}/zing-daemon" ;;
-        zing-gui-*)    cp "$f" "${tmp}/zing-gui" ;;
-        zing-tray-*)   cp "$f" "${tmp}/zing-tray" ;;
-        zing-*)        cp "$f" "${tmp}/zing" ;;
-      esac
-    done
     if [ ! -f "${tmp}/zing" ]; then
       echo "error: zing binary not found in archive"
       exit 1
@@ -140,15 +131,15 @@ fi
 echo "Installing shell completions..."
 compsh="$dst/zing"
 if [ -d /usr/share/bash-completion/completions ]; then
-  $compsh completions bash | $maybe_sudo tee /usr/share/bash-completion/completions/zing > /dev/null 2>&1 || true
+  $compsh completions bash 2>/dev/null | $maybe_sudo tee /usr/share/bash-completion/completions/zing > /dev/null 2>&1 || true
   echo "  bash completions"
 fi
 if [ -d /usr/share/zsh/site-functions ]; then
-  $compsh completions zsh | $maybe_sudo tee /usr/share/zsh/site-functions/_zing > /dev/null 2>&1 || true
+  $compsh completions zsh 2>/dev/null | $maybe_sudo tee /usr/share/zsh/site-functions/_zing > /dev/null 2>&1 || true
   echo "  zsh completions"
 fi
 if [ -d /usr/share/fish/vendor_completions.d ]; then
-  $compsh completions fish | $maybe_sudo tee /usr/share/fish/vendor_completions.d/zing.fish > /dev/null 2>&1 || true
+  $compsh completions fish 2>/dev/null | $maybe_sudo tee /usr/share/fish/vendor_completions.d/zing.fish > /dev/null 2>&1 || true
   echo "  fish completions"
 fi
 
@@ -253,13 +244,11 @@ if [ "$os" = "linux" ]; then
         uid="$(id -u "$SUDO_USER")"
         home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
         sudo -u "$SUDO_USER" env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
-          kill "$tray_pid" 2>/dev/null || true
-        sleep 1
+          kill -9 "$tray_pid" 2>/dev/null || true
         sudo -u "$SUDO_USER" env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
           G_MESSAGES_DEBUG="" "$dst/$tray" </dev/null >/dev/null 2>&1 &
       elif [ "$(id -u)" -ne 0 ]; then
-        kill "$tray_pid" 2>/dev/null || true
-        sleep 1
+        kill -9 "$tray_pid" 2>/dev/null || true
         G_MESSAGES_DEBUG="" "$dst/$tray" </dev/null >/dev/null 2>&1 &
       fi
     fi
