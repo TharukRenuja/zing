@@ -573,6 +573,35 @@ pub enum Commands {
         )]
         allow_overwrite: bool,
     },
+
+    #[command(
+        name = "nm",
+        about = "Native messaging host for the browser extension",
+        hide = true
+    )]
+    Nm,
+
+    #[command(
+        name = "extension",
+        about = "Install/remove the browser-extension native host",
+        alias = "ext"
+    )]
+    Extension(ExtensionArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct ExtensionArgs {
+    #[command(subcommand)]
+    pub action: ExtensionAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ExtensionAction {
+    #[command(about = "Install the native host for your browsers")]
+    Install,
+
+    #[command(about = "Remove the native host from your browsers")]
+    Uninstall,
 }
 
 #[derive(Parser, Debug)]

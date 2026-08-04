@@ -1,10 +1,14 @@
 mod args;
 mod config;
 mod daemon_client;
+mod extension;
+mod native_host;
 mod remote_task;
 mod update;
 
-use args::{Args, Commands, ConfigAction, DaemonAction, ProgressType, ScheduleAction};
+use args::{
+    Args, Commands, ConfigAction, DaemonAction, ExtensionAction, ProgressType, ScheduleAction,
+};
 use base64::Engine;
 use clap::CommandFactory;
 use clap::Parser;
@@ -609,6 +613,14 @@ fn main() -> Result<()> {
         .compact()
         .with_writer(writer)
         .init();
+
+    // The native messaging host is spawned by the browser and keeps its own
+    // single-threaded runtime on stdin/stdout. Run it outside the CLI's
+    // runtime so its per-message `block_on` doesn't nest runtimes.
+    if matches!(args.command, Some(Commands::Nm)) {
+        return native_host::run().map_err(|e| color_eyre::eyre::eyre!(e));
+    }
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -687,6 +699,19 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         }
         Some(Commands::Update) => {
             return update::run_update().await;
+        }
+        Some(Commands::Nm) => {
+            return native_host::run().map_err(|e| color_eyre::eyre::eyre!("{e}"));
+        }
+        Some(Commands::Extension(ref ext_args)) => {
+            return match ext_args.action {
+                ExtensionAction::Install => {
+                    extension::install().map_err(|e| color_eyre::eyre::eyre!("{e}"))
+                }
+                ExtensionAction::Uninstall => {
+                    extension::uninstall().map_err(|e| color_eyre::eyre::eyre!("{e}"))
+                }
+            };
         }
         Some(Commands::Tui {
             urls,
