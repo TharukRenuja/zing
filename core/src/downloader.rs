@@ -223,7 +223,7 @@ impl DownloadTask {
         filename: &str,
         is_auto_name: bool,
         to_stdout: bool,
-        max_connections: usize,
+        max_connections: Option<usize>,
         bus: EventBus,
         insecure: bool,
         max_download_rate: u64,
@@ -577,8 +577,11 @@ impl DownloadTask {
 
         {
             let mut mgr = self.state.segment_mgr.lock().await;
-            if profile.recommended_connections < mgr.max_connections {
-                mgr.max_connections = profile.recommended_connections;
+            // Only lower max_connections if user set an explicit limit and probe recommends fewer
+            if let Some(user_max) = mgr.max_connections {
+                if profile.recommended_connections < user_max {
+                    mgr.max_connections = Some(profile.recommended_connections);
+                }
             }
         }
 
@@ -656,11 +659,12 @@ impl DownloadTask {
                 }
                 // Assign first missing range to initial connection
                 if !mgr.segments.is_empty() {
-                    let conn_id = mgr.add_connection();
-                    let first_id = mgr.segments[0].id;
-                    mgr.segments[0].state = SegmentState::Active { conn_id };
-                    if let Some(conn) = mgr.connections.get_mut(conn_id) {
-                        conn.segment_id = Some(first_id);
+                    if let Some(conn_id) = mgr.add_connection() {
+                        let first_id = mgr.segments[0].id;
+                        mgr.segments[0].state = SegmentState::Active { conn_id };
+                        if let Some(conn) = mgr.connections.get_mut(conn_id) {
+                            conn.segment_id = Some(first_id);
+                        }
                     }
                 }
             }
@@ -1074,6 +1078,7 @@ impl DownloadTask {
         let mut downloaded: u64 = 0;
         let start = Instant::now();
         let mut pause_rx = self.state.pause_rx.clone();
+        pause_rx.mark_unchanged();
 
         loop {
             if self.state.paused.load(Ordering::Acquire) {
@@ -1155,6 +1160,7 @@ impl DownloadTask {
         let mut downloaded: u64 = 0;
         let start = Instant::now();
         let mut pause_rx = self.state.pause_rx.clone();
+        pause_rx.mark_unchanged();
 
         loop {
             if self.state.paused.load(Ordering::Acquire) {
@@ -1278,9 +1284,13 @@ async fn run_connection_work(state: Arc<SharedState>, conn_id: usize) {
         if state.done.load(Ordering::Acquire) {
             return;
         }
-        if state.paused.load(Ordering::Acquire) {
-            let _ = pause_rx.changed().await;
-            continue;
+        // Park while paused, waiting for resume. `wait_for(|p| !*p)` blocks
+        // until the value becomes false and re-checks on every change, so it
+        // cannot lose a pause()/resume() that lands between our check and the
+        // wait (the old changed()-after-borrow() pattern could consume the
+        // change and then hang forever waiting for one that never arrives).
+        if *pause_rx.borrow() && pause_rx.wait_for(|p| !*p).await.is_err() {
+            return;
         }
 
         let (offset, length) = {
@@ -1378,13 +1388,13 @@ async fn download_range(
     // Race the HTTP request against a pause signal so we can abort the
     // in-flight request immediately when paused.
     let mut pause_rx = state.pause_rx.clone();
+    pause_rx.mark_unchanged();
 
     let resp = tokio::select! {
         biased;
         _ = pause_rx.changed() => {
             return Ok(0);
-        }
-        result = state.pool.get_range(&download_url, offset, length, state.id) => {
+        }        result = state.pool.get_range(&download_url, offset, length, state.id) => {
             result?
         }
     };
@@ -1528,12 +1538,10 @@ async fn process_range_response(
     // resume would skip the buffered gap and corrupt the file.
     let mut read_err: Option<anyhow::Error> = None;
     let mut pause_rx = state.pause_rx.clone();
+    pause_rx.mark_unchanged();
 
     loop {
-        if written >= length {
-            break;
-        }
-        if state.paused.load(Ordering::Acquire) {
+        if *pause_rx.borrow() {
             break;
         }
 
@@ -1738,8 +1746,10 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
         if state.done.load(Ordering::Acquire) {
             return;
         }
-        if state.paused.load(Ordering::Acquire) {
-            let _ = pause_rx.changed().await;
+        if *pause_rx.borrow() {
+            if pause_rx.wait_for(|p| !*p).await.is_err() {
+                return;
+            }
             continue;
         }
 
@@ -1836,6 +1846,7 @@ async fn download_endgame_block(
     let mut stream = resp.into_inner().bytes_stream();
     let mut written: u64 = 0;
     let mut pause_rx = state.pause_rx.clone();
+    pause_rx.mark_unchanged();
 
     loop {
         let data = tokio::select! {

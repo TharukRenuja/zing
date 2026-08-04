@@ -33,10 +33,9 @@ pub struct Args {
     #[arg(
         long = "connections",
         short = 'n',
-        default_value = "4",
-        help = "Max parallel connections"
+        help = "Max parallel connections (default: unlimited)"
     )]
-    pub connections: usize,
+    pub connections: Option<usize>,
 
     #[arg(
         long = "quiet",
@@ -67,8 +66,8 @@ pub struct Args {
 
     #[arg(
         long = "max-concurrent",
-        default_value = "1",
-        help = "Max concurrent downloads (0 = unlimited)"
+        default_value = "3",
+        help = "Max concurrent downloads (default: 3, 0 = unlimited)"
     )]
     pub max_concurrent: usize,
 
@@ -409,10 +408,9 @@ pub enum Commands {
         #[arg(
             long = "connections",
             short = 'n',
-            default_value = "4",
-            help = "Max parallel connections per download"
+            help = "Max parallel connections per download (default: unlimited)"
         )]
-        connections: usize,
+        connections: Option<usize>,
 
         #[arg(long = "dir", short = 'd', help = "Output directory")]
         dir: Option<PathBuf>,
@@ -544,8 +542,8 @@ pub enum Commands {
 
         #[arg(
             long = "max-concurrent",
-            default_value = "0",
-            help = "Max concurrent downloads in the batch (0 = unlimited)"
+            default_value = "3",
+            help = "Max concurrent downloads in the batch (default: 3, 0 = unlimited)"
         )]
         max_concurrent: usize,
 
@@ -640,7 +638,11 @@ pub enum ScheduleAction {
         #[arg(long, short = 'd', help = "Output directory")]
         output_dir: Option<String>,
 
-        #[arg(long, short = 'n', default_value = "4", help = "Max connections")]
+        #[arg(
+            long,
+            short = 'n',
+            help = "Max parallel connections (default: unlimited)"
+        )]
         connections: Option<usize>,
 
         #[arg(long, short = 'k', help = "Skip TLS verification")]

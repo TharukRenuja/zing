@@ -68,7 +68,7 @@ async fn test_full_download() {
         output.to_str().unwrap(),
         false,
         false,
-        4,
+        Some(4),
         bus,
         false,
         0,
@@ -148,7 +148,7 @@ async fn test_resume_download() {
         output.to_str().unwrap(),
         false,
         false,
-        2,
+        Some(2),
         bus,
         false,
         0,
@@ -188,4 +188,220 @@ async fn test_resume_download() {
         !control_path.exists(),
         "control file should be removed after resume"
     );
+}
+
+/// Test pause and resume mid-download. Uses a throttled server so the pause
+/// lands while the download is actually in flight, and asserts that progress
+/// resumes after resume() (the "stall at 0 B/s forever" regression).
+#[tokio::test]
+async fn test_pause_resume_download() {
+    let payload = test_payload(4 * 1024 * 1024);
+    let server = TestServer::new_throttled(payload.clone(), 20).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("pause_resume.bin");
+
+    let bus = EventBus::new();
+    let (_shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+
+    let task = std::sync::Arc::new(DownloadTask::new(
+        0,
+        &server.url(),
+        output.to_str().unwrap(),
+        false,
+        false,
+        Some(2),
+        bus,
+        false,
+        0,
+        None,
+        vec![],
+        None,
+        vec![],
+        0,
+        5,
+        500,
+        30,
+        300,
+        None,
+        true,
+        None,
+        None,
+        0,
+        30,
+        5,
+        None,
+        None,
+        None,
+        false,
+        true,
+        true,
+    ));
+
+    let task_for_run = std::sync::Arc::clone(&task);
+    let handle = tokio::spawn(async move { task_for_run.run_with_shutdown(shutdown_rx).await });
+
+    // Wait for download to actually start and make progress.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let snapshot = task.snapshot().await;
+    assert!(
+        snapshot.bytes_downloaded > 0,
+        "download should have started before pause"
+    );
+
+    task.pause();
+    assert!(task.is_paused(), "should be paused");
+
+    // Give workers time to park; bytes should freeze while paused.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let snapshot = task.snapshot().await;
+    let frozen_bytes = snapshot.bytes_downloaded;
+    assert!(snapshot.paused, "snapshot should report paused");
+
+    task.resume();
+    assert!(!task.is_paused(), "should be resumed");
+
+    // Progress must actually resume after resume(); poll until bytes advance
+    // past the frozen value. Regression: stale watch receiver version made
+    // every download_range() return Ok(0) instantly, stalling at 0 B/s.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let snapshot = task.snapshot().await;
+        if snapshot.bytes_downloaded > frozen_bytes {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "bytes did not advance after resume (stuck at {frozen_bytes})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+        .await
+        .expect("timed out waiting for download");
+    let result = result.expect("task panicked");
+    assert!(result.is_ok(), "download failed: {:?}", result.err());
+
+    let downloaded = tokio::fs::read(&output).await.unwrap();
+    assert_eq!(downloaded.len(), payload.len(), "file size mismatch");
+    assert_eq!(downloaded, payload, "file content mismatch");
+}
+
+/// Test pause → save control file → resume via new task from control file.
+#[tokio::test]
+async fn test_shutdown_pause_then_resume() {
+    let payload = test_payload(4 * 1024 * 1024);
+    let server = TestServer::new_throttled(payload.clone(), 20).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("shutdown_pause.bin");
+
+    let bus = EventBus::new();
+    let (_shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+
+    let task = std::sync::Arc::new(DownloadTask::new(
+        0,
+        &server.url(),
+        output.to_str().unwrap(),
+        false,
+        false,
+        Some(2),
+        bus,
+        false,
+        0,
+        None,
+        vec![],
+        None,
+        vec![],
+        0,
+        5,
+        500,
+        30,
+        300,
+        None,
+        true,
+        None,
+        None,
+        0,
+        30,
+        1,
+        None,
+        None,
+        None,
+        false,
+        true,
+        true,
+    ));
+
+    let task_for_run = std::sync::Arc::clone(&task);
+    let _handle = tokio::spawn(async move { task_for_run.run_with_shutdown(shutdown_rx).await });
+
+    // Wait for download to start
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Pause the download via the normal API
+    task.pause();
+    assert!(task.is_paused(), "should be paused");
+
+    // Wait for workers to park and the periodic save to write the control file
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Control file should exist (paused state)
+    let control_path = output.with_file_name(format!(
+        "{}.zing",
+        output.file_name().unwrap().to_str().unwrap()
+    ));
+    assert!(
+        control_path.exists(),
+        "control file should exist after pause"
+    );
+
+    // Now resume: create a new task from the control file (same as standalone CLI)
+    let bus2 = EventBus::new();
+    let (_shutdown_tx2, shutdown_rx2) = broadcast::channel::<()>(1);
+
+    let task2 = DownloadTask::new(
+        1,
+        &server.url(),
+        output.to_str().unwrap(),
+        false,
+        false,
+        Some(2),
+        bus2,
+        false,
+        0,
+        None,
+        vec![],
+        None,
+        vec![],
+        0,
+        5,
+        500,
+        30,
+        300,
+        None,
+        true,
+        None,
+        None,
+        0,
+        30,
+        5,
+        None,
+        None,
+        None,
+        false,
+        true,
+        true,
+    );
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        task2.run_with_shutdown(shutdown_rx2),
+    )
+    .await
+    .expect("timed out waiting for resume");
+    assert!(result.is_ok(), "resume failed: {:?}", result.err());
+
+    let downloaded = tokio::fs::read(&output).await.unwrap();
+    assert_eq!(downloaded.len(), payload.len(), "file size mismatch");
+    assert_eq!(downloaded, payload, "file content mismatch");
 }

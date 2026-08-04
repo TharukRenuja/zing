@@ -75,7 +75,7 @@ done
 # Each runner writes its own PID to $PIDFILE then execs the tool, so the
 # sampler can count exactly which TCP connections belong to this download.
 run_zing()    { echo $$ > "$PIDFILE"; exec "$ZING_BIN" "$1" -o "$2/$OUTFILE" \
-                    -n "$CONNECTIONS" --progress none --allow-overwrite --standalone; }
+                    --progress none --allow-overwrite --standalone; }
 run_zing1()   { echo $$ > "$PIDFILE"; exec "$ZING_BIN" "$1" -o "$2/$OUTFILE" \
                     -n 1 --progress none --allow-overwrite --standalone; }
 run_aria2c()  { echo $$ > "$PIDFILE"; exec aria2c -x "$CONNECTIONS" -s "$CONNECTIONS" \

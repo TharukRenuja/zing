@@ -1469,9 +1469,11 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         };
 
         join_set.spawn(async move {
-            if let Some(ref s) = sem {
-                let _permit = s.acquire().await.expect("semaphore");
-            }
+            let _permit = if let Some(ref s) = sem {
+                Some(s.acquire().await.expect("semaphore"))
+            } else {
+                None
+            };
 
             tokio::fs::create_dir_all(&download_dir)
                 .await
@@ -2190,7 +2192,7 @@ async fn run_config_edit() -> Result<()> {
             } else {
                 v.to_string()
             })
-            .unwrap_or_else(|| "unlimited".to_string())
+            .unwrap_or_else(|| "3 (default)".to_string())
     );
 
     use dialoguer::{theme::ColorfulTheme, Input, Select};
@@ -2267,11 +2269,11 @@ async fn run_config_edit() -> Result<()> {
     cfg.throttle_reprobe = Some(throttle_idx == 0);
 
     let mc_input: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("Max concurrent downloads (0 = unlimited)")
+        .with_prompt("Max concurrent downloads (default: 3, 0 = unlimited)")
         .with_initial_text(
             cfg.max_concurrent_downloads
                 .map(|v| v.to_string())
-                .unwrap_or_else(|| "0".to_string()),
+                .unwrap_or_else(|| "3".to_string()),
         )
         .allow_empty(false)
         .interact_text()?;

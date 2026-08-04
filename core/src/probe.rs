@@ -32,7 +32,11 @@ impl Default for ServerProfile {
     }
 }
 
-pub async fn probe(pool: &ConnectionPool, url: &str, max_connections: usize) -> ServerProfile {
+pub async fn probe(
+    pool: &ConnectionPool,
+    url: &str,
+    max_connections: Option<usize>,
+) -> ServerProfile {
     let start = Instant::now();
     let resp = match pool
         .client()
@@ -169,7 +173,7 @@ fn decide_strategy(
     supports_ranges: bool,
     rtt: Duration,
     bandwidth: Option<f64>,
-    max_connections: usize,
+    max_connections: Option<usize>,
 ) -> (usize, DownloadMode) {
     let rtt_ms = rtt.as_secs_f64() * 1000.0;
     let size = total_size.unwrap_or(0);
@@ -226,7 +230,10 @@ fn decide_strategy(
 
     // Scale with file size: 1 conn per 5MB, min 1
     let size_based = ((size as f64) / (5.0 * 1024.0 * 1024.0)).ceil() as usize;
-    let conns = target.min(size_based).max(1).min(max_connections);
+    let conns = match max_connections {
+        Some(max) => target.min(size_based).max(1).min(max),
+        None => target.min(size_based).max(1), // unlimited
+    };
 
     (conns, DownloadMode::Segmented)
 }

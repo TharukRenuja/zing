@@ -92,10 +92,10 @@ mod tests {
     use std::time::Instant;
 
     fn mgr_with_two_connections(slow_remaining: u64, fast_remaining: u64) -> SegmentManager {
-        let mut mgr = SegmentManager::new(4);
+        let mut mgr = SegmentManager::new(Some(4));
         mgr.min_segment_size = 1;
-        let c0 = mgr.add_connection();
-        let c1 = mgr.add_connection();
+        let c0 = mgr.add_connection().unwrap();
+        let c1 = mgr.add_connection().unwrap();
         mgr.allocate_segment(0, slow_remaining, c0);
         mgr.allocate_segment(100, fast_remaining, c1);
         mgr
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn test_find_steal_targets_not_enough_connections() {
         let stealer = WorkStealer::new();
-        let mut mgr = SegmentManager::new(4);
+        let mut mgr = SegmentManager::new(Some(4));
         mgr.add_connection();
         mgr.allocate_segment(0, 1000, 0);
         assert!(stealer.find_steal_targets(&mgr).is_none());
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn test_find_steal_targets_no_active_connections() {
         let stealer = WorkStealer::new();
-        let mgr = SegmentManager::new(4);
+        let mgr = SegmentManager::new(Some(4));
         assert!(stealer.find_steal_targets(&mgr).is_none());
     }
 

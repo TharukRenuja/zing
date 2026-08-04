@@ -230,7 +230,7 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
     let connections = map
         .remove("connections")
         .and_then(|v| v.as_u64())
-        .unwrap_or(4) as usize;
+        .map(|n| n as usize);
 
     let insecure = map
         .remove("insecure")
@@ -612,7 +612,7 @@ mod tests {
             "http://example.com/file",
             "/tmp/test",
             false,
-            4,
+            Some(4),
             false,
             0,
             None,
@@ -648,7 +648,7 @@ mod tests {
                 "http://example.com/file",
                 "/tmp/test",
                 false,
-                4,
+                Some(4),
                 false,
                 0,
                 None,
@@ -695,7 +695,7 @@ mod tests {
                 "http://example.com/file",
                 "/tmp/test",
                 false,
-                4,
+                Some(4),
                 false,
                 0,
                 None,
@@ -731,7 +731,7 @@ mod tests {
                 "http://example.com/file",
                 "/tmp/test",
                 false,
-                4,
+                Some(4),
                 false,
                 0,
                 None,

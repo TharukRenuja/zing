@@ -10,6 +10,7 @@ pub struct TestServer {
     pub addr: SocketAddr,
     pub content: Vec<u8>,
     shutdown_tx: Option<oneshot::Sender<()>>,
+    chunk_delay_ms: u64,
 }
 
 #[allow(dead_code)]
@@ -22,12 +23,37 @@ impl TestServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let content_clone = Arc::clone(&content);
 
-        tokio::spawn(Self::serve(listener, content_clone, shutdown_rx));
+        tokio::spawn(Self::serve(listener, content_clone, shutdown_rx, 0));
 
         TestServer {
             addr,
             content: (*content).clone(),
             shutdown_tx: Some(shutdown_tx),
+            chunk_delay_ms: 0,
+        }
+    }
+
+    /// Create a throttled server that sleeps `chunk_delay_ms` between each
+    /// 64 KiB chunk, simulating a slow connection.
+    pub async fn new_throttled(content: Vec<u8>, chunk_delay_ms: u64) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let content = Arc::new(content);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let content_clone = Arc::clone(&content);
+
+        tokio::spawn(Self::serve(
+            listener,
+            content_clone,
+            shutdown_rx,
+            chunk_delay_ms,
+        ));
+
+        TestServer {
+            addr,
+            content: (*content).clone(),
+            shutdown_tx: Some(shutdown_tx),
+            chunk_delay_ms,
         }
     }
 
@@ -45,6 +71,7 @@ impl TestServer {
         listener: TcpListener,
         content: Arc<Vec<u8>>,
         mut shutdown_rx: oneshot::Receiver<()>,
+        chunk_delay_ms: u64,
     ) {
         loop {
             tokio::select! {
@@ -53,7 +80,7 @@ impl TestServer {
                     if let Ok((mut stream, _)) = accept {
                         let content = Arc::clone(&content);
                         tokio::spawn(async move {
-                            Self::handle(&mut stream, &content).await.ok();
+                            Self::handle(&mut stream, &content, chunk_delay_ms).await.ok();
                         });
                     }
                 }
@@ -64,6 +91,7 @@ impl TestServer {
     async fn handle(
         stream: &mut tokio::net::TcpStream,
         content: &[u8],
+        chunk_delay_ms: u64,
     ) -> Result<(), std::io::Error> {
         let (reader, mut writer) = stream.split();
         let mut buf_reader = BufReader::new(reader);
@@ -129,7 +157,21 @@ impl TestServer {
                         .write_all(format!("Content-Length: {}\r\n", chunk.len()).as_bytes())
                         .await?;
                     writer.write_all(b"\r\n").await?;
-                    writer.write_all(chunk).await?;
+                    if chunk_delay_ms == 0 {
+                        writer.write_all(chunk).await?;
+                    } else {
+                        let bs = 64 * 1024usize;
+                        for i in (0..chunk.len()).step_by(bs) {
+                            let end = (i + bs).min(chunk.len());
+                            writer.write_all(&chunk[i..end]).await?;
+                            if end < chunk.len() {
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    chunk_delay_ms,
+                                ))
+                                .await;
+                            }
+                        }
+                    }
                 }
             }
         } else {
@@ -142,7 +184,18 @@ impl TestServer {
                 .write_all(format!("Content-Length: {}\r\n", total_len).as_bytes())
                 .await?;
             writer.write_all(b"\r\n").await?;
-            writer.write_all(content).await?;
+            if chunk_delay_ms == 0 {
+                writer.write_all(content).await?;
+            } else {
+                let bs = 64 * 1024usize;
+                for i in (0..content.len()).step_by(bs) {
+                    let end = (i + bs).min(content.len());
+                    writer.write_all(&content[i..end]).await?;
+                    if end < content.len() {
+                        tokio::time::sleep(std::time::Duration::from_millis(chunk_delay_ms)).await;
+                    }
+                }
+            }
         }
 
         Ok(())

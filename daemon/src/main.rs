@@ -127,7 +127,8 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Read `max_concurrent_downloads` from the CLI config file (0 = unlimited).
+/// Read `max_concurrent_downloads` from the CLI config file (0 = unlimited,
+/// absent = default of 3).
 async fn read_max_concurrent() -> usize {
     let path = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -135,15 +136,15 @@ async fn read_max_concurrent() -> usize {
         .join("config.json");
     let content = match tokio::fs::read_to_string(&path).await {
         Ok(c) => c,
-        Err(_) => return 0,
+        Err(_) => return 3,
     };
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(v) => v
             .get("max_concurrent_downloads")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
-            .unwrap_or(0),
-        Err(_) => 0,
+            .unwrap_or(3),
+        Err(_) => 3,
     }
 }
 

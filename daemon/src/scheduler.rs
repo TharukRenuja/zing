@@ -239,7 +239,7 @@ impl Scheduler {
                             &entry.url,
                             &full_path.to_string_lossy(),
                             entry.output.is_none(),
-                            entry.connections,
+                            Some(entry.connections),
                             entry.insecure,
                             entry.max_download_rate,
                             entry.proxy.clone(),

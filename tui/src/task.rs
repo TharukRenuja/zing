@@ -72,9 +72,11 @@ impl TaskControl for LocalTask {
         let flags = Arc::clone(&self.flags);
         let task = Arc::clone(&self.task);
         Some(tokio::spawn(async move {
-            if let Some(ref s) = sem {
-                let _permit = s.acquire().await.expect("semaphore closed");
-            }
+            let _permit = if let Some(ref s) = sem {
+                Some(s.acquire().await.expect("semaphore closed"))
+            } else {
+                None
+            };
             flags.started.store(true, Ordering::Release);
             let res = task.run_with_shutdown(shutdown).await;
             flags.finished.store(true, Ordering::Release);

@@ -1,8 +1,8 @@
 # zing
 
-> **⚠️ Beta:** zing is **still in active development**. Downloads may occasionally be corrupted or incomplete. **Use at your own risk**.
+> **Beta:** zing is still in active development.
 
-A modern, cross-platform HTTP downloader with segmented concurrent downloads, adaptive connection management, and server probing.
+A modern, cross-platform HTTP downloader with segmented concurrent downloads, adaptive connection management, server probing, and an interactive terminal UI.
 
 ```
 zing https://example.com/file.zip
@@ -20,6 +20,7 @@ zing https://example.com/file.zip
   - [Quick start](#quick-start)
   - [Features](#features)
     - [Downloading](#downloading)
+    - [Terminal UI (TUI)](#terminal-ui-tui)
     - [Daemon](#daemon)
     - [Scheduled downloads](#scheduled-downloads)
     - [Resume](#resume)
@@ -110,8 +111,11 @@ zing --allow-overwrite https://example.com/file.zip
 # Use the server's Content-Disposition filename (on by default; disable with --no-content-disposition)
 zing -C https://example.com/download
 
-# Download multiple files concurrently
+# Download multiple files concurrently (default: 3 at a time)
 zing --max-concurrent 3 url1 url2 url3
+
+# Launch the interactive terminal UI
+zing tui url1 url2 url3
 
 # Progress output: bar (default), json, or none
 zing --progress json https://example.com/file.zip
@@ -145,6 +149,70 @@ zing --standalone https://example.com/file.zip
 - **Retry with exponential backoff + jitter** and multi-URL mirror fallback
 - **Checksum verification** (auto-detect by length), **digest auth** (RFC 7616), **TLS client certificates**
 - **Auto-naming** from URL or server (Content-Disposition on by default), **conflict handling** that prompts to overwrite/rename/cancel (or `--auto-file-renaming` / `--allow-overwrite`), **dry-run** preview
+
+</details>
+
+### Terminal UI (TUI)
+
+<details>
+<summary>Interactive terminal UI for multiple concurrent downloads</summary>
+
+`zing tui` launches a full-screen terminal UI for managing several downloads at once — in-process (standalone) or proxied through the daemon.
+
+```bash
+# Launch with URLs
+zing tui https://example.com/file1.zip https://example.com/file2.zip
+
+# With download settings
+zing tui -d downloads/ -n 8 -r 2MB https://example.com/file.zip
+
+# Standalone even if the daemon is running
+zing tui --standalone https://example.com/file.zip
+```
+
+The TUI accepts the same download flags as `zing download`:
+
+| Flag | Description |
+| --- | --- |
+| `-n, --connections` | Max parallel connections per download (default: unlimited) |
+| `-d, --dir` | Output directory |
+| `-o, --output` | Output filename |
+| `-r, --max-download-rate` | Max download rate (500KB, 2MB, 1.5GB, 0 = unlimited) |
+| `-S, --max-filesize` | Max file size; skips download if Content-Length exceeds this |
+| `-k, --insecure` | Skip TLS verification |
+| `-x, --proxy` | HTTP/HTTPS proxy |
+| `-m, --mirror` | Mirror URLs for failover |
+| `-A, --user-agent` | Custom User-Agent header |
+| `-H, --header` | Custom HTTP header (repeatable) |
+| `-u, --user` | HTTP basic auth `username:password` or `token` |
+| `--digest` | Use HTTP Digest auth (requires `--user`) |
+| `--retry` | Max retry attempts per connection (default: 5) |
+| `--retry-wait` | Base retry wait in ms (doubles each attempt) |
+| `--connect-timeout` | Connection timeout in seconds |
+| `--max-time` | Maximum total transfer time in seconds |
+| `--end-game` / `--no-end-game` | Toggle end-game mode |
+| `--throttle-reprobe` / `--no-throttle-reprobe` | Toggle throttling re-probe |
+| `-L, --load-cookies` | Load cookies from Netscape-format file |
+| `-s, --save-cookies` | Save cookies to file after download |
+| `--standalone` | Force standalone mode even if the daemon is running |
+| `--max-concurrent` | Max concurrent downloads (default: 3, 0 = unlimited) |
+| `-C, --content-disposition` / `--no-content-disposition` | Use / ignore server-provided filename |
+| `--auto-file-renaming` | Auto-rename file if it exists (e.g. `file-1.ext`) |
+| `--allow-overwrite` | Overwrite existing files without prompting |
+
+**Keys**
+
+| Key | Action |
+| --- | --- |
+| `q` | Quit |
+| `j` / `k` | Select task |
+| `p` | Pause / resume selected |
+| `P` | Pause / resume all |
+| `x` | Stop selected |
+| `r` | Remove selected |
+| `a` | Add a URL to the queue |
+
+The TUI shows per-task status (queued / downloading / paused / done / failed), progress blocks, speed, and live per-connection info, plus a logs panel.
 
 </details>
 
@@ -311,7 +379,10 @@ Config file: `~/.config/zing/config.json` (Linux/macOS) or `%APPDATA%\zing\confi
 {
   "download_dir": "~/Downloads",
   "prompt_location": false,
-  "update_check_interval_days": 7
+  "update_check_interval_days": 7,
+  "max_concurrent_downloads": 3,
+  "end_game": true,
+  "throttle_reprobe": true
 }
 ```
 
@@ -320,6 +391,9 @@ Config file: `~/.config/zing/config.json` (Linux/macOS) or `%APPDATA%\zing\confi
 | `download_dir` | `~/Downloads` | Default download directory |
 | `prompt_location` | `false` | Ask for download location before each download |
 | `update_check_interval_days` | `7` | Days between update checks (`0` = disabled) |
+| `max_concurrent_downloads` | `3` | Max parallel downloads (`0` = unlimited) |
+| `end_game` | `true` | End-game mode: remaining connections race for the last blocks |
+| `throttle_reprobe` | `true` | Re-probe server when speed drops too low |
 
 </details>
 
@@ -372,6 +446,7 @@ zing -p https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | 
 | End-game mode | Yes | No | No | No | No |
 | Per-block hash validation | Yes | Metalink only | No | No | No |
 | Pipe / script output | Yes | No | Yes | No | No |
+| Terminal UI (TUI) | Yes | No | No | No | No |
 | Daemon + RPC | Yes | JSON-RPC | No | No | Web |
 | Scheduled downloads | Yes | No | No | No | No |
 | Resume | Control file + RPC | `.aria2` | `-C -` | Yes | Yes |
@@ -379,10 +454,11 @@ zing -p https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | 
 
 ## Architecture
 
-4 crates in a workspace:
+5 crates in a workspace:
 
 - **core** → Download engine: probe, segment management, PID control, rate limiting, retry, bandwidth scheduling, connection pool, cookie store, cross-platform IPC (transport layer)
 - **cli** → CLI frontend with progress bar, daemon auto-detection, checksum verification, config/schedule management, pipe modes, cookie/netrc auth, event hooks
+- **tui** → Terminal UI: task list, per-connection view, pause/resume/stop/remove, add-URL prompt, logs panel
 - **daemon** → JSON-RPC server for background and scheduled downloads (Unix socket on Linux, TCP on Windows)
 - **ext** → Utilities: checksum verification, filename extraction, aria2 session import, metalink parsing
 
