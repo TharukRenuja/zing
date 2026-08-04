@@ -110,13 +110,13 @@ jobs:
           TAG=${{ github.ref_name }}
           BIN_DIR="target/${{ matrix.target }}/release"
           mkdir -p staging
-          cp "$BIN_DIR/zing" "staging/zing-$TAG-${{ matrix.suffix }}"
+          cp "$BIN_DIR/zing" "staging/zing"
           test -f "$BIN_DIR/zing-daemon" && \
-            cp "$BIN_DIR/zing-daemon" "staging/zing-daemon-$TAG-${{ matrix.suffix }}" || true
+            cp "$BIN_DIR/zing-daemon" "staging/zing-daemon" || true
           test -f "$BIN_DIR/zing-gui" && \
-            cp "$BIN_DIR/zing-gui" "staging/zing-gui-$TAG-${{ matrix.suffix }}" || true
+            cp "$BIN_DIR/zing-gui" "staging/zing-gui" || true
           test -f "$BIN_DIR/zing-tray" && \
-            cp "$BIN_DIR/zing-tray" "staging/zing-tray-$TAG-${{ matrix.suffix }}" || true
+            cp "$BIN_DIR/zing-tray" "staging/zing-tray" || true
           if [[ "${{ matrix.suffix }}" == *mac ]]; then
             archive_name="zing-$TAG-${{ matrix.suffix }}-update.tar.gz"
           else

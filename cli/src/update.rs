@@ -147,27 +147,11 @@ pub async fn run_update() -> Result<()> {
             if !status.success() {
                 bail!("tar extraction failed");
             }
-            // Find the extracted binary
-            let expected = format!("zing-{tag}-{suffix}");
-            let bin_path = tmp.join(&expected);
+            let bin_path = tmp.join("zing");
             if bin_path.exists() {
                 bin_path
             } else {
-                // Fallback: look for any file starting with zing- (not daemon or gui)
-                let mut found = None;
-                for entry in std::fs::read_dir(&tmp)? {
-                    let entry = entry?;
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if name.starts_with("zing-")
-                        && !name.starts_with("zing-daemon-")
-                        && !name.starts_with("zing-gui-")
-                    {
-                        found = Some(entry.path());
-                        break;
-                    }
-                }
-                found.ok_or_else(|| color_eyre::eyre::eyre!("Binary not found in archive"))?
+                bail!("zing not found in archive");
             }
         }
         "zip" => {
@@ -221,25 +205,14 @@ pub async fn run_update() -> Result<()> {
     if daemon_path.exists() {
         let daemon_extracted = match ext {
             "tar.gz" => {
-                let expected = format!("zing-daemon-{tag}-{suffix}");
-                let p = tmp.join(&expected);
+                let p = tmp.join(daemon_bin);
                 if p.exists() {
                     Some(p)
                 } else {
-                    let mut found = None;
-                    for entry in std::fs::read_dir(&tmp)? {
-                        let entry = entry?;
-                        let name = entry.file_name();
-                        if name.to_string_lossy().starts_with("zing-daemon-") {
-                            found = Some(entry.path());
-                            break;
-                        }
-                    }
-                    found
+                    None
                 }
             }
             "zip" => {
-                // Already extracted from ZIP alongside zing.exe
                 let p = tmp.join(daemon_bin);
                 if p.exists() {
                     Some(p)
@@ -267,21 +240,11 @@ pub async fn run_update() -> Result<()> {
     if gui_path.exists() {
         let gui_extracted = match ext {
             "tar.gz" => {
-                let expected = format!("zing-gui-{tag}-{suffix}");
-                let p = tmp.join(&expected);
+                let p = tmp.join(gui_bin);
                 if p.exists() {
                     Some(p)
                 } else {
-                    let mut found = None;
-                    for entry in std::fs::read_dir(&tmp)? {
-                        let entry = entry?;
-                        let name = entry.file_name();
-                        if name.to_string_lossy().starts_with("zing-gui-") {
-                            found = Some(entry.path());
-                            break;
-                        }
-                    }
-                    found
+                    None
                 }
             }
             "zip" => {
@@ -312,21 +275,11 @@ pub async fn run_update() -> Result<()> {
     if tray_path.exists() {
         let tray_extracted = match ext {
             "tar.gz" => {
-                let expected = format!("zing-tray-{tag}-{suffix}");
-                let p = tmp.join(&expected);
+                let p = tmp.join(tray_bin);
                 if p.exists() {
                     Some(p)
                 } else {
-                    let mut found = None;
-                    for entry in std::fs::read_dir(&tmp)? {
-                        let entry = entry?;
-                        let name = entry.file_name();
-                        if name.to_string_lossy().starts_with("zing-tray-") {
-                            found = Some(entry.path());
-                            break;
-                        }
-                    }
-                    found
+                    None
                 }
             }
             "zip" => {
