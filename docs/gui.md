@@ -8,18 +8,15 @@ keywords: zing, gui, desktop, eframe, egui, idm, interface, speed plot, block gr
 
 # Desktop GUI
 
-`zing gui` launches a native desktop window for managing downloads. Built with [eframe](https://github.com/emilk/egui/tree/main/crates/eframe) / [egui](https://github.com/emilk/egui).
+`zing-gui` is a standalone native desktop window for managing downloads. Built with [eframe](https://github.com/emilk/egui/tree/main/crates/eframe) / [egui](https://github.com/emilk/egui). It talks to the daemon over RPC and does not depend on the CLI.
 
 ## Launch
 
 ```bash
-zing gui https://example.com/file.zip
-
-# With options
-zing gui -d ~/Downloads -n 8 https://example.com/file.zip
+zing-gui
 ```
 
-The GUI auto-starts the daemon if it's not running. URLs provided on the command line are added automatically.
+The GUI auto-starts the daemon if it's not running (waits up to 10 seconds). Build it from the workspace root with `cargo build --release`.
 
 ## Layout
 
@@ -78,7 +75,7 @@ The GUI auto-starts the daemon if it's not running. URLs provided on the command
 
 ## Features
 
-- Daemon-first: connects to a running daemon via RPC
+- Standalone binary: no dependency on the CLI, connects to the daemon via RPC
 - Auto-starts daemon if not running (waits up to 10 seconds)
 - Live task updates via background polling (every 500ms)
 - Speed plot with rolling 60-second history

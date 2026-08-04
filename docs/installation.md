@@ -43,23 +43,24 @@ cargo build --release
 
 ### Build features
 
-The CLI has two optional features, both on by default:
+The CLI has one optional feature, on by default:
 
 | Feature | Default | What it enables |
 |---------|---------|-----------------|
 | `tui` | yes | `zing tui` terminal UI |
-| `gui` | yes | `zing gui` desktop GUI (pulls in eframe/egui) |
 
-Build without TUI:
+The desktop GUI is a separate binary. Build it from the workspace root:
 
 ```bash
-cargo build --release --no-default-features
+cargo build --release --bin zing-gui
 ```
 
-Build with only TUI (no GUI):
+`cargo build --release` builds both `zing` and `zing-gui`.
+
+Build the CLI without TUI:
 
 ```bash
-cargo build --release --no-default-features --features tui
+cargo build --release --bin zing --no-default-features
 ```
 
 ### Workspace members

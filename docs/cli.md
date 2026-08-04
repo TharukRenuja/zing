@@ -23,7 +23,6 @@ When no subcommand is given, `zing` downloads the provided URLs directly (standa
 |---------|---------|-------------|
 | `zing download <urls>` | *(default)* | Download files |
 | `zing tui <urls>` | | Launch the terminal UI |
-| `zing gui <urls>` | | Launch the desktop GUI |
 | `zing daemon start` | `zing d start` | Start the background daemon |
 | `zing daemon stop` | | Stop the daemon |
 | `zing daemon restart` | | Restart the daemon |

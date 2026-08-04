@@ -27,8 +27,7 @@ zing/
 zing (cli)
 ├── zing-core
 ├── zing-ext
-├── zing-tui (optional, feature="tui")
-└── zing-gui (optional, feature="gui")
+└── zing-tui (optional, feature="tui")
 
 zing-daemon
 ├── zing-core
@@ -199,7 +198,7 @@ zing tui URL
 ### GUI → Daemon
 
 ```
-zing gui URL
+zing-gui
   │
   ├─ auto-start daemon if not running
   ├─ add URLs via addUri RPC

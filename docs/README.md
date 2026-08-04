@@ -30,7 +30,7 @@ zing cli ──┬── standalone (in-process download)
             └── daemon mode (RPC over Unix socket / TCP)
                   ├── zing-daemon (background process)
                   ├── zing tui (terminal UI)
-                  ├── zing gui (desktop GUI, eframe)
+                  ├── zing-gui (desktop GUI, eframe)
                   └── zing nm (Native Messaging host for browser extension)
 ```
 
