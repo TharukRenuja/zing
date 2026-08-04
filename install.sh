@@ -256,11 +256,11 @@ if [ "$os" = "linux" ]; then
           kill "$tray_pid" 2>/dev/null || true
         sleep 1
         sudo -u "$SUDO_USER" env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
-          "$dst/$tray" >/dev/null 2>&1 &
+          G_MESSAGES_DEBUG="" "$dst/$tray" </dev/null >/dev/null 2>&1 &
       elif [ "$(id -u)" -ne 0 ]; then
         kill "$tray_pid" 2>/dev/null || true
         sleep 1
-        "$dst/$tray" >/dev/null 2>&1 &
+        G_MESSAGES_DEBUG="" "$dst/$tray" </dev/null >/dev/null 2>&1 &
       fi
     fi
   }

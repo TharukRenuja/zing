@@ -10,10 +10,10 @@ if [ ! -w "$dst" ]; then
 fi
 
 echo "Stopping services..."
-# Kill tray if running
-pkill -x zing-tray 2>/dev/null || true
-# Kill GUI if running
-pkill -x zing-gui 2>/dev/null || true
+# Force kill tray, GUI, and daemon (they may not respond to SIGTERM)
+pkill -9 -x zing-tray 2>/dev/null || true
+pkill -9 -x zing-gui 2>/dev/null || true
+pkill -9 -x zing-daemon 2>/dev/null || true
 # Uninstall daemon service
 zing_bin=""
 if [ -x "$dst/zing" ]; then

@@ -33,9 +33,27 @@ fn main() {
         let handle = std::thread::Builder::new()
             .name("zing-tray-gtk".into())
             .spawn(move || {
-                if gtk::init().is_err() {
-                    let _ = ready_tx.send(Err("gtk init failed".into()));
-                    return;
+                // Suppress libayatana-appindicator deprecation warning during GTK init.
+                unsafe {
+                    let saved_stderr = libc::dup(libc::STDERR_FILENO);
+                    let devnull = libc::open(
+                        c"/dev/null".as_ptr().cast(),
+                        libc::O_WRONLY,
+                    );
+                    if devnull >= 0 {
+                        libc::dup2(devnull, libc::STDERR_FILENO);
+                        libc::close(devnull);
+                    }
+                    let init_ok = gtk::init().is_ok();
+                    // Restore real stderr after init.
+                    if saved_stderr >= 0 {
+                        libc::dup2(saved_stderr, libc::STDERR_FILENO);
+                        libc::close(saved_stderr);
+                    }
+                    if !init_ok {
+                        let _ = ready_tx.send(Err("gtk init failed".into()));
+                        return;
+                    }
                 }
                 let menu = build_menu();
                 let icon = load_icon().expect("tray icon");

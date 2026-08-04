@@ -13,6 +13,7 @@ use base64::Engine;
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::generate;
+use color_eyre::eyre::bail;
 use color_eyre::Result;
 use config::Config;
 use indicatif::ProgressBar;
@@ -280,6 +281,21 @@ fn set_executable(path: &std::path::Path) {
     }
 }
 
+/// Copy a file to /usr/local/bin using sudo install.
+fn sudo_install(src: &std::path::Path, name: &str) -> Result<()> {
+    let dst = format!("/usr/local/bin/{name}");
+    let status = std::process::Command::new("sudo")
+        .args(["install", "-m", "755"])
+        .arg(src)
+        .arg(&dst)
+        .status()
+        .map_err(|e| color_eyre::eyre::eyre!("sudo not available: {e}"))?;
+    if !status.success() {
+        bail!("Failed to install {name} to {dst}");
+    }
+    Ok(())
+}
+
 async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
     match mode {
         "sh" | "run" | "bash" => {
@@ -389,22 +405,20 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             let _ = child.wait().await;
         }
         "app" => {
-            let bin_dir = dirs::home_dir()
-                .map(|p| p.join(".local").join("bin"))
-                .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin"));
-            tokio::fs::create_dir_all(&bin_dir).await?;
             let fname = zing_ext::filename::from_url(url);
             if fname.is_empty() {
                 return Err(color_eyre::eyre::eyre!(
                     "Cannot determine filename from URL"
                 ));
             }
-            let out_path = bin_dir.join(&fname);
+            let tmp = tempfile::tempdir().map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
+            let tmp_path = tmp.path().join(&fname);
             let bytes = download_with_progress(url).await?;
-            tokio::fs::write(&out_path, &bytes).await?;
-            set_executable(&out_path);
-            eprintln!("  Installed: {} -> {}", fname, out_path.display());
-            let _ = create_desktop_entry(&fname, &out_path);
+            tokio::fs::write(&tmp_path, &bytes).await?;
+            set_executable(&tmp_path);
+            sudo_install(&tmp_path, &fname)?;
+            eprintln!("  Installed: {fname} -> /usr/local/bin/{fname}");
+            let _ = create_desktop_entry(&fname, std::path::Path::new(&format!("/usr/local/bin/{fname}")));
         }
         "install" => {
             let fname = zing_ext::filename::from_url(url);
@@ -417,10 +431,6 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             let tmp_path = tmp.path().join(&fname);
             let bytes = download_with_progress(url).await?;
             tokio::fs::write(&tmp_path, &bytes).await?;
-            let bin_dir = dirs::home_dir()
-                .map(|p| p.join(".local").join("bin"))
-                .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin"));
-            tokio::fs::create_dir_all(&bin_dir).await?;
             let ext = std::path::Path::new(&fname)
                 .extension()
                 .and_then(|e| e.to_str())
@@ -428,16 +438,13 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             let lower = fname.to_lowercase();
             if lower.ends_with(".appimage") {
                 set_executable(&tmp_path);
-                let out = bin_dir.join(
-                    std::path::Path::new(&fname)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| fname.clone()),
-                );
-                tokio::fs::copy(&tmp_path, &out).await?;
-                set_executable(&out);
-                eprintln!("  Installed: {} -> {}", fname, out.display());
-                let _ = create_desktop_entry(&fname, &out);
+                let stem = std::path::Path::new(&fname)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| fname.clone());
+                sudo_install(&tmp_path, &stem)?;
+                eprintln!("  Installed: {fname} -> /usr/local/bin/{stem}");
+                let _ = create_desktop_entry(&fname, std::path::Path::new(&format!("/usr/local/bin/{stem}")));
             } else if ["gz", "xz", "bz2", "zst", "zip"].contains(&ext) || lower.contains(".tar.") {
                 eprintln!("  Extracting...");
                 let extract_dir = tmp.path().join("extracted");
@@ -459,7 +466,6 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                         .output()
                         .await;
                 }
-                // Find binary: recursively search for files without extension or matching the package name
                 let pkg_name = std::path::Path::new(&fname)
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -502,11 +508,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                         .file_name()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| pkg_name.to_string());
-                    let out = bin_dir.join(&bin_name);
-                    tokio::fs::copy(&bin_path, &out).await?;
-                    set_executable(&out);
-                    eprintln!("  Installed: {} -> {}", bin_name, out.display());
-                    let _ = create_desktop_entry(&bin_name, &out);
+                    set_executable(&bin_path);
+                    sudo_install(&bin_path, &bin_name)?;
+                    eprintln!("  Installed: {bin_name} -> /usr/local/bin/{bin_name}");
+                    let _ = create_desktop_entry(&bin_name, std::path::Path::new(&format!("/usr/local/bin/{bin_name}")));
                 } else {
                     eprintln!("  No binary found in extracted archive");
                 }
@@ -519,11 +524,10 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
                 let _ = child.wait().await;
                 eprintln!("  Ran installer: {fname}");
             } else {
-                let out = bin_dir.join(&fname);
-                tokio::fs::copy(&tmp_path, &out).await?;
-                set_executable(&out);
-                eprintln!("  Installed: {} -> {}", fname, out.display());
-                let _ = create_desktop_entry(&fname, &out);
+                set_executable(&tmp_path);
+                sudo_install(&tmp_path, &fname)?;
+                eprintln!("  Installed: {fname} -> /usr/local/bin/{fname}");
+                let _ = create_desktop_entry(&fname, std::path::Path::new(&format!("/usr/local/bin/{fname}")));
             }
         }
         _ => {
