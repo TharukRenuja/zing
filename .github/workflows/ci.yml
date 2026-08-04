@@ -28,6 +28,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install GTK dev libs (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libatk1.0-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test ${{ matrix.args }}
@@ -37,6 +42,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install GTK dev libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libatk1.0-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -57,12 +66,12 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             suffix: x86_64-linux
-            pkgs: -p zing -p zing-daemon -p zing-gui
+            pkgs: -p zing -p zing-daemon -p zing-gui -p zing-tray
             ext: tar.gz
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             suffix: aarch64-linux
-            pkgs: -p zing -p zing-daemon -p zing-gui
+            pkgs: -p zing -p zing-daemon -p zing-gui -p zing-tray
             ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -72,16 +81,21 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             suffix: x86_64-mac
-            pkgs: -p zing -p zing-daemon -p zing-gui
+            pkgs: -p zing -p zing-daemon -p zing-gui -p zing-tray
             ext: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
             suffix: aarch64-mac
-            pkgs: -p zing -p zing-daemon -p zing-gui
+            pkgs: -p zing -p zing-daemon -p zing-gui -p zing-tray
             ext: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install GTK dev libs (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libatk1.0-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -101,6 +115,8 @@ jobs:
             cp "$BIN_DIR/zing-daemon" "staging/zing-daemon-$TAG-${{ matrix.suffix }}" || true
           test -f "$BIN_DIR/zing-gui" && \
             cp "$BIN_DIR/zing-gui" "staging/zing-gui-$TAG-${{ matrix.suffix }}" || true
+          test -f "$BIN_DIR/zing-tray" && \
+            cp "$BIN_DIR/zing-tray" "staging/zing-tray-$TAG-${{ matrix.suffix }}" || true
           if [[ "${{ matrix.suffix }}" == *mac ]]; then
             archive_name="zing-$TAG-${{ matrix.suffix }}-update.tar.gz"
           else
@@ -119,6 +135,8 @@ jobs:
             cp "$BIN_DIR/zing-daemon" "staging/zing-daemon" || true
           test -f "$BIN_DIR/zing-gui" && \
             cp "$BIN_DIR/zing-gui" "staging/zing-gui" || true
+          test -f "$BIN_DIR/zing-tray" && \
+            cp "$BIN_DIR/zing-tray" "staging/zing-tray" || true
           hdiutil create -volname "zing $TAG" -srcfolder staging -ov -format UDZO \
             "zing-$TAG-${{ matrix.suffix }}.dmg"
 
@@ -135,6 +153,9 @@ jobs:
           }
           if (Test-Path "$binDir/zing-gui.exe") {
             Copy-Item "$binDir/zing-gui.exe" staging/zing-gui.exe
+          }
+          if (Test-Path "$binDir/zing-tray.exe") {
+            Copy-Item "$binDir/zing-tray.exe" staging/zing-tray.exe
           }
           Compress-Archive -Path staging/* -DestinationPath "zing-$tag-${{ matrix.suffix }}-update.zip"
 
