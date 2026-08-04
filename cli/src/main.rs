@@ -552,10 +552,17 @@ fn main() -> Result<()> {
         .display_env_section(false)
         .install()?;
 
-    // The browser launches the native messaging host passing the *host name*
-    // as argv[1] (e.g. `zing com.zing.native_host`), not a subcommand. Detect
-    // that before clap parses (clap would reject the unknown subcommand).
-    if std::env::args().nth(1).as_deref() == Some(extension::host_name()) {
+    // The browser launches the native messaging host passing a browser-chosen
+    // argument as argv[1], not a subcommand. It varies by browser/version: some
+    // pass the host name (e.g. `zing com.zing.native_host`), others pass the
+    // extension origin (e.g. `zing chrome-extension://<id>/`). Detect either
+    // before clap parses, so the origin is never treated as a download URL.
+    let argv1 = std::env::args().nth(1);
+    let is_host = argv1.as_deref() == Some(extension::host_name())
+        || argv1
+            .as_deref()
+            .is_some_and(|a| a.starts_with("chrome-extension://"));
+    if is_host {
         return native_host::run().map_err(|e| color_eyre::eyre::eyre!(e));
     }
 

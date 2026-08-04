@@ -6,7 +6,7 @@ eula = "wix/License.rtf"
 
 [package]
 name = "zing"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 description = "A modern HTTP downloader with segmented concurrent downloads"
 authors = ["Tharuk Renuja"]
@@ -20,6 +20,7 @@ depends = "libc6, libssl3"
 assets = [
     ["target/release/zing", "/usr/bin/zing", "755"],
     ["target/release/zing-daemon", "/usr/bin/zing-daemon", "755"],
+    ["target/release/zing-gui", "/usr/bin/zing-gui", "755"],
 ]
 extended-description = """
 A modern HTTP downloader with support for HTTP/1.1, HTTP/2, and HTTP/3.
@@ -29,10 +30,10 @@ Features include segmented concurrent downloads, daemon mode, and adaptive conne
 [package.metadata.bundle]
 name = "zing"
 identifier = "com.tharukrj.zing"
-version = "0.2.4"
+version = "0.2.5"
 display-name = "zing"
-short-version = "0.2.4"
-long-version = "0.2.4"
+short-version = "0.2.5"
+long-version = "0.2.5"
 frameworks = ["CoreFoundation", "Foundation"]
 
 [[bin]]

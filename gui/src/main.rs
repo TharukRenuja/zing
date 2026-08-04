@@ -4,6 +4,9 @@ use zing_gui::app;
 use zing_gui::client::GuiClient;
 
 fn main() {
+    #[cfg(unix)]
+    install_desktop_entry_on_flag();
+
     color_eyre::config::HookBuilder::default()
         .display_env_section(false)
         .install()
@@ -46,6 +49,95 @@ fn main() {
         }),
     )
     .expect("failed to start GUI");
+}
+
+/// If run as `zing-gui --install-desktop-entry`, writes a user-local desktop
+/// entry (so the GUI appears in the start menu) and installs the tray for
+/// autostart, then exits. Used by install.sh (and `zing-gui --autostart` to
+/// just enable the autostart entry).
+#[cfg(unix)]
+fn install_desktop_entry_on_flag() {
+    let args: Vec<String> = std::env::args().collect();
+    let install_entry = args.iter().any(|a| a == "--install-desktop-entry");
+    let autostart = args.iter().any(|a| a == "--autostart");
+    if !install_entry && !autostart {
+        return;
+    }
+    let data_dir = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("/usr/local/share"));
+
+    if install_entry {
+        let bin = std::env::current_exe().unwrap_or_default();
+        let apps_dir = data_dir.join("applications");
+        let _ = std::fs::create_dir_all(&apps_dir);
+
+        let icon_target = data_dir.join("icons").join("zing.png");
+        if let Some(dir) = icon_target.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(icon_bytes) = std::fs::read("/usr/share/pixmaps/zing.png")
+            .or_else(|_| std::fs::read("/usr/local/share/pixmaps/zing.png"))
+        {
+            let _ = std::fs::write(&icon_target, icon_bytes);
+        }
+
+        let path = apps_dir.join("zing-gui.desktop");
+        let exec = bin.to_string_lossy();
+        let content = format!(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=zing\n\
+             Comment=Download manager\n\
+             Exec={exec} %U\n\
+             Icon=zing\n\
+             Categories=Network;FileTransfer;\n\
+             Terminal=false\n\
+             StartupWMClass=zing\n"
+        );
+        if std::fs::write(&path, content).is_ok() {
+            println!("Desktop entry: {}", path.display());
+        } else {
+            eprintln!("warning: could not write {}", path.display());
+        }
+    }
+
+    if autostart {
+        let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let autostart_dir = config_dir.join("autostart");
+        let _ = std::fs::create_dir_all(&autostart_dir);
+        let path = autostart_dir.join("zing-gui.desktop");
+        // Launch zing-tray (separate tray process) on login.
+        let tray_bin = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("zing-tray")))
+            .filter(|p| p.exists())
+            .or_else(|| {
+                std::env::var_os("PATH").and_then(|paths| {
+                    std::env::split_paths(&paths).find_map(|dir| {
+                        let p = dir.join("zing-tray");
+                        p.exists().then_some(p)
+                    })
+                })
+            })
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "zing-tray".to_string());
+        let content = format!(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=zing\n\
+             Comment=Download manager (tray)\n\
+             Exec={tray_bin}\n\
+             Icon=zing\n\
+             Terminal=false\n\
+             X-GNOME-Autostart-enabled=true\n"
+        );
+        if std::fs::write(&path, content).is_ok() {
+            println!("Autostart entry: {}", path.display());
+        } else {
+            eprintln!("warning: could not write {}", path.display());
+        }
+    }
+
+    std::process::exit(0);
 }
 
 fn start_daemon() -> anyhow::Result<()> {
@@ -110,4 +202,60 @@ fn setup_style(ctx: &egui::Context) {
     style.visuals = visuals;
 
     ctx.set_style(style);
+
+    load_font_fallbacks(ctx);
+}
+
+/// Augments egui's bundled fonts with system fallback fonts so glyphs like box
+/// drawing (│) and checkmarks (✓) — which the default fonts lack — render
+/// instead of showing as tofu boxes. Safe to call more than once.
+fn load_font_fallbacks(ctx: &egui::Context) {
+    #[cfg(target_os = "linux")]
+    const CANDIDATES: &[&str] = &[
+        "/usr/share/fonts/google-noto-vf/NotoSansSymbols[wght].ttf",
+        "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
+        "/usr/share/fonts/google-noto-color-emoji-fonts/Noto-COLRv1.ttf",
+    ];
+    #[cfg(target_os = "macos")]
+    const CANDIDATES: &[&str] = &[
+        "/System/Library/Fonts/Supplemental/Symbols.ttf",
+        "/System/Library/Fonts/SFNSMono.ttf",
+    ];
+    #[cfg(target_os = "windows")]
+    const CANDIDATES: &[&str] = &[
+        "C:\\Windows\\Fonts\\seguiemj.ttf",
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+    ];
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    const CANDIDATES: &[&str] = &[];
+
+    let mut fonts = egui::FontDefinitions::default();
+    let mut changed = false;
+    let mut index = 0;
+    for path in CANDIDATES {
+        if !std::path::Path::new(path).exists() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let name = format!("system-fallback-{index}");
+        index += 1;
+        if fonts.families[&egui::FontFamily::Proportional].contains(&name) {
+            continue;
+        }
+        fonts
+            .font_data
+            .insert(name.clone(), egui::FontData::from_owned(bytes.clone()));
+        if let Some(f) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+            f.push(name.clone());
+        }
+        if let Some(f) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+            f.push(name);
+        }
+        changed = true;
+    }
+    if changed {
+        ctx.set_fonts(fonts);
+    }
 }

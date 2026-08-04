@@ -1,0 +1,21 @@
+[package]
+name = "zing-tray"
+version = "0.2.5"
+edition = "2021"
+description = "System tray icon for the zing downloader"
+authors = ["Tharuk Renuja"]
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "zing-tray"
+path = "src/main.rs"
+
+[dependencies]
+zing-core = { path = "../core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
+image = "0.25"
+color-eyre = "0.6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"

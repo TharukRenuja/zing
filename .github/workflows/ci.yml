@@ -57,27 +57,27 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             suffix: x86_64-linux
-            pkgs: -p zing -p zing-daemon
+            pkgs: -p zing -p zing-daemon -p zing-gui
             ext: tar.gz
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             suffix: aarch64-linux
-            pkgs: -p zing -p zing-daemon
+            pkgs: -p zing -p zing-daemon -p zing-gui
             ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             suffix: windows
-            pkgs: -p zing -p zing-daemon
+            pkgs: -p zing -p zing-daemon -p zing-gui
             ext: zip
           - os: macos-latest
             target: x86_64-apple-darwin
             suffix: x86_64-mac
-            pkgs: -p zing -p zing-daemon
+            pkgs: -p zing -p zing-daemon -p zing-gui
             ext: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
             suffix: aarch64-mac
-            pkgs: -p zing -p zing-daemon
+            pkgs: -p zing -p zing-daemon -p zing-gui
             ext: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
@@ -99,6 +99,8 @@ jobs:
           cp "$BIN_DIR/zing" "staging/zing-$TAG-${{ matrix.suffix }}"
           test -f "$BIN_DIR/zing-daemon" && \
             cp "$BIN_DIR/zing-daemon" "staging/zing-daemon-$TAG-${{ matrix.suffix }}" || true
+          test -f "$BIN_DIR/zing-gui" && \
+            cp "$BIN_DIR/zing-gui" "staging/zing-gui-$TAG-${{ matrix.suffix }}" || true
           if [[ "${{ matrix.suffix }}" == *mac ]]; then
             archive_name="zing-$TAG-${{ matrix.suffix }}-update.tar.gz"
           else
@@ -115,6 +117,8 @@ jobs:
           cp "$BIN_DIR/zing" "staging/zing"
           test -f "$BIN_DIR/zing-daemon" && \
             cp "$BIN_DIR/zing-daemon" "staging/zing-daemon" || true
+          test -f "$BIN_DIR/zing-gui" && \
+            cp "$BIN_DIR/zing-gui" "staging/zing-gui" || true
           hdiutil create -volname "zing $TAG" -srcfolder staging -ov -format UDZO \
             "zing-$TAG-${{ matrix.suffix }}.dmg"
 
@@ -128,6 +132,9 @@ jobs:
           Copy-Item "$binDir/zing.exe" staging/zing.exe
           if (Test-Path "$binDir/zing-daemon.exe") {
             Copy-Item "$binDir/zing-daemon.exe" staging/zing-daemon.exe
+          }
+          if (Test-Path "$binDir/zing-gui.exe") {
+            Copy-Item "$binDir/zing-gui.exe" staging/zing-gui.exe
           }
           Compress-Archive -Path staging/* -DestinationPath "zing-$tag-${{ matrix.suffix }}-update.zip"
 
@@ -143,6 +150,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path target/release
           Copy-Item "$binDir/zing.exe" target/release/zing.exe
           Copy-Item "$binDir/zing-daemon.exe" target/release/zing-daemon.exe
+          Copy-Item "$binDir/zing-gui.exe" target/release/zing-gui.exe
 
       - name: Build MSI installer
         if: matrix.ext == 'zip'

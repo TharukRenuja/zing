@@ -153,13 +153,16 @@ pub async fn run_update() -> Result<()> {
             if bin_path.exists() {
                 bin_path
             } else {
-                // Fallback: look for any file starting with zing- (not daemon)
+                // Fallback: look for any file starting with zing- (not daemon or gui)
                 let mut found = None;
                 for entry in std::fs::read_dir(&tmp)? {
                     let entry = entry?;
                     let name = entry.file_name();
                     let name = name.to_string_lossy();
-                    if name.starts_with("zing-") && !name.starts_with("zing-daemon-") {
+                    if name.starts_with("zing-")
+                        && !name.starts_with("zing-daemon-")
+                        && !name.starts_with("zing-gui-")
+                    {
                         found = Some(entry.path());
                         break;
                     }
@@ -254,6 +257,96 @@ pub async fn run_update() -> Result<()> {
         }
     }
 
+    // Also update zing-gui if present.
+    let gui_bin = if cfg!(windows) {
+        "zing-gui.exe"
+    } else {
+        "zing-gui"
+    };
+    let gui_path = exe_dir.join(gui_bin);
+    if gui_path.exists() {
+        let gui_extracted = match ext {
+            "tar.gz" => {
+                let expected = format!("zing-gui-{tag}-{suffix}");
+                let p = tmp.join(&expected);
+                if p.exists() {
+                    Some(p)
+                } else {
+                    let mut found = None;
+                    for entry in std::fs::read_dir(&tmp)? {
+                        let entry = entry?;
+                        let name = entry.file_name();
+                        if name.to_string_lossy().starts_with("zing-gui-") {
+                            found = Some(entry.path());
+                            break;
+                        }
+                    }
+                    found
+                }
+            }
+            "zip" => {
+                let p = tmp.join(gui_bin);
+                if p.exists() {
+                    Some(p)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(g) = gui_extracted {
+            swap_binary(&g, &gui_path)?;
+            println!("  zing-gui updated");
+        } else if ext == "tar.gz" || ext == "zip" {
+            println!("  zing-gui not found in archive, skipping");
+        }
+    }
+
+    // Also update zing-tray if present.
+    let tray_bin = if cfg!(windows) {
+        "zing-tray.exe"
+    } else {
+        "zing-tray"
+    };
+    let tray_path = exe_dir.join(tray_bin);
+    if tray_path.exists() {
+        let tray_extracted = match ext {
+            "tar.gz" => {
+                let expected = format!("zing-tray-{tag}-{suffix}");
+                let p = tmp.join(&expected);
+                if p.exists() {
+                    Some(p)
+                } else {
+                    let mut found = None;
+                    for entry in std::fs::read_dir(&tmp)? {
+                        let entry = entry?;
+                        let name = entry.file_name();
+                        if name.to_string_lossy().starts_with("zing-tray-") {
+                            found = Some(entry.path());
+                            break;
+                        }
+                    }
+                    found
+                }
+            }
+            "zip" => {
+                let p = tmp.join(tray_bin);
+                if p.exists() {
+                    Some(p)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(t) = tray_extracted {
+            swap_binary(&t, &tray_path)?;
+            println!("  zing-tray updated");
+        } else if ext == "tar.gz" || ext == "zip" {
+            println!("  zing-tray not found in archive, skipping");
+        }
+    }
+
     // Reconcile the Windows service registration (create/config/restart) so an
     // update behaves like a fresh MSI install — binary ACLs, service account,
     // and startup state stay correct without the user reinstalling.
@@ -287,11 +380,35 @@ pub async fn run_update() -> Result<()> {
             crate::run_daemon_start().await?;
             println!("  zing-daemon restarted");
         }
+
+        // Restart the tray if it's running (kill old, relaunch).
+        #[cfg(not(windows))]
+        {
+            if let Ok(output) = tokio::process::Command::new("pgrep")
+                .args(["-x", "zing-tray"])
+                .output()
+                .await
+            {
+                let pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !pid.is_empty() {
+                    println!("  Restarting zing-tray...");
+                    let _ = tokio::process::Command::new("kill")
+                        .arg(&pid)
+                        .output()
+                        .await;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let _ = tokio::process::Command::new("zing-tray").spawn();
+                    println!("  zing-tray restarted");
+                }
+            }
+        }
     }
 
     // Housekeeping: remove leftover backup files from previous swaps.
     let _ = std::fs::remove_file(exe_dir.join("zing.old"));
     let _ = std::fs::remove_file(exe_dir.join("zing-daemon.old"));
+    let _ = std::fs::remove_file(exe_dir.join("zing-gui.old"));
+    let _ = std::fs::remove_file(exe_dir.join("zing-tray.old"));
 
     let _ = std::fs::remove_dir_all(&tmp);
     println!("Done. v{current} -> {tag}");

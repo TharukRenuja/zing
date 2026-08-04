@@ -9,6 +9,14 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use zing_core::rpc;
 
+fn default_zero<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<u64> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(opt.unwrap_or(0))
+}
+
 #[derive(Clone)]
 pub struct GuiClient {
     rt: Arc<Runtime>,
@@ -19,14 +27,14 @@ pub struct TaskInfo {
     pub id: u64,
     pub url: String,
     pub filename: String,
-    #[serde(default)]
+    #[serde(deserialize_with = "default_zero")]
     pub total_bytes: u64,
     #[serde(default)]
     pub downloaded: u64,
     #[serde(default)]
-    pub speed: u64,
+    pub speed: f64,
     #[serde(default)]
-    pub peak_speed: u64,
+    pub peak_speed: f64,
     #[serde(default)]
     pub paused: bool,
     #[serde(default)]
@@ -36,7 +44,7 @@ pub struct TaskInfo {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
-    pub connections: u32,
+    pub connections: Vec<serde_json::Value>,
     #[serde(default)]
     pub completed_blocks: u32,
     #[serde(default)]
@@ -105,8 +113,8 @@ impl GuiClient {
         std::thread::spawn(move || loop {
             if let Ok(tasks) = rt.block_on(rpc::list_tasks()) {
                 let parsed: Vec<TaskInfo> = tasks
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .iter()
+                    .filter_map(|v| serde_json::from_value::<TaskInfo>(v.clone()).ok())
                     .collect();
                 if let Ok(mut s) = snap.lock() {
                     *s = parsed;
