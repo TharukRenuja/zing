@@ -621,33 +621,6 @@ fn main() -> Result<()> {
         return native_host::run().map_err(|e| color_eyre::eyre::eyre!(e));
     }
 
-    // The desktop GUI owns its own tokio runtime (used by the daemon client)
-    // and blocks in the eframe event loop, so run it outside the CLI runtime.
-    if let Some(Commands::Gui {
-        urls,
-        dir,
-        output,
-        connections,
-    }) = &args.command
-    {
-        #[cfg(feature = "gui")]
-        {
-            return zing_gui::run(zing_gui::GuiOptions {
-                urls: urls.clone(),
-                dir: dir.clone(),
-                output: output.clone(),
-                connections: *connections,
-            })
-            .map_err(|e| color_eyre::eyre::eyre!("{e}"));
-        }
-        #[cfg(not(feature = "gui"))]
-        {
-            let _ = (urls, dir, output, connections);
-            eprintln!("error: zing was built without GUI support (feature 'gui' not enabled)");
-            std::process::exit(1);
-        }
-    }
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -1106,10 +1079,6 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 }
                 return Ok(());
             }
-        }
-        Some(Commands::Gui { .. }) => {
-            // Handled before the runtime is created in main(); unreachable here.
-            unreachable!("gui is intercepted in main()")
         }
         None => {
             if args.urls.is_empty() && args.input_file.is_none() && args.metalink.is_none() {

@@ -6,7 +6,7 @@ eula = "wix/License.rtf"
 
 [package]
 name = "zing"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "A modern HTTP downloader with segmented concurrent downloads"
 authors = ["Tharuk Renuja"]
@@ -29,10 +29,10 @@ Features include segmented concurrent downloads, daemon mode, and adaptive conne
 [package.metadata.bundle]
 name = "zing"
 identifier = "com.tharukrj.zing"
-version = "0.2.3"
+version = "0.2.4"
 display-name = "zing"
-short-version = "0.2.3"
-long-version = "0.2.3"
+short-version = "0.2.4"
+long-version = "0.2.4"
 frameworks = ["CoreFoundation", "Foundation"]
 
 [[bin]]
@@ -62,10 +62,8 @@ futures = "0.3"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zing-tui = { path = "../tui", optional = true }
-zing-gui = { path = "../gui", optional = true }
 
 [features]
-default = ["tui", "gui"]
+default = ["tui"]
 tui = ["dep:zing-tui"]
-gui = ["dep:zing-gui"]
 
