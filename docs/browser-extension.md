@@ -12,6 +12,8 @@ zing communicates with browser extensions via [Native Messaging](https://develop
 
 ## Setup
 
+The extension works out of the box once the native host manifests are installed. The zing installer (`install.sh`) runs this automatically; you can also do it by hand:
+
 ```bash
 # Install native host manifests for all browsers
 zing extension install
@@ -20,6 +22,8 @@ zing extension install
 zing extension uninstall
 ```
 
+Then install the companion extension from the `zing-extension` repo in your browser (load unpacked, or a published build). No extension ID editing is needed — the manifest lists the real, deterministic IDs.
+
 ### Manifest locations
 
 | Browser | Path (Linux) |
@@ -27,6 +31,8 @@ zing extension uninstall
 | Chrome | `~/.config/google-chrome/NativeMessagingHosts/com.zing.native_host.json` |
 | Edge | `~/.config/microsoft-edge/NativeMessagingHosts/com.zing.native_host.json` |
 | Firefox | `~/.mozilla/native-messaging-hosts/com.zing.native_host.json` |
+
+On Windows, manifests are written under `%LOCALAPPDATA%\zing\native-messaging-hosts\` and registered in the registry (`HKCU\Software\{Google\Chrome, Microsoft\Edge, Mozilla}\NativeMessagingHosts\`).
 
 ### Manifest content
 
@@ -37,14 +43,26 @@ zing extension uninstall
   "path": "/usr/bin/zing",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://REPLACE_WITH_YOUR_EXTENSION_ID/"
+    "chrome-extension://bcpghfjbokiclpfonepejdcndaoomcpf/"
   ]
 }
 ```
 
-Firefox uses `allowed_extensions` instead of `allowed_origins`.
+Firefox uses `allowed_extensions` instead of `allowed_origins`:
 
-**Important**: Replace the extension ID with your actual extension ID after publishing.
+```json
+{
+  "name": "com.zing.native_host",
+  "description": "zing download manager",
+  "path": "/usr/bin/zing",
+  "type": "stdio",
+  "allowed_extensions": [
+    "zing@tharukrenuja.github.io"
+  ]
+}
+```
+
+**IDs are deterministic** — no manual replacement needed. The Chromium ID (`bcpghfjbokiclpfonepejdcndaoomcpf`) is derived from the public key baked into the extension's `manifest.json`, and the gecko ID (`zing@tharukrenuja.github.io`) is declared there as `browser_specific_settings.gecko.id`. If you regenerate the extension keypair, update both the extension manifest and the `CHROMIUM_ID` constant in `cli/src/extension.rs` together.
 
 ## Wire protocol
 

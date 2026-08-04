@@ -63,6 +63,9 @@ tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zing-tui = { path = "../tui", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
 [features]
 default = ["tui"]
 tui = ["dep:zing-tui"]

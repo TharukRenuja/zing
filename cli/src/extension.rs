@@ -1,5 +1,15 @@
 use std::path::{Path, PathBuf};
 
+/// Stable Chromium extension ID, derived from the public key baked into the
+/// extension's manifest.json ("key" field). Keep in sync with the
+/// zing-extension repo: if the key changes, this ID changes too.
+const CHROMIUM_ID: &str = "bcpghfjbokiclpfonepejdcndaoomcpf";
+
+/// The gecko extension ID declared in the extension's manifest.json
+/// (browser_specific_settings.gecko.id). Firefox native-host manifests list
+/// it verbatim, without a scheme prefix.
+const GECKO_ID: &str = "zing@tharukrenuja.github.io";
+
 /// Browser native-host manifests for Chrome, Edge, and Firefox.
 ///
 /// Each manifest tells the browser where the `zing` binary lives and which
@@ -11,6 +21,7 @@ pub fn install() -> Result<(), String> {
         let path = browser.manifest_path()?;
         let manifest = browser.manifest(&host);
         write_manifest(&path, &manifest)?;
+        browser.register_native_host(&path)?;
         eprintln!(
             "Installed {} native host -> {}",
             browser.name(),
@@ -23,6 +34,7 @@ pub fn install() -> Result<(), String> {
 pub fn uninstall() -> Result<(), String> {
     for browser in Browser::all() {
         let path = browser.manifest_path()?;
+        browser.unregister_native_host(&path)?;
         match std::fs::remove_file(&path) {
             Ok(()) => eprintln!("Removed {} native host: {}", browser.name(), path.display()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -77,22 +89,80 @@ impl Browser {
         }
     }
 
-    /// Extension ID that the zing browser extension will be published under.
-    /// Update when the extension repo is created and packed.
-    const fn allowed_origin(&self) -> &'static str {
-        // TODO: replace with the real extension ID once the extension repo
-        // exists. Chromium IDs are derived from the extension's public key.
-        "chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/"
+    /// Path where the native-host manifest for this browser lives.
+    ///
+    /// - Unix: the browser's per-user NativeMessagingHosts directory.
+    /// - Windows: our own manifests dir; the browser is pointed at it via the
+    ///   registry instead of scanning a directory.
+    fn manifest_path(&self) -> Result<PathBuf, String> {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let dir = match self {
+                Browser::Chrome => native_host_dir("google-chrome"),
+                Browser::Edge => native_host_dir("microsoft-edge"),
+                Browser::Firefox => firefox_native_host_dir(),
+            };
+            dir?.map(|d| d.join(format!("{}.json", host_name())))
+                .ok_or_else(|| "cannot determine home/config directory".to_string())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let dir = windows_manifest_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+            Ok(dir.join(format!("{}.json", host_name())))
+        }
     }
 
-    fn manifest_path(&self) -> Result<PathBuf, String> {
-        let dir = match self {
-            Browser::Chrome => native_host_dir("google-chrome"),
-            Browser::Edge => native_host_dir("microsoft-edge"),
-            Browser::Firefox => firefox_native_host_dir(),
+    /// On Windows the manifest is registered in HKCU so the browser can find
+    /// it; on Unix dropping the file in the right directory is enough.
+    fn register_native_host(&self, path: &Path) -> Result<(), String> {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (self, path);
+            Ok(())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winreg::enums::HKEY_CURRENT_USER;
+            use winreg::RegKey;
+
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            let (key, _) = hkcu
+                .create_subkey(&self.registry_path())
+                .map_err(|e| format!("create registry key: {e}"))?;
+            key.set_value("", &path.to_string_lossy().to_string())
+                .map_err(|e| format!("set registry default: {e}"))
+        }
+    }
+
+    fn unregister_native_host(&self, _path: &Path) -> Result<(), String> {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (self, _path);
+            Ok(())
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winreg::enums::HKEY_CURRENT_USER;
+            use winreg::RegKey;
+
+            let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+            match hkcu.delete_subkey_all(&self.registry_path()) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(format!("delete registry key: {e}")),
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn registry_path(&self) -> String {
+        let base = match self {
+            Browser::Chrome => r"Software\Google\Chrome\NativeMessagingHosts",
+            Browser::Edge => r"Software\Microsoft\Edge\NativeMessagingHosts",
+            Browser::Firefox => r"Software\Mozilla\NativeMessagingHosts",
         };
-        dir?.map(|d| d.join(format!("{}.json", host_name())))
-            .ok_or_else(|| "cannot determine home/config directory".to_string())
+        format!(r"{base}\{}", host_name())
     }
 
     fn manifest(&self, host: &Path) -> String {
@@ -105,12 +175,11 @@ impl Browser {
   "path": "{}",
   "type": "stdio",
   "allowed_origins": [
-    "{}"
+    "chrome-extension://{CHROMIUM_ID}/"
   ]
 }}
 "#,
-                host.display(),
-                self.allowed_origin()
+                host.display()
             ),
             Browser::Firefox => format!(
                 r#"{{
@@ -119,12 +188,11 @@ impl Browser {
   "path": "{}",
   "type": "stdio",
   "allowed_extensions": [
-    "{}"
+    "{GECKO_ID}"
   ]
 }}
 "#,
-                host.display(),
-                self.allowed_origin()
+                host.display()
             ),
         }
     }
@@ -135,11 +203,6 @@ pub const fn host_name() -> &'static str {
     "com.zing.native_host"
 }
 
-#[cfg(target_os = "windows")]
-fn unsupported() -> Result<Option<PathBuf>, String> {
-    Err("native hosts use the registry on Windows (unsupported yet)".to_string())
-}
-
 /// Directory containing native-messaging host manifests for Chromium-based
 /// browsers (Chrome / Edge). Falls back from the config dir to the home dir.
 #[cfg(not(target_os = "windows"))]
@@ -148,18 +211,75 @@ fn native_host_dir(browser: &str) -> Result<Option<PathBuf>, String> {
     Ok(base.map(|d| d.join(browser).join("NativeMessagingHosts")))
 }
 
-#[cfg(target_os = "windows")]
-fn native_host_dir(_browser: &str) -> Result<Option<PathBuf>, String> {
-    unsupported()
-}
-
 /// Firefox native-messaging hosts live under the home dir.
 #[cfg(not(target_os = "windows"))]
 fn firefox_native_host_dir() -> Result<Option<PathBuf>, String> {
     Ok(dirs::home_dir().map(|d| d.join(".mozilla").join("native-messaging-hosts")))
 }
 
+/// Local directory holding our native-host manifests on Windows. The registry
+/// entries point browsers at these files.
 #[cfg(target_os = "windows")]
-fn firefox_native_host_dir() -> Result<Option<PathBuf>, String> {
-    unsupported()
+fn windows_manifest_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::env::temp_dir())
+        .join("zing")
+        .join("native-messaging-hosts")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chromium_id_has_valid_shape() {
+        assert_eq!(CHROMIUM_ID.len(), 32);
+        assert!(
+            CHROMIUM_ID.chars().all(|c| ('a'..='p').contains(&c)),
+            "Chromium IDs use the a-p alphabet, got {CHROMIUM_ID}"
+        );
+    }
+
+    #[test]
+    fn chrome_manifest_lists_real_origin() {
+        let manifest = Browser::Chrome.manifest(Path::new("/usr/bin/zing"));
+        assert!(
+            manifest.contains(&format!("chrome-extension://{CHROMIUM_ID}/")),
+            "chrome manifest must list the real origin"
+        );
+        assert!(!manifest.contains("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+    }
+
+    #[test]
+    fn firefox_manifest_uses_plain_gecko_id() {
+        let manifest = Browser::Firefox.manifest(Path::new("/usr/bin/zing"));
+        assert!(
+            manifest.contains(&format!("\n    \"{GECKO_ID}\"\n  ]")),
+            "firefox manifest must list the plain gecko id"
+        );
+        assert!(
+            !manifest.contains("chrome-extension://"),
+            "firefox must not use a chrome-extension origin"
+        );
+    }
+
+    #[test]
+    fn chrome_manifest_is_valid_json() {
+        let manifest = Browser::Chrome.manifest(Path::new("/usr/bin/zing"));
+        let v: serde_json::Value = serde_json::from_str(&manifest).expect("valid json");
+        assert_eq!(v["name"], "com.zing.native_host");
+        assert_eq!(v["type"], "stdio");
+        assert_eq!(
+            v["allowed_origins"][0],
+            format!("chrome-extension://{CHROMIUM_ID}/")
+        );
+    }
+
+    #[test]
+    fn firefox_manifest_is_valid_json() {
+        let manifest = Browser::Firefox.manifest(Path::new("/usr/bin/zing"));
+        let v: serde_json::Value = serde_json::from_str(&manifest).expect("valid json");
+        assert_eq!(v["allowed_extensions"][0], GECKO_ID);
+        assert!(v.get("allowed_origins").is_none());
+    }
 }

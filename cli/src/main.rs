@@ -552,6 +552,13 @@ fn main() -> Result<()> {
         .display_env_section(false)
         .install()?;
 
+    // The browser launches the native messaging host passing the *host name*
+    // as argv[1] (e.g. `zing com.zing.native_host`), not a subcommand. Detect
+    // that before clap parses (clap would reject the unknown subcommand).
+    if std::env::args().nth(1).as_deref() == Some(extension::host_name()) {
+        return native_host::run().map_err(|e| color_eyre::eyre::eyre!(e));
+    }
+
     let args = Args::parse();
 
     let default_level = if args.quiet || args.pipe.is_some() {

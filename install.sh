@@ -60,7 +60,35 @@ archive="${tmp}/zing.${ext}"
 echo "Downloading zing ${VERSION} for ${suffix}..."
 if ! curl -fsSL "$download_url" -o "$archive"; then
   echo "error: failed to download from $download_url"
-  rm -rf "$tmp"
+# Write the browser native-host manifests so the extension works out of the
+# box. This must run as the invoking user (not root), since the manifests live
+# in the user's browser config/home dirs. Best-effort: warn, don't abort.
+if [ -x "$dst/zing" ]; then
+  run_user_commands() {
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+      uid="$(id -u "$SUDO_USER")"
+      home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
+      sudo -u "$SUDO_USER" env HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" "$@"
+    else
+      "$@"
+    fi
+  }
+  if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    echo "Installing browser native host manifests for user $SUDO_USER..."
+    if ! run_user_commands "$dst/zing" extension install; then
+      echo "warning: could not write browser native host manifests"
+      echo "         run manually as your user: zing extension install"
+    fi
+  elif [ "$(id -u)" -ne 0 ]; then
+    echo "Installing browser native host manifests..."
+    if ! run_user_commands "$dst/zing" extension install; then
+      echo "warning: could not write browser native host manifests"
+      echo "         run manually: zing extension install"
+    fi
+  fi
+fi
+
+rm -rf "$tmp"
   exit 1
 fi
 
