@@ -9,7 +9,12 @@ if [ ! -w "$dst" ]; then
   fi
 fi
 
-echo "Stopping daemon service..."
+echo "Stopping services..."
+# Kill tray if running
+pkill -x zing-tray 2>/dev/null || true
+# Kill GUI if running
+pkill -x zing-gui 2>/dev/null || true
+# Uninstall daemon service
 if [ -x "$dst/zing" ]; then
   if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
     uid="$(id -u "$SUDO_USER")"
@@ -22,7 +27,7 @@ if [ -x "$dst/zing" ]; then
 fi
 
 echo "Removing binaries..."
-$maybe_sudo rm -f "$dst/zing" "$dst/zing-daemon"
+$maybe_sudo rm -f "$dst/zing" "$dst/zing-daemon" "$dst/zing-gui" "$dst/zing-tray"
 
 if command -v systemctl >/dev/null 2>&1; then
   if [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/zing-daemon.service" ]; then
@@ -33,10 +38,20 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
+echo "Removing desktop entries..."
+rm -f "${HOME}/.local/share/applications/zing-gui.desktop"
+rm -f "${HOME}/.config/autostart/zing-gui.desktop"
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "${HOME}/.local/share/applications" 2>/dev/null || true
+fi
+
 echo "Removing config and schedule..."
 rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/zing"
 
 echo "Cleaning up socket and auth token..."
 rm -f /tmp/zing.sock /tmp/zing.sock.auth
+uid="$(id -u)"
+rm -f "/run/user/$uid/zing.sock" "/run/user/$uid/zing.sock.auth"
 
 echo "zing uninstalled"
