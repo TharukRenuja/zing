@@ -67,7 +67,10 @@ pub async fn send_request(
             .to_string());
     }
 
-    Ok(value.get("result").cloned().unwrap_or(serde_json::Value::Null))
+    Ok(value
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
 }
 
 pub async fn daemon_is_running() -> bool {

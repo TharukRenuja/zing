@@ -1,8 +1,8 @@
 use serde_json::Value;
 use std::sync::Arc;
 pub use zing_core::rpc::{
-    add_uri, daemon_is_running, daemon_version, pause_task, remove_task, resume_task,
-    send_request, set_max_concurrent, stop_task, tell_status,
+    add_uri, daemon_is_running, daemon_version, pause_task, remove_task, resume_task, send_request,
+    set_max_concurrent, stop_task, tell_status,
 };
 
 fn bar_style_unknown_size() -> indicatif::ProgressStyle {

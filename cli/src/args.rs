@@ -574,6 +574,25 @@ pub enum Commands {
         allow_overwrite: bool,
     },
 
+    #[command(name = "gui", about = "Launch the desktop GUI for downloads")]
+    Gui {
+        #[arg(help = "URLs to download")]
+        urls: Vec<String>,
+
+        #[arg(long = "dir", short = 'd', help = "Output directory")]
+        dir: Option<PathBuf>,
+
+        #[arg(long = "output", short = 'o', help = "Output filename")]
+        output: Option<PathBuf>,
+
+        #[arg(
+            long = "connections",
+            short = 'n',
+            help = "Max parallel connections per download (default: unlimited)"
+        )]
+        connections: Option<usize>,
+    },
+
     #[command(
         name = "nm",
         about = "Native messaging host for the browser extension",

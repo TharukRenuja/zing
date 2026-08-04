@@ -62,8 +62,10 @@ futures = "0.3"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zing-tui = { path = "../tui", optional = true }
+zing-gui = { path = "../gui", optional = true }
 
 [features]
-default = ["tui"]
+default = ["tui", "gui"]
 tui = ["dep:zing-tui"]
+gui = ["dep:zing-gui"]
 
