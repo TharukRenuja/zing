@@ -86,20 +86,24 @@ impl Browser {
     }
 
     fn manifest_path(&self) -> Result<PathBuf, String> {
+        let unsupported = || -> Result<PathBuf, String> {
+            Err(format!("{} uses the registry for native hosts (unsupported yet)", self.name()))
+        };
+        let cfg_dir = dirs::config_dir();
+        let home_dir = dirs::home_dir();
         let dir = match self {
             Browser::Chrome => {
                 #[cfg(target_os = "linux")]
                 {
-                    dirs::config_dir().map(|d| d.join("google-chrome").join("NativeMessagingHosts"))
+                    cfg_dir.map(|d| d.join("google-chrome").join("NativeMessagingHosts"))
                 }
                 #[cfg(target_os = "windows")]
                 {
-                    // HKEY_CURRENT_USER\Software\Google\Chrome\NativeMessagingHosts
-                    return Err("Windows manifests use the registry (unsupported yet)".to_string());
+                    return unsupported();
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    dirs::home_dir().map(|d| {
+                    home_dir.map(|d| {
                         d.join("Library")
                             .join("Application Support")
                             .join("Google")
@@ -111,16 +115,15 @@ impl Browser {
             Browser::Edge => {
                 #[cfg(target_os = "linux")]
                 {
-                    dirs::config_dir()
-                        .map(|d| d.join("microsoft-edge").join("NativeMessagingHosts"))
+                    cfg_dir.map(|d| d.join("microsoft-edge").join("NativeMessagingHosts"))
                 }
                 #[cfg(target_os = "windows")]
                 {
-                    return Err("Windows manifests use the registry (unsupported yet)".to_string());
+                    return unsupported();
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    dirs::home_dir().map(|d| {
+                    home_dir.map(|d| {
                         d.join("Library")
                             .join("Application Support")
                             .join("Microsoft Edge")
@@ -131,16 +134,15 @@ impl Browser {
             Browser::Firefox => {
                 #[cfg(target_os = "linux")]
                 {
-                    dirs::home_dir().map(|d| d.join(".mozilla").join("native-messaging-hosts"))
+                    home_dir.map(|d| d.join(".mozilla").join("native-messaging-hosts"))
                 }
                 #[cfg(target_os = "windows")]
                 {
-                    // HKEY_CURRENT_USER\Software\Mozilla\NativeMessagingHosts
-                    return Err("Windows manifests use the registry (unsupported yet)".to_string());
+                    return unsupported();
                 }
                 #[cfg(target_os = "macos")]
                 {
-                    dirs::home_dir().map(|d| {
+                    home_dir.map(|d| {
                         d.join("Library")
                             .join("Application Support")
                             .join("Mozilla")
