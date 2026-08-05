@@ -25,6 +25,7 @@ zing https://example.com/file.zip
     - [Scheduled downloads](#scheduled-downloads)
     - [Resume](#resume)
     - [Pipe mode](#pipe-mode)
+    - [Browser Extension](#browser-extension)
     - [Cookies \& Authentication](#cookies--authentication)
     - [Event hooks](#event-hooks)
     - [Logging](#logging)
@@ -307,6 +308,26 @@ zing -p=tar     https://example.com/pkg.tar.gz     # tar -xzf -
 zing -p=app     https://example.com/tool.AppImage  # → ~/.local/bin (chmod +x)
 zing -p=install https://example.com/tool.tar.gz    # extracts → ~/.local/bin/<name>
 ```
+
+</details>
+
+### Browser Extension
+
+<details>
+<summary>Intercept browser downloads and send them to zing</summary>
+
+The [zing Interceptor](https://github.com/TharukRenuja/zing-interceptor) extension monitors your browser's downloads and redirects them to the zing daemon via Native Messaging.
+
+```bash
+# 1. Install native host manifests
+zing extension install
+
+# 2. Install the extension in your browser
+#    Chrome/Edge: load unpacked from dist/chrome/
+#    Firefox: install from AMO or load dist/firefox/
+```
+
+Features: auto-intercept downloads, manual URL popup, file type filtering, enable/disable toggle.
 
 </details>
 

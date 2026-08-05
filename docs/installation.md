@@ -95,3 +95,14 @@ zing daemon start      # start the background daemon
 zing list              # should return "No downloads."
 zing daemon stop
 ```
+
+## Browser extension
+
+Install the native messaging host so the [zing Interceptor](https://github.com/TharukRenuja/zing-interceptor) browser extension can talk to zing:
+
+```bash
+zing extension install    # writes manifests for Chrome, Edge, and Firefox
+zing extension uninstall  # removes them
+```
+
+Then install the extension in your browser — see the [Browser Extension](browser-extension.md) docs for details.

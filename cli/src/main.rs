@@ -570,7 +570,7 @@ fn main() -> Result<()> {
 
     // The browser launches the native messaging host passing a browser-chosen
     // argument as argv[1], not a subcommand. It varies by browser/version: some
-    // pass the host name (e.g. `zing com.zing.native_host`), others pass the
+    // pass the host name (e.g. `zing oss.zing.intercept`), others pass the
     // extension origin (e.g. `zing chrome-extension://<id>/`). Detect either
     // before clap parses, so the origin is never treated as a download URL.
     let argv1 = std::env::args().nth(1);

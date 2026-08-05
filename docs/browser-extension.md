@@ -10,6 +10,8 @@ keywords: zing, browser, extension, chrome, firefox, edge, native messaging, nm,
 
 zing communicates with browser extensions via [Native Messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging). The `zing nm` command runs as a native host process, and `zing extension install/uninstall` manages the manifest files.
 
+The companion extension is available at **<https://github.com/TharukRenuja/zing-interceptor>**.
+
 ## Setup
 
 The extension works out of the box once the native host manifests are installed. The zing installer (`install.sh`) runs this automatically; you can also do it by hand:
@@ -22,23 +24,30 @@ zing extension install
 zing extension uninstall
 ```
 
-Then install the companion extension from the `zing-extension` repo in your browser (load unpacked, or a published build). No extension ID editing is needed — the manifest lists the real, deterministic IDs.
+Then install the companion extension in your browser:
+
+- **Chrome / Edge**: Load unpacked from the `dist/chrome/` directory (or build with `./build.sh`)
+- **Firefox**: Install from [AMO](https://addons.mozilla.org) or load temporarily from `dist/firefox/`
+
+No extension ID editing is needed — the manifest lists the real, deterministic IDs.
 
 ### Manifest locations
 
 | Browser | Path (Linux) |
 |---------|-------------|
-| Chrome | `~/.config/google-chrome/NativeMessagingHosts/com.zing.native_host.json` |
-| Edge | `~/.config/microsoft-edge/NativeMessagingHosts/com.zing.native_host.json` |
-| Firefox | `~/.mozilla/native-messaging-hosts/com.zing.native_host.json` |
+| Chrome | `~/.config/google-chrome/NativeMessagingHosts/oss.zing.intercept.json` |
+| Edge | `~/.config/microsoft-edge/NativeMessagingHosts/oss.zing.intercept.json` |
+| Firefox | `~/.mozilla/native-messaging-hosts/oss.zing.intercept.json` |
 
 On Windows, manifests are written under `%LOCALAPPDATA%\zing\native-messaging-hosts\` and registered in the registry (`HKCU\Software\{Google\Chrome, Microsoft\Edge, Mozilla}\NativeMessagingHosts\`).
 
 ### Manifest content
 
+Chrome/Edge:
+
 ```json
 {
-  "name": "com.zing.native_host",
+  "name": "oss.zing.intercept",
   "description": "zing download manager",
   "path": "/usr/bin/zing",
   "type": "stdio",
@@ -48,21 +57,21 @@ On Windows, manifests are written under `%LOCALAPPDATA%\zing\native-messaging-ho
 }
 ```
 
-Firefox uses `allowed_extensions` instead of `allowed_origins`:
+Firefox:
 
 ```json
 {
-  "name": "com.zing.native_host",
+  "name": "oss.zing.intercept",
   "description": "zing download manager",
   "path": "/usr/bin/zing",
   "type": "stdio",
   "allowed_extensions": [
-    "zing@tharukrenuja.github.io"
+    "oss.zing.intercept@tharukrj"
   ]
 }
 ```
 
-**IDs are deterministic** — no manual replacement needed. The Chromium ID (`bcpghfjbokiclpfonepejdcndaoomcpf`) is derived from the public key baked into the extension's `manifest.json`, and the gecko ID (`zing@tharukrenuja.github.io`) is declared there as `browser_specific_settings.gecko.id`. If you regenerate the extension keypair, update both the extension manifest and the `CHROMIUM_ID` constant in `cli/src/extension.rs` together.
+**IDs are deterministic** — no manual replacement needed. The Chromium ID (`bcpghfjbokiclpfonepejdcndaoomcpf`) is derived from the public key baked into the extension's `manifest.json`, and the gecko ID (`oss.zing.intercept@tharukrj`) is declared there as `browser_specific_settings.gecko.id`. If you regenerate the extension keypair, update both the extension manifest and the `CHROMIUM_ID` constant in `cli/src/extension.rs` together.
 
 ## Wire protocol
 
