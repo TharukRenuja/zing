@@ -1,6 +1,6 @@
 [package]
 name = "zing-gui"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 description = "Standalone desktop GUI for the zing downloader (IDM-style)"
 authors = ["Tharuk Renuja"]
