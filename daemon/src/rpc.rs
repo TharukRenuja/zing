@@ -215,17 +215,32 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .filter(|s| !s.is_empty());
     let is_auto_name = user_filename.is_none();
 
-    let dir = map
+    let raw_dir = map
         .remove("dir")
         .and_then(|v| v.as_str().map(String::from))
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from);
+        .filter(|s| !s.is_empty());
+    let config_dir = || -> Option<String> {
+        let path = dirs::config_dir()?.join("zing").join("config.json");
+        let content = std::fs::read_to_string(&path).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+        v.get("download_dir")
+            .and_then(|d| d.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let dir = raw_dir
+        .or_else(config_dir)
+        .map(|s| {
+            let expanded = shellexpand::full(&s).map(|c| c.to_string()).unwrap_or(s);
+            std::path::PathBuf::from(expanded)
+        })
+        .or_else(dirs::download_dir);
 
     let base_filename = user_filename.unwrap_or_else(|| filename::from_url(&url));
-    let filename = match dir {
-        Some(d) => d.join(&base_filename).to_string_lossy().to_string(),
-        None => base_filename,
-    };
+    let filename = dir
+        .as_ref()
+        .map(|d| d.join(&base_filename).to_string_lossy().to_string())
+        .unwrap_or(base_filename);
 
     let connections = map
         .remove("connections")

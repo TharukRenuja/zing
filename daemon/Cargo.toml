@@ -19,6 +19,7 @@ zing-ext = { path = "../ext" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "time"] }
 chrono = "0.4"
 dirs = "6"
+shellexpand = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

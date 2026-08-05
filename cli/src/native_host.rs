@@ -83,6 +83,13 @@ fn handle_message(msg: Value) -> Value {
         "stop" => control_task("zing.stop", &msg),
         "remove" => control_task("zing.remove", &msg),
         "version" => call_daemon("zing.version", None, |r| Some(r.clone())),
+        "setMaxConcurrent" => {
+            let params = msg.get("params").cloned();
+            call_daemon("zing.setMaxConcurrent", params, |r| Some(r.clone()))
+        }
+        "getDefaultDir" => get_default_dir(),
+        "setDefaultDir" => set_default_dir(&msg),
+        "pickDirectory" => pick_directory(),
         _ => err(format!("unknown action: '{action}'")),
     }
 }
@@ -122,8 +129,105 @@ fn ok(result: Value) -> Value {
     json!({ "ok": true, "result": result })
 }
 
+fn get_default_dir() -> Value {
+    let config_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("zing")
+        .join("config.json");
+    let dir = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+        .and_then(|v| {
+            v.get("download_dir")
+                .and_then(|d| d.as_str())
+                .map(String::from)
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let expanded = shellexpand::full(&s).map(|c| c.to_string()).unwrap_or(s);
+            std::path::PathBuf::from(expanded)
+        })
+        .or_else(dirs::download_dir)
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Downloads"));
+    ok(json!({ "path": dir.to_string_lossy() }))
+}
+
+fn set_default_dir(msg: &Value) -> Value {
+    let path = msg
+        .get("params")
+        .and_then(|p| p.get("dir"))
+        .and_then(|d| d.as_str())
+        .map(String::from)
+        .filter(|s| !s.is_empty())
+        .map(|s| shellexpand::full(&s).map(|c| c.to_string()).unwrap_or(s));
+    let Some(path) = path else {
+        return err("missing or empty 'dir'".to_string());
+    };
+    let config_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("zing")
+        .join("config.json");
+    let mut config = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+        .unwrap_or_else(|| json!({}));
+    config["download_dir"] = json!(path);
+    let content = match serde_json::to_string_pretty(&config) {
+        Ok(c) => c,
+        Err(e) => return err(format!("serialize config: {e}")),
+    };
+    if let Some(parent) = config_path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return err(format!("cannot create config dir {}", parent.display()));
+        }
+    }
+    match std::fs::write(&config_path, content) {
+        Ok(_) => ok(json!({ "path": path })),
+        Err(e) => err(format!("write config: {e}")),
+    }
+}
+
 fn err(message: String) -> Value {
     json!({ "ok": false, "error": message })
+}
+
+fn pick_directory() -> Value {
+    let output = if cfg!(target_os = "macos") {
+        std::process::Command::new("osascript")
+            .args(["-e", "POSIX path of (choose folder)"])
+            .output()
+    } else {
+        // Linux: try zenity, fall back to kdialog
+        let result = std::process::Command::new("zenity")
+            .args([
+                "--file-selection",
+                "--directory",
+                "--title=Select Download Directory",
+            ])
+            .output();
+        match result {
+            Ok(o) if o.status.success() => Ok(o),
+            _ => std::process::Command::new("kdialog")
+                .args([
+                    "--getexistingdirectory",
+                    &dirs::home_dir().unwrap_or_default().to_string_lossy(),
+                ])
+                .output(),
+        }
+    };
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if path.is_empty() {
+                err("no directory selected".to_string())
+            } else {
+                ok(json!({ "path": path }))
+            }
+        }
+        Ok(_) => err("directory selection cancelled".to_string()),
+        Err(e) => err(format!("failed to open directory picker: {e}")),
+    }
 }
 
 #[cfg(test)]
@@ -161,5 +265,12 @@ mod tests {
             u32::from_le_bytes((body.len() as u32).to_le_bytes()) as usize,
             body.len()
         );
+    }
+
+    #[test]
+    fn test_set_default_dir_missing_dir() {
+        let resp = set_default_dir(&json!({ "action": "setDefaultDir" }));
+        assert_eq!(resp["ok"], false);
+        assert!(resp["error"].as_str().unwrap().contains("dir"));
     }
 }
