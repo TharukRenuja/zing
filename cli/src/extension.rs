@@ -228,6 +228,12 @@ fn firefox_native_host_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|d| d.join(".mozilla").join("native-messaging-hosts"))
 }
 
+/// On Windows, Firefox uses %APPDATA%\Mozilla\NativeMessagingHosts\.
+#[cfg(target_os = "windows")]
+fn firefox_native_host_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("Mozilla").join("NativeMessagingHosts"))
+}
+
 /// Local directory holding our native-host manifests on Windows. The registry
 /// entries point browsers at these files.
 #[cfg(target_os = "windows")]
