@@ -11,11 +11,13 @@ const CHROMIUM_ID: &str = "bcpghfjbokiclpfonepejdcndaoomcpf";
 const GECKO_ID: &str = "oss.zing.intercept@tharukrj";
 
 /// Install native-host manifests for every Chromium-based browser found on the
-/// system plus Firefox.  On Linux we scan:
-///   - ~/.config/*/NativeMessagingHosts/          (native packages)
-///   - ~/.var/app/*/config/*/NativeMessagingHosts/ (Flatpak)
-///   - ~/snap/*/config/*/NativeMessagingHosts/     (Snap)
-/// so new browsers are picked up automatically without code changes.
+/// system plus Firefox. On Linux we scan:
+///
+/// - `~/.config/*/NativeMessagingHosts/` — native packages
+/// - `~/.var/app/*/config/*/NativeMessagingHosts/` — Flatpak
+/// - `~/snap/*/config/*/NativeMessagingHosts/` — Snap
+///
+/// New browsers are picked up automatically without code changes.
 pub fn install() -> Result<(), String> {
     let host = host_executable()?;
     let manifest_name = format!("{}.json", host_name());
