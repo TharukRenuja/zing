@@ -21,7 +21,7 @@ const GECKO_ID: &str = "oss.zing.intercept@tharukrj";
 pub fn install() -> Result<(), String> {
     let host = host_executable()?;
     let manifest_name = format!("{}.json", host_name());
-    let mut found_any = false;
+    let mut count = 0usize;
 
     // ── Chromium-based browsers: glob all NativeMessagingHosts dirs ──
     let chromium = chromium_manifest(&host);
@@ -29,7 +29,7 @@ pub fn install() -> Result<(), String> {
         let path = dir.join(&manifest_name);
         write_manifest(&path, &chromium)?;
         eprintln!("Installed native host -> {}", path.display());
-        found_any = true;
+        count += 1;
     }
 
     // ── Firefox ──
@@ -39,7 +39,7 @@ pub fn install() -> Result<(), String> {
             .map_err(|e| format!("create {}: {e}", firefox_dir.display()))?;
         write_manifest(&path, &firefox_manifest(&host))?;
         eprintln!("Installed native host -> {}", path.display());
-        found_any = true;
+        count += 1;
     }
 
     // ── Windows registry ──
@@ -51,10 +51,10 @@ pub fn install() -> Result<(), String> {
         write_manifest(&path, &chromium)?;
         register_windows(&path)?;
         eprintln!("Installed native host -> {}", path.display());
-        found_any = true;
+        count += 1;
     }
 
-    if !found_any {
+    if count == 0 {
         eprintln!("No browser native-messaging directories found");
     }
     Ok(())
