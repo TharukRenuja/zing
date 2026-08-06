@@ -173,6 +173,16 @@ fn find_chromium_host_dirs() -> Vec<PathBuf> {
             if nm.is_dir() {
                 dirs.push(nm);
             }
+            // Some vendors nest the browser profile, e.g.
+            // ~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/
+            if let Ok(sub) = std::fs::read_dir(entry.path()) {
+                for sub_entry in sub.flatten() {
+                    let nested = sub_entry.path().join("NativeMessagingHosts");
+                    if nested.is_dir() {
+                        dirs.push(nested);
+                    }
+                }
+            }
         }
     }
 
