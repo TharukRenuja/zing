@@ -60,6 +60,14 @@ impl TaskInfo {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PendingConfirmation {
+    pub pending_id: u64,
+    pub url: String,
+    pub filename: String,
+    pub dir: String,
+}
+
 impl GuiClient {
     pub fn new() -> Result<Self, String> {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -103,6 +111,32 @@ impl GuiClient {
 
     pub fn version(&self) -> Result<String, String> {
         self.rt.block_on(rpc::daemon_version())
+    }
+
+    pub fn confirm_uri(&self, pending_id: u64) -> Result<serde_json::Value, String> {
+        let params = serde_json::json!({ "pending_id": pending_id });
+        self.rt
+            .block_on(rpc::send_request("zing.confirmUri", Some(params)))
+    }
+
+    pub fn deny_uri(&self, pending_id: u64) -> Result<serde_json::Value, String> {
+        let params = serde_json::json!({ "pending_id": pending_id });
+        self.rt
+            .block_on(rpc::send_request("zing.denyUri", Some(params)))
+    }
+
+    pub fn pending_confirmations(&self) -> Result<Vec<PendingConfirmation>, String> {
+        let resp = self
+            .rt
+            .block_on(rpc::send_request("zing.pendingConfirmations", None))?;
+        let list = resp
+            .get("pending")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        list.into_iter()
+            .map(|v| serde_json::from_value(v).map_err(|e| format!("parse pending: {e}")))
+            .collect()
     }
 
     /// Spawns a background thread that continuously refreshes `snapshot` with

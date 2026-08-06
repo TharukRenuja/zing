@@ -9,6 +9,7 @@ use zing_core::engine::event::{EngineEvent, EventBus, TaskId};
 use zing_core::storage::ControlFile;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_PENDING_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
@@ -115,6 +116,7 @@ pub struct TaskManager {
     bus: EventBus,
     session_path: PathBuf,
     semaphore: Arc<Mutex<Option<Arc<Semaphore>>>>,
+    pending_confirmations: Arc<Mutex<HashMap<u64, serde_json::Value>>>,
 }
 
 impl std::fmt::Debug for TaskManager {
@@ -137,6 +139,7 @@ impl TaskManager {
             bus: EventBus::new(),
             session_path,
             semaphore: Arc::new(Mutex::new(None)),
+            pending_confirmations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -823,6 +826,32 @@ impl TaskManager {
     pub async fn get_task(&self, id: TaskId) -> Option<TaskInfo> {
         let tasks = self.tasks.lock().await;
         tasks.get(&id).cloned()
+    }
+
+    // ── Pending confirmations (non-silent downloads from extension) ──
+
+    pub async fn add_pending_confirmation(&self, params: serde_json::Value) -> u64 {
+        let id = NEXT_PENDING_ID.fetch_add(1, Ordering::Relaxed);
+        let mut pending = self.pending_confirmations.lock().await;
+        pending.insert(id, params);
+        self.bus
+            .emit(EngineEvent::PendingDownload { pending_id: id });
+        id
+    }
+
+    pub async fn take_pending_confirmation(&self, id: u64) -> Option<serde_json::Value> {
+        let mut pending = self.pending_confirmations.lock().await;
+        pending.remove(&id)
+    }
+
+    pub async fn deny_pending_confirmation(&self, id: u64) -> bool {
+        let mut pending = self.pending_confirmations.lock().await;
+        pending.remove(&id).is_some()
+    }
+
+    pub async fn list_pending_confirmations(&self) -> Vec<(u64, serde_json::Value)> {
+        let pending = self.pending_confirmations.lock().await;
+        pending.iter().map(|(k, v)| (*k, v.clone())).collect()
     }
 }
 

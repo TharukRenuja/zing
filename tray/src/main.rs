@@ -3,6 +3,10 @@
 //! Runs independently of the GUI window. Menu actions (pause all, resume all,
 //! quit) are forwarded to the daemon over RPC. "Open" spawns a new `zing-gui`
 //! process. The tray stays alive until the user picks Quit.
+//!
+//! A background poller checks for pending download confirmations every 2
+//! seconds. When one appears and the GUI is not already running, the tray
+//! spawns it so the user can confirm or deny the intercepted download.
 
 use std::process::Command;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -18,6 +22,13 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
+
+    // Spawn a background thread that polls for pending confirmations and
+    // opens the GUI when one arrives.
+    {
+        let rt_handle = rt.handle().clone();
+        std::thread::spawn(move || confirmation_poller(rt_handle));
+    }
 
     // Set up menu event handler before building the tray.
     let (done_tx, done_rx) = std::sync::mpsc::channel::<MenuEvent>();
@@ -131,6 +142,46 @@ fn spawn_gui() {
     {
         let _ = Command::new("zing-gui").arg("--restore").spawn();
     }
+}
+
+fn spawn_confirm_gui() -> Option<u32> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("zing-gui.exe")
+            .arg("--confirm")
+            .spawn()
+            .ok()
+            .map(|c| c.id())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("zing-gui")
+            .arg("--confirm")
+            .spawn()
+            .ok()
+            .map(|c| c.id())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_pid_alive(pid: u32) -> bool {
+    let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
+        Ok(s) => s,
+        Err(_) => return false, // process gone
+    };
+    // Check if zombie — treat as dead so we can spawn a replacement.
+    for line in status.lines() {
+        if line.starts_with("State:") && line.contains("Z (zombie)") {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_pid_alive(pid: u32) -> bool {
+    let _ = pid;
+    false
 }
 
 fn is_gui_running() -> bool {
@@ -249,4 +300,121 @@ fn load_icon() -> Option<Icon> {
         }
     }
     Icon::from_rgba(buf, size as u32, size as u32).ok()
+}
+
+// ── Confirmation poller ──────────────────────────────────────────
+
+/// Background loop that checks for pending download confirmations every 2
+/// seconds. When one is found, it spawns the lightweight confirm-only GUI
+/// so the user can review and confirm the intercepted download.
+fn confirmation_poller(handle: tokio::runtime::Handle) {
+    let mut confirm_pid: Option<u32> = None;
+    // Pending IDs we already showed (or that were denied by closing the
+    // confirm window). Never respawn for the same ID.
+    let mut handled_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut startup = true;
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // If we spawned a confirm window before, check if it's still alive.
+        if let Some(pid) = confirm_pid.take() {
+            if is_pid_alive(pid) {
+                confirm_pid = Some(pid);
+                continue; // window still open — don't spawn another
+            }
+            // Window closed — the GUI denied remaining pending via
+            // denyUri. Mark them all as handled so we never respawn.
+            if let Ok(pending) = handle.block_on(fetch_pending()) {
+                for p in &pending {
+                    handled_ids.insert(p.pending_id);
+                }
+            }
+        }
+
+        let pending = match handle.block_on(fetch_pending()) {
+            Ok(list) => list,
+            Err(_) => continue, // daemon not running or RPC error
+        };
+
+        if pending.is_empty() {
+            startup = false;
+            continue;
+        }
+
+        // On first startup, deny all stale pending confirmations so the
+        // user isn't bombarded with old downloads from a previous session.
+        if startup {
+            for p in &pending {
+                let _ = handle.block_on(deny_pending(p.pending_id));
+                handled_ids.insert(p.pending_id);
+            }
+            startup = false;
+            continue;
+        }
+
+        // Filter out already-handled IDs.
+        let new_pending: Vec<&PendingInfo> = pending
+            .iter()
+            .filter(|p| !handled_ids.contains(&p.pending_id))
+            .collect();
+
+        if new_pending.is_empty() {
+            continue;
+        }
+
+        // Mark all new ones as handled immediately so we don't re-spawn.
+        for p in &new_pending {
+            handled_ids.insert(p.pending_id);
+        }
+
+        // Spawn the lightweight confirm window and track its PID.
+        confirm_pid = spawn_confirm_gui();
+    }
+}
+
+async fn deny_pending(pending_id: u64) -> Result<(), String> {
+    let params = serde_json::json!({ "pending_id": pending_id });
+    let _ = zing_core::rpc::send_request("zing.denyUri", Some(params)).await?;
+    Ok(())
+}
+
+/// Query the daemon for pending download confirmations.
+async fn fetch_pending() -> Result<Vec<PendingInfo>, String> {
+    let resp = zing_core::rpc::send_request("zing.pendingConfirmations", None).await?;
+    let list = resp
+        .get("pending")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(list
+        .into_iter()
+        .filter_map(|v| {
+            let pending_id = v.get("pending_id").and_then(|x| x.as_u64())?;
+            let url = v
+                .get("url")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let filename = v
+                .get("filename")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(PendingInfo {
+                pending_id,
+                url,
+                filename,
+            })
+        })
+        .collect())
+}
+
+struct PendingInfo {
+    #[allow(dead_code)]
+    pending_id: u64,
+    #[allow(dead_code)]
+    url: String,
+    #[allow(dead_code)]
+    filename: String,
 }

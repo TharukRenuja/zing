@@ -12,6 +12,9 @@ fn main() {
         .install()
         .unwrap();
 
+    let args: Vec<String> = std::env::args().collect();
+    let confirm_mode = args.iter().any(|a| a == "--confirm");
+
     let client = match GuiClient::new() {
         Ok(c) => c,
         Err(e) => {
@@ -33,19 +36,30 @@ fn main() {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 780.0])
-            .with_min_inner_size([800.0, 500.0])
-            .with_title("zing"),
+        viewport: if confirm_mode {
+            egui::ViewportBuilder::default()
+                .with_inner_size([420.0, 260.0])
+                .with_min_inner_size([380.0, 200.0])
+                .with_title("zing - Confirm Download")
+                .with_decorations(true)
+                .with_resizable(false)
+        } else {
+            egui::ViewportBuilder::default()
+                .with_inner_size([1200.0, 780.0])
+                .with_min_inner_size([800.0, 500.0])
+                .with_title("zing")
+        },
         ..Default::default()
     };
+
+    let confirm = confirm_mode;
 
     eframe::run_native(
         "zing",
         options,
         Box::new(move |cc| {
             setup_style(&cc.egui_ctx);
-            Ok(Box::new(app::ZingApp::new(client)))
+            Ok(Box::new(app::ZingApp::new_confirm_mode(client, confirm)))
         }),
     )
     .expect("failed to start GUI");

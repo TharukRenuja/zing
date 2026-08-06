@@ -72,6 +72,9 @@ pub async fn handle_request(
                 error: None,
             }
         }
+        "zing.confirmUri" => handle_confirm_uri(req.params, manager).await,
+        "zing.denyUri" => handle_deny_uri(req.params, manager).await,
+        "zing.pendingConfirmations" => handle_pending_confirmations(manager).await,
         _ => RpcResponse {
             id: req.id,
             result: None,
@@ -164,6 +167,10 @@ fn event_to_json(event: &EngineEvent) -> Value {
             "event": "ConnectionCreated",
             "protocol": protocol,
         }),
+        PendingDownload { pending_id } => serde_json::json!({
+            "event": "PendingDownload",
+            "pending_id": pending_id,
+        }),
         _ => serde_json::json!({ "event": "other" }),
     }
 }
@@ -194,6 +201,25 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
             }
         }
     };
+
+    // Check for confirm flag — if set, hold in pending queue instead of
+    // starting the download immediately. The GUI will call confirmUri/denyUri.
+    let confirm = map
+        .remove("confirm")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if confirm {
+        let pending_id = manager.add_pending_confirmation(Value::Object(map)).await;
+        return RpcResponse {
+            id: None,
+            result: Some(serde_json::json!({
+                "id": pending_id,
+                "status": "pending_confirmation",
+            })),
+            error: None,
+        };
+    }
 
     let url = match map.remove("url").and_then(|v| v.as_str().map(String::from)) {
         Some(u) => u,
@@ -480,6 +506,73 @@ async fn handle_remove(params: Option<Value>, manager: &TaskManager) -> RpcRespo
                 message: e,
             }),
         },
+    }
+}
+
+async fn handle_confirm_uri(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
+    let pending_id = params
+        .and_then(|v| v.get("pending_id").and_then(|v| v.as_u64()))
+        .unwrap_or(0);
+
+    let stored = match manager.take_pending_confirmation(pending_id).await {
+        Some(p) => p,
+        None => {
+            return RpcResponse {
+                id: None,
+                result: None,
+                error: Some(RpcError {
+                    code: -32000,
+                    message: format!("Pending confirmation #{pending_id} not found or expired"),
+                }),
+            }
+        }
+    };
+
+    // The stored params are the original addUri params (minus the confirm flag).
+    // Feed them through the same add_uri logic.
+    let resp = handle_add_uri(Some(stored), manager).await;
+    resp
+}
+
+async fn handle_deny_uri(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
+    let pending_id = params
+        .and_then(|v| v.get("pending_id").and_then(|v| v.as_u64()))
+        .unwrap_or(0);
+
+    let removed = manager.deny_pending_confirmation(pending_id).await;
+    RpcResponse {
+        id: None,
+        result: Some(serde_json::json!({
+            "pending_id": pending_id,
+            "denied": removed,
+        })),
+        error: None,
+    }
+}
+
+async fn handle_pending_confirmations(manager: &TaskManager) -> RpcResponse {
+    let pending = manager.list_pending_confirmations().await;
+    let list: Vec<Value> = pending
+        .into_iter()
+        .map(|(id, params)| {
+            let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let filename = params
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let dir = params.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+            serde_json::json!({
+                "pending_id": id,
+                "url": url,
+                "filename": filename,
+                "dir": dir,
+            })
+        })
+        .collect();
+    RpcResponse {
+        id: None,
+        result: Some(serde_json::json!({ "pending": list })),
+        error: None,
     }
 }
 

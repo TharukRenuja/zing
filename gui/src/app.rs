@@ -129,14 +129,34 @@ pub struct ZingApp {
     add_advanced_open: bool,
     prev_add_url: String,
     add_filename_auto: bool,
+    // ── Browser interception confirmation ──
+    pending_confirmations: Vec<crate::client::PendingConfirmation>,
+    last_pending_poll: Instant,
+    /// When true the GUI runs in lightweight confirm-only mode (spawned by
+    /// the tray for browser interception confirmations).  The full task
+    /// list / toolbar / menus are suppressed and the window closes once
+    /// all pending confirmations are resolved.
+    confirm_mode: bool,
 }
 
 impl ZingApp {
     pub fn new(client: GuiClient) -> Self {
+        Self::new_confirm_mode(client, false)
+    }
+
+    pub fn new_confirm_mode(client: GuiClient, confirm_mode: bool) -> Self {
         let snapshot = Arc::new(Mutex::new(Vec::new()));
         client.spawn_poller(Arc::clone(&snapshot));
 
         let version = client.version().unwrap_or_else(|_| "dev".into());
+
+        // In confirm mode, fetch pending confirmations immediately so the
+        // window doesn't close on the first frame before the 1s poll fires.
+        let initial_pending = if confirm_mode {
+            client.pending_confirmations().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         Self {
             client,
@@ -175,6 +195,9 @@ impl ZingApp {
             add_advanced_open: false,
             prev_add_url: String::new(),
             add_filename_auto: false,
+            pending_confirmations: initial_pending,
+            last_pending_poll: Instant::now(),
+            confirm_mode,
         }
     }
 
@@ -189,6 +212,14 @@ impl ZingApp {
             self.speed_history.pop_front();
         }
         self.check_transitions();
+
+        // Poll pending confirmations every 1s
+        if self.last_pending_poll.elapsed().as_secs() >= 1 {
+            self.last_pending_poll = Instant::now();
+            if let Ok(pending) = self.client.pending_confirmations() {
+                self.pending_confirmations = pending;
+            }
+        }
     }
 
     /// Detects tasks that started or completed and fires desktop
@@ -253,6 +284,20 @@ impl eframe::App for ZingApp {
         if self.show_add_dialog {
             self.render_add_dialog(ctx);
         }
+        // ── Browser interception confirmation dialog ──────────
+        if !self.pending_confirmations.is_empty() {
+            self.render_confirm_dialog(ctx);
+        }
+
+        // ── Confirm mode: ONLY show confirm popup, then close ──
+        if self.confirm_mode {
+            // No more pending confirmations — close immediately.
+            if self.pending_confirmations.is_empty() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            return; // skip the full UI below
+        }
+
         // ── Standalone progress window ────────────────────────
         if self.progress_id.is_some() {
             self.render_progress_window(ctx);
@@ -738,6 +783,68 @@ impl ZingApp {
                 self.error = Some(e);
                 self.show_add_dialog = false;
             }
+        }
+    }
+
+    fn render_confirm_dialog(&mut self, ctx: &egui::Context) {
+        // Process one pending confirmation at a time (oldest first)
+        let pending = match self.pending_confirmations.first() {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let mut open = true;
+        egui::Window::new("Confirm Download")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("The browser intercepted a download:");
+                ui.add_space(4.0);
+
+                egui::Grid::new("confirm_grid")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("URL:").strong());
+                        ui.label(&pending.url);
+                        ui.end_row();
+
+                        ui.label(RichText::new("File:").strong());
+                        ui.label(&pending.filename);
+                        ui.end_row();
+
+                        ui.label(RichText::new("Dir:").strong());
+                        ui.label(&pending.dir);
+                        ui.end_row();
+                    });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Add Download").strong()).clicked() {
+                        let id = pending.pending_id;
+                        match self.client.confirm_uri(id) {
+                            Ok(_) => {
+                                self.pending_confirmations.remove(0);
+                            }
+                            Err(e) => {
+                                self.error = Some(format!("Confirm failed: {e}"));
+                            }
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        let id = pending.pending_id;
+                        let _ = self.client.deny_uri(id);
+                        self.pending_confirmations.remove(0);
+                    }
+                });
+            });
+
+        if !open {
+            // User closed the window — deny the pending download
+            let id = pending.pending_id;
+            let _ = self.client.deny_uri(id);
+            self.pending_confirmations.remove(0);
         }
     }
 

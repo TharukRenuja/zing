@@ -72,6 +72,9 @@ pub enum EngineEvent {
         ips: Vec<String>,
         latency: std::time::Duration,
     },
+    PendingDownload {
+        pending_id: u64,
+    },
 }
 
 impl fmt::Display for EngineEvent {
@@ -148,6 +151,9 @@ impl fmt::Display for EngineEvent {
             ),
             EngineEvent::DnsResolved { host, ips, latency } => {
                 write!(f, "DNS {host} -> [{}] ({latency:.2?})", ips.join(", "),)
+            }
+            EngineEvent::PendingDownload { pending_id } => {
+                write!(f, "Pending download #{pending_id} awaiting confirmation")
             }
         }
     }
