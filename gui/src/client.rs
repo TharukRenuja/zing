@@ -22,7 +22,7 @@ pub struct GuiClient {
     rt: Arc<Runtime>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskInfo {
     pub id: u64,
     pub url: String,
@@ -60,7 +60,7 @@ impl TaskInfo {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PendingConfirmation {
     pub pending_id: u64,
     pub url: String,
@@ -113,8 +113,19 @@ impl GuiClient {
         self.rt.block_on(rpc::daemon_version())
     }
 
-    pub fn confirm_uri(&self, pending_id: u64) -> Result<serde_json::Value, String> {
-        let params = serde_json::json!({ "pending_id": pending_id });
+    pub fn confirm_uri(
+        &self,
+        pending_id: u64,
+        overwrite: Option<bool>,
+        filename: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        let mut params = serde_json::json!({ "pending_id": pending_id });
+        if let Some(ow) = overwrite {
+            params["allow_overwrite"] = serde_json::json!(ow);
+        }
+        if let Some(name) = filename {
+            params["filename"] = serde_json::json!(name);
+        }
         self.rt
             .block_on(rpc::send_request("zing.confirmUri", Some(params)))
     }
@@ -144,17 +155,19 @@ impl GuiClient {
     pub fn spawn_poller(&self, snapshot: Arc<Mutex<Vec<TaskInfo>>>) {
         let rt = Arc::clone(&self.rt);
         let snap = Arc::clone(&snapshot);
-        std::thread::spawn(move || loop {
-            if let Ok(tasks) = rt.block_on(rpc::list_tasks()) {
-                let parsed: Vec<TaskInfo> = tasks
-                    .iter()
-                    .filter_map(|v| serde_json::from_value::<TaskInfo>(v.clone()).ok())
-                    .collect();
-                if let Ok(mut s) = snap.lock() {
-                    *s = parsed;
+        std::thread::spawn(move || {
+            loop {
+                if let Ok(tasks) = rt.block_on(rpc::list_tasks()) {
+                    let parsed: Vec<TaskInfo> = tasks
+                        .iter()
+                        .filter_map(|v| serde_json::from_value::<TaskInfo>(v.clone()).ok())
+                        .collect();
+                    if let Ok(mut s) = snap.lock() {
+                        *s = parsed;
+                    }
                 }
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
         });
     }
 }

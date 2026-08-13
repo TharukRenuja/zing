@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for all windows",
+  "windows": ["main", "confirm", "settings", "progress", "add-download"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-create",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "shell:allow-open"
+  ]
+}

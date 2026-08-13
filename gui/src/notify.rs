@@ -25,7 +25,7 @@ pub fn started(filename: &str, url: &str) {
 }
 
 pub fn completed(filename: &str, bytes: u64) {
-    let size = crate::app::format_bytes(bytes);
+    let size = crate::format_bytes(bytes);
     let _ = Notification::new()
         .appname(APP_NAME)
         .summary("Download complete")

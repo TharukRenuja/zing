@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zing - Add New Download</title>
+  <link rel="stylesheet" href="css/theme.css">
+  <script>
+    (function() {
+      var t = localStorage.getItem('zing-theme');
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
+  <style>
+    body { overflow: auto; height: auto; }
+  </style>
+</head>
+<body>
+  <div class="add-wrap" id="add-wrap">
+    <div class="add-title">Add New Download</div>
+
+    <div>
+      <div class="field-label">URL</div>
+      <input class="field-input" id="add-url" placeholder="https://...">
+    </div>
+
+    <div>
+      <div class="field-label">Save As</div>
+      <input class="field-input" id="add-filename">
+    </div>
+
+    <div>
+      <div class="field-label">Save To</div>
+      <div style="display:flex;gap:8px;">
+        <input class="field-input" id="add-dir" style="flex:1;">
+        <button class="btn" id="btn-browse-dir">Browse</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="field-label">Segments (connections)</div>
+      <div class="segment-group" id="conn-segments"></div>
+    </div>
+
+    <hr style="border:none;border-top:1px solid var(--border);">
+
+    <div class="adv-toggle" id="adv-toggle">
+      <span id="adv-arrow">&#9656;</span> Advanced Options
+    </div>
+
+    <div class="adv-panel" id="adv-panel" style="display:none;">
+      <div class="adv-row">
+        <label>Speed limit</label>
+        <select class="field-input" id="add-speed-limit" style="height:30px;">
+          <option value="">No limit</option>
+          <option value="102400">100 KB/s</option>
+          <option value="512000">500 KB/s</option>
+          <option value="1048576">1 MB/s</option>
+          <option value="5242880">5 MB/s</option>
+          <option value="10485760">10 MB/s</option>
+          <option value="52428800">50 MB/s</option>
+          <option value="104857600">100 MB/s</option>
+          <option value="custom">Custom...</option>
+        </select>
+      </div>
+      <div class="adv-row" id="custom-speed-row" style="display:none;">
+        <label>Custom (B/s)</label>
+        <input class="field-input" id="add-speed-custom" placeholder="e.g. 2097152">
+      </div>
+      <div class="adv-row">
+        <label>User-Agent</label>
+        <select class="field-input" id="add-user-agent" style="height:30px;">
+          <option value="">Default</option>
+          <option value="chrome">Chrome (Windows)</option>
+          <option value="firefox">Firefox (Windows)</option>
+          <option value="safari">Safari (macOS)</option>
+          <option value="edge">Edge (Windows)</option>
+          <option value="curl">curl</option>
+          <option value="custom">Custom...</option>
+        </select>
+      </div>
+      <div class="adv-row" id="custom-ua-row" style="display:none;">
+        <label>Custom UA</label>
+        <input class="field-input" id="add-ua-custom" placeholder="Enter User-Agent string">
+      </div>
+      <div class="adv-row"><label>Proxy</label><input class="field-input" id="add-proxy"></div>
+      <div class="adv-row"><label>Mirror URL</label><input class="field-input" id="add-mirror"></div>
+      <div class="adv-checks">
+        <label><input type="checkbox" id="add-insecure"> Skip TLS</label>
+        <label><input type="checkbox" id="add-overwrite"> Overwrite</label>
+      </div>
+    </div>
+
+    <div style="flex:1;"></div>
+
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" id="btn-add-cancel">Cancel</button>
+      <button class="btn btn-primary" id="btn-add-submit">Download</button>
+    </div>
+  </div>
+  <script src="js/add-download.js"></script>
+</body>
+</html>

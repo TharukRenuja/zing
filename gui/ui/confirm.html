@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zing - Confirm Download</title>
+  <link rel="stylesheet" href="css/theme.css">
+  <script>
+    (function() {
+      var t = localStorage.getItem('zing-theme');
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
+  <style>
+    body { overflow: auto; height: auto; }
+  </style>
+</head>
+<body>
+  <div class="confirm-wrap">
+    <div class="confirm-title">Pending Downloads</div>
+    <div id="pending-list"></div>
+    <div id="empty-msg" style="color:var(--text-weak);display:none;">No pending downloads.</div>
+  </div>
+
+  <!-- Existing file popup -->
+  <div class="overlay" id="exists-overlay" style="display:none;">
+    <div class="overlay-card" style="width:400px;">
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div style="font-weight:700;font-size:16px;">File Already Exists</div>
+        <div style="font-size:13px;color:var(--text-weak);">
+          A file with the name <strong id="exists-filename"></strong> already exists in the target directory.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px;">
+          <button class="btn btn-primary" id="btn-exists-overwrite" style="width:100%;justify-content:center;">
+            Overwrite existing file
+          </button>
+          <button class="btn" id="btn-exists-rename" style="width:100%;justify-content:center;">
+            Download as <span id="exists-rename-name"></span>
+          </button>
+          <button class="btn btn-ghost" id="btn-exists-cancel" style="width:100%;justify-content:center;">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/confirm.js"></script>
+</body>
+</html>

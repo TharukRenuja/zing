@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zing - Settings</title>
+  <link rel="stylesheet" href="css/theme.css">
+  <script>
+    (function() {
+      var t = localStorage.getItem('zing-theme');
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
+  <style>
+    body { overflow: auto; height: auto; }
+  </style>
+</head>
+<body>
+  <div class="settings-wrap">
+    <div class="settings-title">Settings</div>
+
+    <!-- General -->
+    <div class="settings-card">
+      <div class="sidebar-label">GENERAL</div>
+      <div>
+        <div class="field-label">Default download directory</div>
+        <div style="display:flex;gap:8px;">
+          <input class="field-input" id="settings-dir" style="flex:1;">
+          <button class="btn" id="btn-browse">Browse</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Appearance -->
+    <div class="settings-card">
+      <div class="sidebar-label">APPEARANCE</div>
+      <div>
+        <div class="field-label">Theme</div>
+        <div class="radio-group" id="theme-group">
+          <button class="radio-option" data-theme="light">
+            <span class="radio-dot"></span> Light
+          </button>
+          <button class="radio-option" data-theme="dark">
+            <span class="radio-dot"></span> Dark
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- About -->
+    <div class="settings-card">
+      <div class="sidebar-label">ABOUT</div>
+      <div style="display:flex;">
+        <span style="font-weight:600;flex:1;">zing-gui</span>
+        <span id="settings-version" style="color:var(--text-weak);"></span>
+      </div>
+    </div>
+
+    <div style="flex:1;"></div>
+    <hr style="border:none;border-top:1px solid var(--border);">
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" id="btn-cancel">Cancel</button>
+      <button class="btn btn-primary" id="btn-save">Save Settings</button>
+    </div>
+  </div>
+  <script src="js/settings.js"></script>
+</body>
+</html>

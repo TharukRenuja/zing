@@ -6,7 +6,8 @@
 //!
 //! A background poller checks for pending download confirmations every 2
 //! seconds. When one appears and the GUI is not already running, the tray
-//! spawns it so the user can confirm or deny the intercepted download.
+//! starts the GUI — its own poller then opens a native confirm window so the
+//! user can accept or deny the intercepted download.
 
 use std::process::Command;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -23,8 +24,8 @@ fn main() {
         .build()
         .expect("tokio runtime");
 
-    // Spawn a background thread that polls for pending confirmations and
-    // opens the GUI when one arrives.
+    // Spawn a background thread that ensures the GUI is running once a
+    // download confirmation is pending.
     {
         let rt_handle = rt.handle().clone();
         std::thread::spawn(move || confirmation_poller(rt_handle));
@@ -44,7 +45,15 @@ fn main() {
         let handle = std::thread::Builder::new()
             .name("zing-tray-gtk".into())
             .spawn(move || {
-                // Suppress libayatana-appindicator deprecation warning during GTK init.
+                // libayatana-appindicator and GTK print deprecation warnings
+                // to stderr on init *and* on first tray-icon creation, which
+                // would spam the terminal every launch. Redirect stderr to
+                // /dev/null for the entire lifetime of this thread — the
+                // appindicator warning fires lazily inside gtk::main(), not
+                // during init/build, so restoring stderr early would let it
+                // leak. The trade-off is that all stderr output (including
+                // panics) from this thread goes silent, which is acceptable
+                // for a tray daemon.
                 unsafe {
                     let saved_stderr = libc::dup(libc::STDERR_FILENO);
                     let devnull = libc::open(c"/dev/null".as_ptr().cast(), libc::O_WRONLY);
@@ -53,24 +62,35 @@ fn main() {
                         libc::close(devnull);
                     }
                     let init_ok = gtk::init().is_ok();
-                    // Restore real stderr after init.
-                    if saved_stderr >= 0 {
-                        libc::dup2(saved_stderr, libc::STDERR_FILENO);
-                        libc::close(saved_stderr);
+                    let mut tray_ok = false;
+                    if init_ok {
+                        let menu = build_menu();
+                        let icon = load_icon().expect("tray icon");
+                        tray_ok = TrayIconBuilder::new()
+                            .with_menu(Box::new(menu))
+                            .with_tooltip("zing \u{2014} download manager")
+                            .with_icon(icon)
+                            .build()
+                            .is_ok();
                     }
-                    if !init_ok {
-                        let _ = ready_tx.send(Err("gtk init failed".into()));
+                    if !init_ok || !tray_ok {
+                        // Restore stderr so the caller can see the error.
+                        if saved_stderr >= 0 {
+                            libc::dup2(saved_stderr, libc::STDERR_FILENO);
+                            libc::close(saved_stderr);
+                        }
+                        let _ = ready_tx.send(if !init_ok {
+                            Err("gtk init failed".into())
+                        } else {
+                            Err("tray icon creation failed".into())
+                        });
                         return;
                     }
+                    // Success: leave stderr on /dev/null permanently.
+                    if saved_stderr >= 0 {
+                        libc::close(saved_stderr);
+                    }
                 }
-                let menu = build_menu();
-                let icon = load_icon().expect("tray icon");
-                let _tray_icon = TrayIconBuilder::new()
-                    .with_menu(Box::new(menu))
-                    .with_tooltip("zing \u{2014} download manager")
-                    .with_icon(icon)
-                    .build()
-                    .expect("tray icon");
                 let _ = ready_tx.send(Ok(()));
                 gtk::main();
             })
@@ -144,46 +164,57 @@ fn spawn_gui() {
     }
 }
 
-fn spawn_confirm_gui() -> Option<u32> {
+/// Spawn the dedicated download-confirmation window (a standalone
+/// `zing-gui --confirm-shell` process). It opens its own small window and
+/// exits once no confirmations are pending, so it must not be gated on the
+/// main GUI being closed.
+fn spawn_confirm_shell() {
+    if is_confirm_shell_running() {
+        return;
+    }
     #[cfg(target_os = "windows")]
     {
-        Command::new("zing-gui.exe")
-            .arg("--confirm")
-            .spawn()
-            .ok()
-            .map(|c| c.id())
+        let _ = Command::new("zing-gui.exe").arg("--confirm-shell").spawn();
     }
     #[cfg(not(target_os = "windows"))]
     {
-        Command::new("zing-gui")
-            .arg("--confirm")
-            .spawn()
-            .ok()
-            .map(|c| c.id())
+        let _ = Command::new("zing-gui").arg("--confirm-shell").spawn();
+    }
+}
+
+/// True when a `zing-gui --confirm-shell` process is already running.
+fn is_confirm_shell_running() -> bool {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        Command::new("pgrep")
+            .args(["-f", "zing-gui --confirm-shell"])
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("wmic")
+            .args([
+                "process",
+                "where",
+                "commandline like '%zing-gui --confirm-shell%'",
+                "get",
+                "processid",
+            ])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("--confirm-shell"))
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        false
     }
 }
 
 #[cfg(target_os = "linux")]
-fn is_pid_alive(pid: u32) -> bool {
-    let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
-        Ok(s) => s,
-        Err(_) => return false, // process gone
-    };
-    // Check if zombie — treat as dead so we can spawn a replacement.
-    for line in status.lines() {
-        if line.starts_with("State:") && line.contains("Z (zombie)") {
-            return false;
-        }
-    }
-    true
-}
-
-#[cfg(not(target_os = "linux"))]
-fn is_pid_alive(pid: u32) -> bool {
-    let _ = pid;
-    false
-}
-
 fn is_gui_running() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -305,116 +336,44 @@ fn load_icon() -> Option<Icon> {
 // ── Confirmation poller ──────────────────────────────────────────
 
 /// Background loop that checks for pending download confirmations every 2
-/// seconds. When one is found, it spawns the lightweight confirm-only GUI
-/// so the user can review and confirm the intercepted download.
+/// seconds. When one is pending it launches the dedicated confirmation window
+/// (`zing-gui --confirm-shell`), retrying at most every 10s as a safety net to
+/// recover from a GUI crash. The confirm shell exits by itself once nothing is
+/// pending, so it is never gated on the main window being closed.
 fn confirmation_poller(handle: tokio::runtime::Handle) {
-    let mut confirm_pid: Option<u32> = None;
-    // Pending IDs we already showed (or that were denied by closing the
-    // confirm window). Never respawn for the same ID.
-    let mut handled_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    let mut startup = true;
+    // Cooldown so we don't repeatedly try to spawn while the GUI is still
+    // coming up. `spawn_confirm_shell` itself no-ops if a confirm shell is
+    // already running.
+    let mut last_spawn = std::time::Instant::now();
 
     loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
 
-        // If we spawned a confirm window before, check if it's still alive.
-        if let Some(pid) = confirm_pid.take() {
-            if is_pid_alive(pid) {
-                confirm_pid = Some(pid);
-                continue; // window still open — don't spawn another
-            }
-            // Window closed — the GUI denied remaining pending via
-            // denyUri. Mark them all as handled so we never respawn.
-            if let Ok(pending) = handle.block_on(fetch_pending()) {
-                for p in &pending {
-                    handled_ids.insert(p.pending_id);
-                }
-            }
-        }
-
-        let pending = match handle.block_on(fetch_pending()) {
-            Ok(list) => list,
+        let pending = match handle.block_on(fetch_confirmation_count()) {
+            Ok(count) => count,
             Err(_) => continue, // daemon not running or RPC error
         };
 
-        if pending.is_empty() {
-            startup = false;
+        if pending == 0 {
             continue;
         }
 
-        // On first startup, deny all stale pending confirmations so the
-        // user isn't bombarded with old downloads from a previous session.
-        if startup {
-            for p in &pending {
-                let _ = handle.block_on(deny_pending(p.pending_id));
-                handled_ids.insert(p.pending_id);
-            }
-            startup = false;
+        // Only try to (re)start the confirm shell every 10s at most.
+        if last_spawn.elapsed() < std::time::Duration::from_secs(10) {
             continue;
         }
-
-        // Filter out already-handled IDs.
-        let new_pending: Vec<&PendingInfo> = pending
-            .iter()
-            .filter(|p| !handled_ids.contains(&p.pending_id))
-            .collect();
-
-        if new_pending.is_empty() {
-            continue;
-        }
-
-        // Mark all new ones as handled immediately so we don't re-spawn.
-        for p in &new_pending {
-            handled_ids.insert(p.pending_id);
-        }
-
-        // Spawn the lightweight confirm window and track its PID.
-        confirm_pid = spawn_confirm_gui();
+        last_spawn = std::time::Instant::now();
+        spawn_confirm_shell();
     }
 }
 
-async fn deny_pending(pending_id: u64) -> Result<(), String> {
-    let params = serde_json::json!({ "pending_id": pending_id });
-    let _ = zing_core::rpc::send_request("zing.denyUri", Some(params)).await?;
-    Ok(())
-}
-
-/// Query the daemon for pending download confirmations.
-async fn fetch_pending() -> Result<Vec<PendingInfo>, String> {
+/// Count pending download confirmations without pulling the list body.
+async fn fetch_confirmation_count() -> Result<usize, String> {
     let resp = zing_core::rpc::send_request("zing.pendingConfirmations", None).await?;
     let list = resp
         .get("pending")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    Ok(list
-        .into_iter()
-        .filter_map(|v| {
-            let pending_id = v.get("pending_id").and_then(|x| x.as_u64())?;
-            let url = v
-                .get("url")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-            let filename = v
-                .get("filename")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-            Some(PendingInfo {
-                pending_id,
-                url,
-                filename,
-            })
-        })
-        .collect())
-}
-
-struct PendingInfo {
-    #[allow(dead_code)]
-    pending_id: u64,
-    #[allow(dead_code)]
-    url: String,
-    #[allow(dead_code)]
-    filename: String,
+    Ok(list.len())
 }

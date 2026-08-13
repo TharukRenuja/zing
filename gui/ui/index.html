@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zing</title>
+  <link rel="stylesheet" href="css/theme.css">
+  <script>
+    (function() {
+      var t = localStorage.getItem('zing-theme');
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    })();
+  </script>
+</head>
+<body>
+  <div style="display:flex;flex-direction:column;height:100vh;">
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <span class="toolbar-brand">zing</span>
+      <button class="btn btn-primary" id="btn-add">
+        <svg class="btn-icon" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+        Add New Download
+      </button>
+      <div class="toolbar-sep"></div>
+      <button class="btn btn-toolbar" id="btn-resume" disabled>
+        <svg class="btn-icon" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>
+        Resume
+      </button>
+      <button class="btn btn-toolbar" id="btn-pause" disabled>
+        <svg class="btn-icon" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>
+        Pause
+      </button>
+      <button class="btn btn-toolbar" id="btn-stop" disabled>
+        <svg class="btn-icon" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
+        Stop
+      </button>
+      <button class="btn btn-toolbar" id="btn-remove" disabled>
+        <svg class="btn-icon" viewBox="0 0 24 24"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        Remove
+      </button>
+      <div class="toolbar-spacer"></div>
+      <button class="btn btn-toolbar" id="btn-settings">
+        <svg class="btn-icon" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+        Settings
+      </button>
+    </div>
+
+    <!-- Body -->
+    <div class="body">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="sidebar-label">CATEGORIES</div>
+        <div id="categories"></div>
+      </div>
+
+      <!-- Main column -->
+      <div class="main-col">
+        <!-- Task table -->
+        <div class="card task-table-wrap">
+          <table class="task-table">
+            <thead>
+              <tr>
+                <th class="col-name">Name</th>
+                <th class="col-size">Size</th>
+                <th class="col-status">Status</th>
+                <th class="col-speed">Speed</th>
+                <th class="col-eta">Time left</th>
+                <th class="col-conns">Conns</th>
+                <th class="col-progress">Progress</th>
+              </tr>
+            </thead>
+            <tbody id="task-list"></tbody>
+          </table>
+        </div>
+
+        <!-- Detail panel -->
+        <div class="card detail-panel">
+          <div class="detail-info">
+            <div class="detail-header">
+              <span class="detail-filename" id="det-filename">No task selected</span>
+              <span class="pill" id="det-pill" style="display:none;"></span>
+            </div>
+            <div class="detail-url" id="det-url"></div>
+            <div class="detail-stats">
+              <span id="det-size"></span>
+              <span id="det-downloaded"></span>
+              <span id="det-conns"></span>
+            </div>
+            <div class="detail-stats">
+              <span class="detail-speed" id="det-speed"></span>
+              <span id="det-peak"></span>
+              <span id="det-blocks"></span>
+            </div>
+            <div class="detail-error" id="det-error"></div>
+          </div>
+          <div class="detail-divider"></div>
+          <div class="blockmap-panel">
+            <div class="blockmap-label">BLOCK MAP</div>
+            <div class="blockmap-wrap">
+              <canvas id="blockmap" width="0" height="0"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Info bar -->
+    <div class="info-bar">
+      <span id="info-version">zing</span>
+      <span class="info-sep">&middot;</span>
+      <span id="info-active">0 active</span>
+      <span class="info-sep">&middot;</span>
+      <span id="info-speed">&mdash;</span>
+      <span class="info-spacer"></span>
+      <span class="info-complete" id="info-complete">0 completed</span>
+      <span class="info-sep">&middot;</span>
+      <span id="info-queued">0 queued</span>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
