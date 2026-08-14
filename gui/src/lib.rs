@@ -202,70 +202,49 @@ pub fn run() -> anyhow::Result<()> {
 
     let confirm_shell = std::env::args().any(|a| a == "--confirm-shell");
 
-    if confirm_shell {
-        return run_confirm_shell(client);
-    }
-
     let snapshot = Arc::new(Mutex::new(Vec::new()));
     client.spawn_poller(Arc::clone(&snapshot));
 
     let app_state = AppState { client, snapshot };
 
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .manage(app_state)
-        .invoke_handler(tauri::generate_handler![
-            list_tasks,
-            add_uri,
-            pause_task,
-            resume_task,
-            stop_task,
-            remove_task,
-            get_version,
-            get_settings_dir,
-            save_settings_dir,
-            browse_folder,
-            confirm_uri,
-            deny_uri,
-            pending_confirmations,
-            block_map_data,
-            open_window_cmd,
-            close_current_window,
-            resize_window,
-        ]);
+    let ctx = tauri::generate_context!();
 
-    // Confirm shell opens a smaller window.
     if confirm_shell {
-        // Already handled above.
+        tauri::Builder::default()
+            .plugin(tauri_plugin_shell::init())
+            .manage(app_state)
+            .invoke_handler(tauri::generate_handler![
+                list_tasks,
+                pending_confirmations,
+                confirm_uri,
+                deny_uri,
+            ])
+            .run(ctx)?;
+    } else {
+        tauri::Builder::default()
+            .plugin(tauri_plugin_shell::init())
+            .manage(app_state)
+            .invoke_handler(tauri::generate_handler![
+                list_tasks,
+                add_uri,
+                pause_task,
+                resume_task,
+                stop_task,
+                remove_task,
+                get_version,
+                get_settings_dir,
+                save_settings_dir,
+                browse_folder,
+                confirm_uri,
+                deny_uri,
+                pending_confirmations,
+                block_map_data,
+                open_window_cmd,
+                close_current_window,
+                resize_window,
+            ])
+            .run(ctx)?;
     }
-
-    builder.run(tauri::generate_context!())?;
-    Ok(())
-}
-
-// ── Confirm shell ─────────────────────────────────────────────────
-
-fn run_confirm_shell(client: GuiClient) -> anyhow::Result<()> {
-    #[cfg(target_os = "linux")]
-    unsafe {
-        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-    }
-
-    let snapshot = Arc::new(Mutex::new(Vec::new()));
-    client.spawn_poller(Arc::clone(&snapshot));
-
-    let app_state = AppState { client, snapshot };
-
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .manage(app_state)
-        .invoke_handler(tauri::generate_handler![
-            list_tasks,
-            pending_confirmations,
-            confirm_uri,
-            deny_uri,
-        ])
-        .run(tauri::generate_context!())?;
 
     Ok(())
 }

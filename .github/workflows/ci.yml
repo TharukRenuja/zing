@@ -28,11 +28,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install GTK dev libs (Ubuntu)
+      - name: Install system deps (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libatk1.0-dev libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y \
+            libglib2.0-dev libgtk-3-dev libatk1.0-dev libxkbcommon-dev libwayland-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test ${{ matrix.args }}
@@ -42,10 +44,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install GTK dev libs
+      - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libatk1.0-dev libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y \
+            libglib2.0-dev libgtk-3-dev libatk1.0-dev libxkbcommon-dev libwayland-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -91,11 +95,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install GTK dev libs (Ubuntu)
+      - name: Install system deps (Ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libatk1.0-dev libxkbcommon-dev libwayland-dev
+          sudo apt-get install -y \
+            libglib2.0-dev libgtk-3-dev libatk1.0-dev libxkbcommon-dev libwayland-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
