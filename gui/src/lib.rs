@@ -213,8 +213,8 @@ pub fn run() -> anyhow::Result<()> {
 
     let ctx = tauri::generate_context!();
 
-    let window_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/window-icon.png"))
-        .ok();
+    let window_icon =
+        tauri::image::Image::from_bytes(include_bytes!("../icons/window-icon.png")).ok();
 
     if confirm_shell {
         let mut builder = tauri::Builder::default()
