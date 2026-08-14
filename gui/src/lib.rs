@@ -130,7 +130,7 @@ fn open_window_cmd(
         return Ok(());
     }
 
-    let _builder = tauri::WebviewWindowBuilder::new(
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
         WebviewUrl::App(std::path::PathBuf::from(&url)),
@@ -138,9 +138,13 @@ fn open_window_cmd(
     .title(title.unwrap_or_else(|| format!("zing - {label}")))
     .inner_size(width.unwrap_or(520.0), height.unwrap_or(500.0))
     .resizable(true)
-    .center()
-    .build()
-    .map_err(|e| e.to_string())?;
+    .center();
+
+    if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../icons/window-icon.png")) {
+        builder = builder.icon(icon).map_err(|e| e.to_string())?;
+    }
+
+    builder.build().map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -209,8 +213,11 @@ pub fn run() -> anyhow::Result<()> {
 
     let ctx = tauri::generate_context!();
 
+    let window_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/window-icon.png"))
+        .ok();
+
     if confirm_shell {
-        tauri::Builder::default()
+        let mut builder = tauri::Builder::default()
             .plugin(tauri_plugin_shell::init())
             .manage(app_state)
             .invoke_handler(tauri::generate_handler![
@@ -218,10 +225,18 @@ pub fn run() -> anyhow::Result<()> {
                 pending_confirmations,
                 confirm_uri,
                 deny_uri,
-            ])
-            .run(ctx)?;
+            ]);
+        if let Some(icon) = window_icon {
+            builder = builder.setup(move |app| {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_icon(icon);
+                }
+                Ok(())
+            });
+        }
+        builder.run(ctx)?;
     } else {
-        tauri::Builder::default()
+        let mut builder = tauri::Builder::default()
             .plugin(tauri_plugin_shell::init())
             .manage(app_state)
             .invoke_handler(tauri::generate_handler![
@@ -242,8 +257,16 @@ pub fn run() -> anyhow::Result<()> {
                 open_window_cmd,
                 close_current_window,
                 resize_window,
-            ])
-            .run(ctx)?;
+            ]);
+        if let Some(icon) = window_icon {
+            builder = builder.setup(move |app| {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_icon(icon);
+                }
+                Ok(())
+            });
+        }
+        builder.run(ctx)?;
     }
 
     Ok(())
