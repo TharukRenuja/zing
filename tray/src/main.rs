@@ -214,7 +214,6 @@ fn is_confirm_shell_running() -> bool {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn is_gui_running() -> bool {
     #[cfg(target_os = "linux")]
     {
