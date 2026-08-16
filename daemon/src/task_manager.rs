@@ -917,6 +917,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
 
@@ -978,6 +979,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
 
@@ -1025,6 +1027,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
 
@@ -1061,6 +1064,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
         let id2 = mgr
@@ -1087,6 +1091,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
 
@@ -1123,6 +1128,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
         let id2 = mgr
@@ -1149,6 +1155,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
         assert!(id2 > id1, "task IDs should increment");
@@ -1188,6 +1195,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
 
@@ -1247,6 +1255,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
 
@@ -1310,6 +1319,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
         let id2 = mgr
@@ -1336,6 +1346,7 @@ mod tests {
                 false,
                 false,
                 false,
+                "",
             )
             .await;
 
