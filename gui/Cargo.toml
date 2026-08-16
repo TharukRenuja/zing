@@ -4,7 +4,7 @@ version = "0.2.6"
 edition = "2024"
 description = "Standalone desktop GUI for the zing downloader (IDM-style)"
 authors = ["Tharuk Renuja"]
-license = "GPL-3.0-only"
+license = "AGPL-3.0"
 
 [[bin]]
 name = "zing-gui"
@@ -28,6 +28,7 @@ dirs = "6"
 notify-rust = "4.11"
 open = "5"
 rfd = "0.15"
+arboard = "3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

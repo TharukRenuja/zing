@@ -10,9 +10,9 @@
   --text-weak: #9a9ba6;
   --text-faint: #6c6d78;
   --accent: #5b7fff;
-  --accent-hover: #7091ff;
-  --accent-active: #4a6cea;
-  --accent-soft: #23294a;
+  --accent-soft: rgba(91, 127, 255, 0.15);
+  --accent-hover: rgb(111, 147, 255);
+  --accent-active: rgb(61, 97, 225);
   --progress: #3ecf74;
   --warning: #f0a83c;
   --danger: #f2555f;
@@ -43,9 +43,6 @@
   --text-weak: #737373;
   --text-faint: #a3a3a3;
   --accent: #0070f3;
-  --accent-hover: #0060df;
-  --accent-active: #0050c8;
-  --accent-soft: #f0f5ff;
   --progress: #0cce6b;
   --warning: #f5a623;
   --danger: #ee0000;
@@ -86,11 +83,10 @@ body {
   padding: 0 16px;
   gap: 6px;
 }
-.toolbar-brand {
-  font-weight: 800;
-  font-size: 16px;
-  margin-right: 12px;
-  color: var(--text);
+.toolbar-logo {
+  height: 32px;
+  margin-right: 10px;
+  flex-shrink: 0;
 }
 .toolbar-sep {
   width: 1px;
@@ -200,6 +196,11 @@ body {
   display: flex;
   align-items: center;
 }
+.cat-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 12px;
+}
 .cat-item {
   height: 36px;
   border-radius: var(--radius-sm);
@@ -232,7 +233,7 @@ body {
   height: 16px;
   stroke: var(--text-weak);
   fill: none;
-  stroke-width: 1.5;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
   flex-shrink: 0;
@@ -550,6 +551,57 @@ select.field-input option {
   color: #171717;
 }
 
+/* ── Custom number input ── */
+.num-input {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  overflow: hidden;
+}
+.num-input button {
+  width: 28px;
+  height: 100%;
+  border: none;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--fast);
+  user-select: none;
+}
+.num-input button:hover {
+  background: var(--border);
+}
+.num-input button:active {
+  background: var(--text-weak);
+}
+.num-input input {
+  width: 48px;
+  height: 100%;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: center;
+  font-size: 13px;
+  font-family: var(--font);
+  outline: none;
+  -moz-appearance: textfield;
+}
+.num-input input::-webkit-outer-spin-button,
+.num-input input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 /* ── Segmented buttons ── */
 .segment-group {
   display: flex;
@@ -758,8 +810,19 @@ select.field-input option {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
+.add-scroll {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.add-scroll::-webkit-scrollbar { width: 6px; }
+.add-scroll::-webkit-scrollbar-track { background: transparent; }
+.add-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .add-title {
   font-weight: 700;
   font-size: 20px;
@@ -897,4 +960,63 @@ body {
 
 .overlay-card {
   animation: scaleIn 200ms ease-out;
+}
+
+/* ── Compact mode ── */
+body.compact .toolbar { height: 44px; }
+body.compact .cat-item { height: 30px; }
+body.compact .task-table td { padding: 0 8px; }
+body.compact .task-table th { padding: 6px 8px; }
+body.compact .task-table tr { height: 32px; }
+body.compact .info-bar { height: 24px; font-size: 10px; }
+body.compact .detail-panel { height: 160px; }
+body.compact .detail-info { padding: 10px; gap: 4px; }
+body.compact .detail-filename { font-size: 13px; }
+body.compact .detail-stats { font-size: 11px; }
+body.compact .settings-card { padding: 12px; gap: 10px; }
+body.compact .toggle-row { height: 30px; }
+body.compact .field-input { height: 30px; font-size: 12px; }
+body.compact .btn { height: 28px; font-size: 12px; padding: 0 10px; }
+body.compact .settings-content { padding: 16px 20px; }
+
+/* ── Sidebar icons-only mode ── */
+body.sidebar-icons-only .sidebar {
+  width: 56px;
+  align-items: center;
+}
+body.sidebar-icons-only .sidebar-label {
+  display: none;
+}
+body.sidebar-icons-only .cat-item {
+  justify-content: center;
+  padding: 0;
+  width: 36px;
+  height: 36px;
+}
+body.sidebar-icons-only .cat-label {
+  display: none;
+}
+body.sidebar-icons-only .cat-count {
+  display: none;
+}
+body.sidebar-icons-only .cat-item::before {
+  display: none;
+}
+
+/* ── Settings content scroll ── */
+.settings-content {
+  scroll-behavior: smooth;
+}
+.settings-content::-webkit-scrollbar {
+  width: 6px;
+}
+.settings-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+.settings-content::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.settings-content::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
 }

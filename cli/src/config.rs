@@ -14,10 +14,46 @@ pub struct Config {
     pub throttle_reprobe: Option<bool>,
     #[serde(default)]
     pub max_concurrent_downloads: Option<usize>,
+    #[serde(default)]
+    pub default_connections: Option<u16>,
+    #[serde(default)]
+    pub connect_timeout: Option<u64>,
+    #[serde(default)]
+    pub max_transfer_time: Option<u64>,
+    #[serde(default)]
+    pub retry_count: Option<u32>,
+    #[serde(default)]
+    pub retry_wait_ms: Option<u64>,
+    #[serde(default)]
+    pub default_proxy: Option<String>,
+    #[serde(default)]
+    pub default_rate_limit: Option<String>,
+    #[serde(default)]
+    pub bwlimit_schedule: Option<String>,
+    #[serde(default)]
+    pub auto_rename: Option<bool>,
+    #[serde(default)]
+    pub allow_overwrite: Option<bool>,
+    #[serde(default)]
+    pub content_disposition: Option<bool>,
+    #[serde(default)]
+    pub active_hours_from: Option<String>,
+    #[serde(default)]
+    pub active_hours_to: Option<String>,
+    #[serde(default)]
+    pub clipboard_monitor: bool,
+    #[serde(default = "default_true")]
+    pub download_categories: bool,
+    #[serde(default)]
+    pub post_download_action: Option<String>,
 }
 
 fn default_update_interval() -> Option<u64> {
     Some(7)
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Config {

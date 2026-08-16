@@ -12,57 +12,578 @@
     })();
   </script>
   <style>
-    body { overflow: auto; height: auto; }
+    body { overflow: hidden; height: 100vh; }
+    .settings-layout {
+      display: flex;
+      height: 100vh;
+    }
+    .settings-sidebar {
+      width: 220px;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 16px 12px;
+      gap: 2px;
+      flex-shrink: 0;
+      overflow-y: auto;
+    }
+    .settings-sidebar-label {
+      color: var(--text-weak);
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 0.6px;
+      padding: 8px 12px 6px;
+    }
+    .settings-nav-item {
+      height: 36px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 10px;
+      cursor: pointer;
+      color: var(--text-weak);
+      font-weight: 500;
+      font-size: 13px;
+      transition: background 100ms, color 100ms;
+      border: none;
+      background: none;
+      width: 100%;
+      text-align: left;
+    }
+    .settings-nav-item:hover {
+      background: var(--panel-hover);
+      color: var(--text);
+    }
+    .settings-nav-item.active {
+      background: var(--accent-soft);
+      color: var(--text);
+      font-weight: 600;
+    }
+    .settings-nav-item.active::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      width: 3px;
+      height: 20px;
+      border-radius: 2px;
+      background: var(--accent);
+    }
+    .settings-nav-item svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex-shrink: 0;
+    }
+    .settings-nav-item {
+      position: relative;
+    }
+    .settings-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 28px;
+      padding-bottom: 80px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+    .settings-section {
+      display: none;
+    }
+    .settings-section.active {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .settings-section-title {
+      font-weight: 700;
+      font-size: 18px;
+    }
+    .settings-card {
+      background: var(--panel-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .settings-card-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text-weak);
+    }
+    .field-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .field-row .field-input {
+      flex: 1;
+    }
+    .field-desc {
+      font-size: 12px;
+      color: var(--text-faint);
+      margin-top: -8px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 36px;
+    }
+    .toggle-label {
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .toggle {
+      width: 40px;
+      height: 22px;
+      border-radius: 11px;
+      background: var(--border-strong);
+      cursor: pointer;
+      position: relative;
+      transition: background 150ms;
+      border: none;
+      padding: 0;
+    }
+    .toggle.on {
+      background: var(--accent);
+    }
+    .toggle::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform 150ms;
+    }
+    .toggle.on::after {
+      transform: translateX(18px);
+    }
+    .color-swatches {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .color-swatch {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: border-color 120ms, transform 100ms;
+    }
+    .color-swatch:hover {
+      transform: scale(1.1);
+    }
+    .color-swatch.active {
+      border-color: var(--text);
+      transform: scale(1.15);
+    }
+    .settings-footer {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      padding: 16px 28px;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .about-info {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .about-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+    .about-row .label {
+      color: var(--text-weak);
+      width: 100px;
+    }
+    .about-update-status {
+      font-size: 13px;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      min-height: 40px;
+      white-space: pre-wrap;
+      color: var(--text-weak);
+    }
   </style>
 </head>
 <body>
-  <div class="settings-wrap">
-    <div class="settings-title">Settings</div>
+  <div class="settings-layout">
+    <!-- Sidebar -->
+    <nav class="settings-sidebar">
+      <div class="settings-sidebar-label">SETTINGS</div>
+      <button class="settings-nav-item active" data-section="appearance">
+        <svg viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="2.5"/><path d="M17.77 10.77 21 14l-3.88 3.88"/><circle cx="6.5" cy="17.5" r="2.5"/><path d="M6.23 13.23 3 10l3.88-3.88"/><path d="m14 4 3.88 3.88"/><path d="M6 20 2.12 16.12"/><circle cx="12" cy="12" r="3"/></svg>
+        Appearance
+      </button>
+      <button class="settings-nav-item" data-section="general">
+        <svg viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        General
+      </button>
+      <button class="settings-nav-item" data-section="network">
+        <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        Network
+      </button>
+      <button class="settings-nav-item" data-section="bandwidth">
+        <svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        Bandwidth
+      </button>
+      <button class="settings-nav-item" data-section="downloads">
+        <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Downloads
+      </button>
+      <button class="settings-nav-item" data-section="schedule">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        Schedule
+      </button>
+      <button class="settings-nav-item" data-section="about">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        About
+      </button>
+    </nav>
 
-    <!-- General -->
-    <div class="settings-card">
-      <div class="sidebar-label">GENERAL</div>
-      <div>
-        <div class="field-label">Default download directory</div>
-        <div style="display:flex;gap:8px;">
-          <input class="field-input" id="settings-dir" style="flex:1;">
-          <button class="btn" id="btn-browse">Browse</button>
+    <!-- Content -->
+    <div class="settings-content">
+
+      <!-- Appearance -->
+      <div class="settings-section active" id="sec-appearance">
+        <div class="settings-section-title">Appearance</div>
+        <div class="settings-card">
+          <div class="settings-card-title">Theme</div>
+          <div class="radio-group" id="theme-group">
+            <button class="radio-option" data-theme="dark">
+              <span class="radio-dot"></span> Dark
+            </button>
+            <button class="radio-option" data-theme="light">
+              <span class="radio-dot"></span> Light
+            </button>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Accent Color</div>
+          <div class="color-swatches" id="accent-swatches">
+            <button class="color-swatch" data-color="#5b7fff" style="background:#5b7fff;" title="Blue"></button>
+            <button class="color-swatch" data-color="#3ecf74" style="background:#3ecf74;" title="Green"></button>
+            <button class="color-swatch" data-color="#a855f7" style="background:#a855f7;" title="Purple"></button>
+            <button class="color-swatch" data-color="#f97316" style="background:#f97316;" title="Orange"></button>
+            <button class="color-swatch" data-color="#ef4444" style="background:#ef4444;" title="Red"></button>
+            <button class="color-swatch" data-color="#06b6d4" style="background:#06b6d4;" title="Cyan"></button>
+            <button class="color-swatch" data-color="#eab308" style="background:#eab308;" title="Yellow"></button>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Sidebar</div>
+          <div class="radio-group" id="sidebar-mode-group">
+            <button class="radio-option active" data-mode="full">
+              <span class="radio-dot"></span> Icons + Labels
+            </button>
+            <button class="radio-option" data-mode="icons">
+              <span class="radio-dot"></span> Icons Only
+            </button>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Font Size</div>
+          <div class="segment-group" id="font-size-group">
+            <button class="segment" data-size="sm">Small</button>
+            <button class="segment active" data-size="md">Medium</button>
+            <button class="segment" data-size="lg">Large</button>
+          </div>
         </div>
       </div>
-    </div>
 
-    <!-- Appearance -->
-    <div class="settings-card">
-      <div class="sidebar-label">APPEARANCE</div>
-      <div>
-        <div class="field-label">Theme</div>
-        <div class="radio-group" id="theme-group">
-          <button class="radio-option" data-theme="light">
-            <span class="radio-dot"></span> Light
-          </button>
-          <button class="radio-option" data-theme="dark">
-            <span class="radio-dot"></span> Dark
+      <!-- General -->
+      <div class="settings-section" id="sec-general">
+        <div class="settings-section-title">General</div>
+        <div class="settings-card">
+          <div class="settings-card-title">Download Directory</div>
+          <div class="field-row">
+            <input class="field-input" id="cfg-dir" placeholder="Default download directory">
+            <button class="btn" id="btn-browse">Browse</button>
+          </div>
+          <div class="field-desc">Files will be saved here by default.</div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Behavior</div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">Prompt for location</span>
+              <div class="field-desc" style="margin-top:2px;">Ask where to save before each download.</div>
+            </div>
+            <button class="toggle" id="cfg-prompt-location" data-key="prompt_location"></button>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">Auto-check for updates</span>
+              <div class="field-desc" style="margin-top:2px;">Periodically check for new versions on startup.</div>
+            </div>
+            <button class="toggle on" id="cfg-update-check" data-key="update_check_interval_days"></button>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">Monitor clipboard for URLs</span>
+              <div class="field-desc" style="margin-top:2px;">Detect HTTP/HTTPS links copied to clipboard and offer to download.</div>
+            </div>
+            <button class="toggle" id="cfg-clipboard-monitor" data-key="clipboard_monitor"></button>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Concurrency</div>
+          <div class="field-row">
+            <label class="toggle-label" style="width:220px;">Max simultaneous downloads</label>
+            <div class="num-input">
+              <button type="button" data-target="cfg-max-concurrent" data-step="-1">&#8722;</button>
+              <input type="number" id="cfg-max-concurrent" min="0" value="0">
+              <button type="button" data-target="cfg-max-concurrent" data-step="1">+</button>
+            </div>
+          </div>
+          <div class="field-desc">0 = unlimited. Limits how many downloads run at the same time.</div>
+        </div>
+      </div>
+
+      <!-- Network -->
+      <div class="settings-section" id="sec-network">
+        <div class="settings-section-title">Network</div>
+        <div class="settings-card">
+          <div class="settings-card-title">Connections</div>
+          <div class="field-row">
+            <label class="toggle-label" style="width:180px;">Default connections per download</label>
+            <div class="num-input">
+              <button type="button" data-target="cfg-connections" data-step="-1">&#8722;</button>
+              <input type="number" id="cfg-connections" min="1" value="16">
+              <button type="button" data-target="cfg-connections" data-step="1">+</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Proxy</div>
+          <input class="field-input" id="cfg-proxy" placeholder="http://proxy:port (optional)">
+        </div>
+      </div>
+
+      <!-- Bandwidth -->
+      <div class="settings-section" id="sec-bandwidth">
+        <div class="settings-section-title">Bandwidth</div>
+        <div class="settings-card">
+          <div class="settings-card-title">Download Rate Limit</div>
+          <select class="field-input" id="cfg-rate-limit" style="width:200px;">
+            <option value="">Unlimited</option>
+            <option value="100KB">100 KB/s</option>
+            <option value="500KB">500 KB/s</option>
+            <option value="1MB">1 MB/s</option>
+            <option value="2MB">2 MB/s</option>
+            <option value="5MB">5 MB/s</option>
+            <option value="10MB">10 MB/s</option>
+            <option value="50MB">50 MB/s</option>
+            <option value="100MB">100 MB/s</option>
+            <option value="custom">Custom...</option>
+          </select>
+          <input class="field-input" id="cfg-rate-limit-custom" placeholder="e.g. 2.5MB" style="width:200px;display:none;">
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Bandwidth Schedule</div>
+          <div class="field-desc">Set rate limits that change at specific times of day. Applied globally across all downloads.</div>
+          <div id="bwlimit-slots" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
+          <button class="btn btn-ghost" id="btn-add-slot" style="margin-top:8px;align-self:flex-start;">
+            <svg class="btn-icon" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            Add Slot
           </button>
         </div>
       </div>
-    </div>
 
-    <!-- About -->
-    <div class="settings-card">
-      <div class="sidebar-label">ABOUT</div>
-      <div style="display:flex;">
-        <span style="font-weight:600;flex:1;">zing-gui</span>
-        <span id="settings-version" style="color:var(--text-weak);"></span>
+      <!-- Downloads -->
+      <div class="settings-section" id="sec-downloads">
+        <div class="settings-section-title">Downloads</div>
+        <div class="settings-card">
+          <div class="settings-card-title">Behavior</div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">End-game mode</span>
+              <div class="field-desc" style="margin-top:2px;">When nearly complete, all connections race for remaining blocks. Faster but uses more bandwidth.</div>
+            </div>
+            <button class="toggle" id="cfg-end-game" data-key="end_game"></button>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">Throttle re-probe</span>
+              <div class="field-desc" style="margin-top:2px;">If speed drops, re-probe the server to find a faster connection.</div>
+            </div>
+            <button class="toggle" id="cfg-throttle-reprobe" data-key="throttle_reprobe"></button>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">Auto-rename on conflict</span>
+              <div class="field-desc" style="margin-top:2px;">If a file with the same name exists, append -1, -2, etc. automatically.</div>
+            </div>
+            <button class="toggle on" id="cfg-auto-rename" data-key="auto_rename"></button>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">Overwrite existing files</span>
+              <div class="field-desc" style="margin-top:2px;">Replace files that already exist instead of renaming.</div>
+            </div>
+            <button class="toggle" id="cfg-overwrite" data-key="allow_overwrite"></button>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">Use Content-Disposition filename</span>
+              <div class="field-desc" style="margin-top:2px;">Use the server-suggested filename instead of the URL filename.</div>
+            </div>
+            <button class="toggle" id="cfg-content-disposition" data-key="content_disposition"></button>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <span class="toggle-label">Auto-categorize downloads</span>
+              <div class="field-desc" style="margin-top:2px;">Automatically sort downloads into folders by file type (Music, Video, Documents, etc.).</div>
+            </div>
+            <button class="toggle on" id="cfg-download-categories" data-key="download_categories"></button>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Post-Download Action</div>
+          <div class="field-desc">When all downloads are complete, perform:</div>
+          <select class="field-input" id="cfg-post-action" style="width:200px;margin-top:8px;">
+            <option value="none">Do nothing</option>
+            <option value="shutdown">Shut down computer</option>
+            <option value="sleep">Sleep</option>
+            <option value="hibernate">Hibernate</option>
+            <option value="quit">Quit zing</option>
+          </select>
+        </div>
       </div>
-    </div>
 
-    <div style="flex:1;"></div>
-    <hr style="border:none;border-top:1px solid var(--border);">
-    <div class="dialog-actions">
-      <button class="btn btn-ghost" id="btn-cancel">Cancel</button>
-      <button class="btn btn-primary" id="btn-save">Save Settings</button>
+      <!-- Schedule -->
+      <div class="settings-section" id="sec-schedule">
+        <div class="settings-section-title">Schedule</div>
+        <div class="settings-card">
+          <div class="settings-card-title">Active Hours</div>
+          <div class="field-row">
+            <label class="toggle-label" style="width:180px;">Download only between</label>
+            <input class="field-input" id="cfg-active-from" type="time" value="00:00" style="width:120px;">
+            <span style="color:var(--text-weak);">and</span>
+            <input class="field-input" id="cfg-active-to" type="time" value="23:59" style="width:120px;">
+          </div>
+          <div class="field-desc">Downloads pause outside these hours. Set 00:00–23:59 to disable.</div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Queue</div>
+          <div class="field-row">
+            <label class="toggle-label" style="width:180px;">Max simultaneous downloads</label>
+            <div class="num-input">
+              <button type="button" data-target="cfg-sched-max-concurrent" data-step="-1">&#8722;</button>
+              <input type="number" id="cfg-sched-max-concurrent" min="0" value="3">
+              <button type="button" data-target="cfg-sched-max-concurrent" data-step="1">+</button>
+            </div>
+          </div>
+          <div class="field-desc">0 = unlimited. Controls how many downloads run at the same time.</div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Default Timeouts</div>
+          <div class="field-row">
+            <label class="toggle-label" style="width:180px;">Connect timeout (sec)</label>
+            <div class="num-input">
+              <button type="button" data-target="cfg-connect-timeout" data-step="-1">&#8722;</button>
+              <input type="number" id="cfg-connect-timeout" min="1" value="30">
+              <button type="button" data-target="cfg-connect-timeout" data-step="1">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="toggle-label" style="width:180px;">Max transfer time (sec)</label>
+            <div class="num-input">
+              <button type="button" data-target="cfg-max-time" data-step="-1">&#8722;</button>
+              <input type="number" id="cfg-max-time" min="0" value="300">
+              <button type="button" data-target="cfg-max-time" data-step="1">+</button>
+            </div>
+          </div>
+          <div class="field-desc">0 = no limit. Download aborts if it exceeds this time.</div>
+          <div class="field-row">
+            <label class="toggle-label" style="width:180px;">Retry count</label>
+            <div class="num-input">
+              <button type="button" data-target="cfg-retry" data-step="-1">&#8722;</button>
+              <input type="number" id="cfg-retry" min="0" value="5">
+              <button type="button" data-target="cfg-retry" data-step="1">+</button>
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="toggle-label" style="width:180px;">Retry wait (ms)</label>
+            <div class="num-input">
+              <button type="button" data-target="cfg-retry-wait" data-step="-50">&#8722;</button>
+              <input type="number" id="cfg-retry-wait" min="0" value="500">
+              <button type="button" data-target="cfg-retry-wait" data-step="50">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- About -->
+      <div class="settings-section" id="sec-about">
+        <div class="settings-section-title">About</div>
+        <div class="settings-card">
+          <div class="about-info">
+            <div class="about-row">
+              <span class="label">App</span>
+              <span style="font-weight:600;">zing-gui</span>
+            </div>
+            <div class="about-row">
+              <span class="label">Version</span>
+              <span id="about-version" style="color:var(--text-weak);"></span>
+            </div>
+            <div class="about-row">
+              <span class="label">License</span>
+              <span style="color:var(--text-weak);">AGPL-3.0</span>
+            </div>
+            <div class="about-row">
+              <span class="label">Developer</span>
+              <span style="color:var(--text-weak);">Tharuk Renuja</span>
+            </div>
+            <div class="about-row">
+              <span class="label">Repository</span>
+              <a href="#" onclick="window.__TAURI__.shell.open('https://github.com/TharukRenuja/zing')" style="color:var(--accent);text-decoration:none;">github.com/TharukRenuja/zing</a>
+            </div>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="settings-card-title">Updates</div>
+          <button class="btn" id="btn-check-update" style="align-self:flex-start;">
+            <svg class="btn-icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+            Check for Updates
+          </button>
+          <div class="about-update-status" id="update-status" style="display:none;"></div>
+          <div id="update-confirm" style="display:none;">
+            <div style="font-size:13px;margin-bottom:10px;color:var(--text);">Update available. Restart now?</div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-primary" id="btn-restart">Restart</button>
+              <button class="btn btn-ghost" id="btn-dismiss">Dismiss</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
+
+  <!-- Footer -->
+  <div class="settings-footer" style="position:sticky;bottom:0;">
+    <button class="btn btn-ghost" id="btn-cancel">Cancel</button>
+    <button class="btn btn-primary" id="btn-save">Save Settings</button>
+  </div>
+
   <script src="js/settings.js"></script>
 </body>
 </html>

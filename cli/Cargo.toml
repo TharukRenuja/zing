@@ -10,7 +10,7 @@ version = "0.2.6"
 edition = "2021"
 description = "A modern HTTP downloader with segmented concurrent downloads"
 authors = ["Tharuk Renuja"]
-license = "GPL-3.0-only"
+license = "AGPL-3.0"
 
 [package.metadata.deb]
 copyright = "© 2026 Tharuk Renuja"

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use client::{GuiClient, TaskInfo};
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
 use tauri::Manager;
 
 // ── Tauri state ───────────────────────────────────────────────────
@@ -68,10 +69,176 @@ fn save_settings_dir(dir: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_config() -> Result<serde_json::Value, String> {
+    let path = config_path();
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_config(key: String, value: serde_json::Value) -> Result<(), String> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut cfg: serde_json::Value = if path.exists() {
+        let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    cfg[&key] = value;
+    let content = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn update_check() -> Result<String, String> {
+    let output = std::process::Command::new("zing")
+        .arg("update")
+        .output()
+        .map_err(|e| format!("failed to run zing update: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if !stdout.is_empty() {
+        Ok(stdout)
+    } else if !stderr.is_empty() {
+        Err(stderr)
+    } else {
+        Ok("Already up to date.".to_string())
+    }
+}
+
+#[tauri::command]
+fn notify_settings_changed(app: tauri::AppHandle) -> Result<(), String> {
+    app.emit("settings-changed", ())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn execute_post_action() -> Result<(), String> {
+    let config = get_config()?;
+    let action = config
+        .get("post_download_action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("none");
+
+    if action.is_empty() || action == "none" {
+        return Ok(());
+    }
+
+    match action {
+        "quit" => {
+            std::process::exit(0);
+        }
+        "shutdown" => {
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("shutdown")
+                .args(["-h", "now"])
+                .spawn();
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("shutdown")
+                .args(["-h", "+1"])
+                .spawn();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("shutdown")
+                .args(["/s", "/t", "60"])
+                .spawn();
+        }
+        "sleep" => {
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("systemctl")
+                .args(["suspend"])
+                .spawn();
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("pmset")
+                .args(["sleepnow"])
+                .spawn();
+        }
+        "hibernate" => {
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("systemctl")
+                .args(["hibernate"])
+                .spawn();
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("pmset")
+                .args(["hibernatenow"])
+                .spawn();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_default_download_dir() -> Result<String, String> {
+    dirs::download_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "Could not detect download directory".into())
+}
+
+#[tauri::command]
 fn browse_folder() -> Result<Option<String>, String> {
     Ok(rfd::FileDialog::new()
         .pick_folder()
         .map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn start_clipboard_monitor(app: tauri::AppHandle) -> Result<(), String> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let last_url: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+
+    std::thread::spawn(move || {
+        use arboard::Clipboard;
+
+        let Ok(mut clipboard) = Clipboard::new() else {
+            RUNNING.store(false, Ordering::SeqCst);
+            return;
+        };
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+
+            if !RUNNING.load(Ordering::SeqCst) {
+                break;
+            }
+
+            let Ok(text) = clipboard.get_text() else {
+                continue;
+            };
+
+            let text = text.trim().to_string();
+            if text.is_empty() || !text.starts_with("http") {
+                continue;
+            }
+
+            let mut prev = last_url.lock().map_err(|_| ()).unwrap();
+            if *prev == text {
+                continue;
+            }
+            *prev = text.clone();
+
+            let _ = app.emit("clipboard-url", text);
+        }
+
+        RUNNING.store(false, Ordering::SeqCst);
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -249,7 +416,14 @@ pub fn run() -> anyhow::Result<()> {
                 get_version,
                 get_settings_dir,
                 save_settings_dir,
+                get_config,
+                set_config,
+                update_check,
+                notify_settings_changed,
+                execute_post_action,
+                get_default_download_dir,
                 browse_folder,
+                start_clipboard_monitor,
                 confirm_uri,
                 deny_uri,
                 pending_confirmations,
@@ -508,6 +682,14 @@ pub fn parse_size_bytes(s: &str) -> Option<u64> {
     s.parse::<u64>().ok()
 }
 
+fn config_path() -> std::path::PathBuf {
+    let mut path = dirs::config_dir()
+        .unwrap_or_else(|| dirs::download_dir().unwrap_or_default().to_path_buf());
+    path.push("zing");
+    path.push("config.json");
+    path
+}
+
 fn load_settings_dir() -> String {
     let mut path = dirs::config_dir()
         .unwrap_or_else(|| dirs::download_dir().unwrap_or_default().to_path_buf());
@@ -517,7 +699,11 @@ fn load_settings_dir() -> String {
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("default_dir")?.as_str().map(String::from))
-        .unwrap_or_default()
+        .unwrap_or_else(|| {
+            dirs::download_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        })
 }
 
 fn save_settings_dir_inner(dir: &str) {
