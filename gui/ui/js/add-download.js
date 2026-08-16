@@ -5,11 +5,6 @@ var addFilenameAuto = false;
 var prevAddUrl = '';
 var advOpen = false;
 
-var BASE_H = 420;
-var ADV_H = 640;
-var CUSTOM_SPEED_H = 30;
-var CUSTOM_UA_H = 30;
-
 var UA_MAP = {
   'chrome': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'firefox': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
@@ -18,22 +13,50 @@ var UA_MAP = {
   'curl': 'curl/8.4.0',
 };
 
+var CAT_PATTERNS = [
+  { cat: 'Music', re: /\.(mp3|wav|flac|aac|ogg|wma|m4a|opus|aiff)$/i },
+  { cat: 'Video', re: /\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|3gp|ts|vob)$/i },
+  { cat: 'Images', re: /\.(jpg|jpeg|png|gif|bmp|svg|webp|ico|tiff|raw|psd)$/i },
+  { cat: 'Documents', re: /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|rtf|csv|odt|ods|epub|mobi)$/i },
+  { cat: 'Compressed', re: /\.(zip|rar|7z|tar|gz|bz2|xz|zst|tgz|cab|iso)$/i },
+  { cat: 'Programs', re: /\.(exe|msi|dmg|app|deb|rpm|apk|AppImage|snap|flatpak)$/i },
+];
+
+function detectCategory(url) {
+  try {
+    var name = new URL(url).pathname.split('/').pop().toLowerCase();
+    for (var i = 0; i < CAT_PATTERNS.length; i++) {
+      if (CAT_PATTERNS[i].re.test(name)) return CAT_PATTERNS[i].cat;
+    }
+  } catch (e) {}
+  return '';
+}
+
 function closeWin() {
   invoke('close_current_window').catch(function(e) { console.error(e); });
 }
 
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t || 'dark');
+}
+function applyAccent(c) {
+  document.documentElement.style.setProperty('--accent', c || '#5b7fff');
+  var r = parseInt(c.slice(1,3),16), g = parseInt(c.slice(3,5),16), b = parseInt(c.slice(5,7),16);
+  document.documentElement.style.setProperty('--accent-soft','rgba('+r+','+g+','+b+',0.15)');
+}
+function applyFontSize(s) {
+  var map = { sm: '12px', md: '13px', lg: '14px' };
+  document.documentElement.style.setProperty('--font-size', map[s] || '13px');
+}
+
 function calcHeight() {
-  var h = BASE_H;
-  if (advOpen) {
-    h = ADV_H;
-    if (document.getElementById('add-speed-limit').value === 'custom') h += CUSTOM_SPEED_H;
-    if (document.getElementById('add-user-agent').value === 'custom') h += CUSTOM_UA_H;
-  }
-  return h;
+  var wrap = document.getElementById('add-wrap');
+  return wrap.scrollHeight + 8;
 }
 
 function resizeWin() {
-  invoke('resize_window', { label: 'add-download', width: 480, height: calcHeight() }).catch(function() {});
+  var h = calcHeight();
+  invoke('resize_window', { label: 'add-download', width: 480, height: h }).catch(function() {});
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -61,6 +84,18 @@ document.addEventListener('DOMContentLoaded', function() {
   }).catch(function() {});
 
   document.getElementById('add-url').focus();
+  resizeWin();
+
+  // Pre-fill URL from query parameter (e.g., from clipboard toast)
+  var params = new URLSearchParams(window.location.search);
+  var presetUrl = params.get('url');
+  if (presetUrl) {
+    document.getElementById('add-url').value = presetUrl;
+    var fn = presetUrl.split('/').pop().split('?')[0];
+    if (fn && fn.includes('.')) {
+      document.getElementById('add-filename').value = decodeURIComponent(fn);
+    }
+  }
 
   document.getElementById('btn-browse-dir').addEventListener('click', function() {
     invoke('browse_folder').then(function(dir) {
@@ -77,6 +112,8 @@ document.addEventListener('DOMContentLoaded', function() {
         var name = filenameFromUrl(url);
         if (name) { document.getElementById('add-filename').value = name; addFilenameAuto = true; }
       }
+      var cat = detectCategory(url);
+      if (cat) document.getElementById('add-category').value = cat;
     }
   });
 
@@ -106,15 +143,29 @@ document.addEventListener('DOMContentLoaded', function() {
     setTimeout(closeWin, 80);
   });
 
+  document.getElementById('btn-add-queue').addEventListener('click', function() {
+    this.classList.add('btn-press');
+    var self = this;
+    setTimeout(function() { self.classList.remove('btn-press'); }, 150);
+    submitAddUrl(true);
+  });
+
   document.getElementById('btn-add-submit').addEventListener('click', function() {
     this.classList.add('btn-press');
     var self = this;
     setTimeout(function() { self.classList.remove('btn-press'); }, 150);
-    submitAddUrl();
+    submitAddUrl(false);
+  });
+
+  window.addEventListener('storage', function(e) {
+    if (!e.key || !e.key.startsWith('zing-')) return;
+    if (e.key === 'zing-theme') applyTheme(e.newValue || 'dark');
+    if (e.key === 'zing-accent') applyAccent(e.newValue || '#5b7fff');
+    if (e.key === 'zing-font-size') applyFontSize(e.newValue || 'md');
   });
 });
 
-function submitAddUrl() {
+function submitAddUrl(paused) {
   var url = document.getElementById('add-url').value.trim();
   if (!url) return;
   var params = { url: url };
@@ -134,13 +185,18 @@ function submitAddUrl() {
     params.max_download_rate = speedSel;
   }
 
+  var headers = [];
   var uaSel = document.getElementById('add-user-agent').value;
   if (uaSel === 'custom') {
     var customUa = document.getElementById('add-ua-custom').value;
-    if (customUa) params.headers = ['User-Agent: ' + customUa];
+    if (customUa) headers.push('User-Agent: ' + customUa);
   } else if (uaSel && UA_MAP[uaSel]) {
-    params.headers = ['User-Agent: ' + UA_MAP[uaSel]];
+    headers.push('User-Agent: ' + UA_MAP[uaSel]);
   }
+
+  var referer = document.getElementById('add-referer').value;
+  if (referer) headers.push('Referer: ' + referer);
+  if (headers.length > 0) params.headers = headers;
 
   var proxy = document.getElementById('add-proxy').value;
   if (proxy) params.proxy = proxy;
@@ -148,6 +204,9 @@ function submitAddUrl() {
   if (mirror) params.mirror = [mirror];
   if (document.getElementById('add-insecure').checked) params.insecure = true;
   if (document.getElementById('add-overwrite').checked) params.allow_overwrite = true;
+  if (paused) params.paused = true;
+  var category = document.getElementById('add-category').value;
+  if (category) params.category = category;
 
   invoke('add_uri', { params: params }).then(function() {
     closeWin();

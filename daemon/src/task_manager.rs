@@ -43,6 +43,8 @@ pub struct SessionEntry {
     pub allow_overwrite: bool,
     #[serde(default)]
     pub paused: bool,
+    #[serde(default)]
+    pub category: String,
 }
 
 fn default_true() -> bool {
@@ -82,6 +84,7 @@ pub struct TaskInfo {
     pub connections: Vec<ConnInfo>,
     pub completed_blocks: u32,
     pub total_blocks: u32,
+    pub category: String,
 }
 
 /// Serializable snapshot of a single active connection for the TUI's
@@ -198,6 +201,7 @@ impl TaskManager {
                 auto_file_renaming: t.auto_file_renaming,
                 allow_overwrite: t.allow_overwrite,
                 paused: matches!(t.status, TaskStatus::Paused),
+                category: t.category.clone(),
             })
             .collect();
         if let Ok(json) = serde_json::to_string_pretty(&entries) {
@@ -256,6 +260,8 @@ impl TaskManager {
         throttle_reprobe: bool,
         auto_file_renaming: bool,
         allow_overwrite: bool,
+        paused: bool,
+        category: &str,
     ) -> TaskId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -267,7 +273,11 @@ impl TaskManager {
             downloaded: 0,
             speed: 0.0,
             peak_speed: 0.0,
-            status: TaskStatus::Pending,
+            status: if paused {
+                TaskStatus::Paused
+            } else {
+                TaskStatus::Pending
+            },
             is_auto_name,
             max_connections,
             insecure,
@@ -291,6 +301,7 @@ impl TaskManager {
             connections: Vec::new(),
             completed_blocks: 0,
             total_blocks: 0,
+            category: category.to_string(),
         };
 
         self.insert_info(info).await;
@@ -350,6 +361,7 @@ impl TaskManager {
             connections: Vec::new(),
             completed_blocks: 0,
             total_blocks: 0,
+            category: entry.category.clone(),
         };
 
         self.insert_info(info).await;
@@ -904,6 +916,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
             )
             .await;
 
@@ -964,6 +977,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
             )
             .await;
 
@@ -1010,6 +1024,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
             )
             .await;
 
@@ -1045,6 +1060,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
             )
             .await;
         let id2 = mgr
@@ -1068,6 +1084,7 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
                 false,
                 false,
             )
@@ -1105,6 +1122,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
             )
             .await;
         let id2 = mgr
@@ -1128,6 +1146,7 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
                 false,
                 false,
             )
@@ -1166,6 +1185,7 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
                 false,
                 false,
             )
@@ -1224,6 +1244,7 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
                 false,
                 false,
             )
@@ -1288,6 +1309,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
             )
             .await;
         let id2 = mgr
@@ -1311,6 +1333,7 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
                 false,
                 false,
             )

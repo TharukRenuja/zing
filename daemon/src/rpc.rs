@@ -372,6 +372,16 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let paused = map
+        .remove("paused")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let category = map
+        .remove("category")
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+
     let id = manager
         .add_task(
             &url,
@@ -395,6 +405,8 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
             throttle_reprobe,
             auto_file_renaming,
             allow_overwrite,
+            paused,
+            &category,
         )
         .await;
 
@@ -624,6 +636,7 @@ fn task_to_json(t: &crate::task_manager::TaskInfo) -> Value {
         "connections": t.connections,
         "completed_blocks": t.completed_blocks,
         "total_blocks": t.total_blocks,
+        "category": t.category,
     })
 }
 
@@ -738,6 +751,8 @@ mod tests {
             true,
             false,
             false,
+            false,
+            "",
         )
         .await;
 
@@ -772,6 +787,7 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
                 false,
                 false,
             )
@@ -821,6 +837,7 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
             )
             .await;
 
@@ -855,6 +872,7 @@ mod tests {
                 None,
                 true,
                 true,
+                false,
                 false,
                 false,
             )
