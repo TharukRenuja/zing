@@ -8,7 +8,6 @@ use crate::ratelimit::{SharedRateLimiter, TokenBucket};
 use crate::retry::RetryManager;
 use crate::segment::allocator::SlowStartAllocator;
 use crate::segment::manager::{Segment, SegmentManager, SegmentState};
-use crate::segment::pid::PidController;
 use crate::segment::stealer::WorkStealer;
 use crate::storage::control::BlockBitfield;
 use crate::storage::ControlFile;
@@ -679,62 +678,92 @@ impl DownloadTask {
             *self.state.block_bitfield.lock().await = cf.bitfield.clone();
         }
 
-        let batches =
-            SlowStartAllocator::new(self.state.segment_mgr.lock().await.max_connections).batches();
         let conn_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
 
+        let is_small_file = total_size < constants::SMALL_FILE_THRESHOLD;
+
+        // Spawn connection 0 (always)
         let state = Arc::clone(&self.state);
         conn_tasks.lock().unwrap().push(tokio::spawn(async move {
             run_connection(state, 0).await;
         }));
 
-        for &batch_count in &batches[1..] {
-            if self.state.segment_mgr.lock().await.is_all_complete() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(
-                constants::SLOW_START_BATCH_DELAY_MS,
+        if is_small_file {
+            tracing::info!(
+                "Small file ({} bytes < {} threshold): 1 connection, no measurement",
+                total_size,
+                constants::SMALL_FILE_THRESHOLD,
+            );
+        } else {
+            // Large file: measure real speed of connection 0, then decide optimal count
+            tokio::time::sleep(std::time::Duration::from_secs(
+                constants::MEASURE_DURATION_SECS,
             ))
             .await;
-            let mut spawned = 0;
-            for _ in 0..batch_count {
-                let target = {
+
+            if !self.state.segment_mgr.lock().await.is_all_complete() {
+                let probe_bw = self.state.bandwidth_estimate.load(Ordering::Relaxed) as f64;
+                let (measured_speed, max_conns) = {
                     let mgr = self.state.segment_mgr.lock().await;
-                    mgr.slowest_connection()
+                    let speed = mgr.connection_speed(0);
+                    let max = mgr.max_connections;
+                    (speed, max)
                 };
-                let conn_id = {
+
+                let optimal = SlowStartAllocator::calculate_optimal_conns(
+                    total_size,
+                    measured_speed,
+                    probe_bw,
+                    max_conns,
+                );
+
+                tracing::info!(
+                    "Adaptive: measured {:.1} MB/s, probe {:.1} MB/s → {} connections for {} MB file",
+                    measured_speed / 1048576.0,
+                    probe_bw / 1048576.0,
+                    optimal,
+                    total_size / 1048576,
+                );
+
+                // Update dynamic min segment size
+                {
                     let mut mgr = self.state.segment_mgr.lock().await;
-                    if let Some(slow) = target {
-                        SlowStartAllocator::split_segment(
-                            &mut mgr,
-                            slow,
-                            constants::SEGMENT_INITIAL_SPLIT_SIZE,
-                        )
-                        .map(|(id, _)| id)
-                    } else {
-                        None
-                    }
-                };
-                if let Some(conn_id) = conn_id {
-                    let state = Arc::clone(&self.state);
-                    conn_tasks.lock().unwrap().push(tokio::spawn(async move {
-                        run_connection(state, conn_id).await;
-                    }));
-                    spawned += 1;
+                    let dyn_min =
+                        std::cmp::max(constants::MIN_SEGMENT_BYTES, total_size / optimal as u64);
+                    mgr.min_segment_size = dyn_min;
                 }
-            }
-            if spawned == 0 {
-                let splittable = {
-                    let mgr = self.state.segment_mgr.lock().await;
-                    mgr.connections.iter().any(|c| {
-                        mgr.active_segment_for(c.id)
-                            .map(|s| s.remaining() >= constants::SEGMENT_INITIAL_SPLIT_SIZE)
-                            .unwrap_or(false)
-                    })
-                };
-                if !splittable {
-                    break;
+
+                // Spawn remaining connections
+                for _ in 1..optimal {
+                    if self.state.segment_mgr.lock().await.is_all_complete() {
+                        break;
+                    }
+                    let target = {
+                        let mgr = self.state.segment_mgr.lock().await;
+                        mgr.slowest_connection()
+                    };
+                    let conn_id = {
+                        let mut mgr = self.state.segment_mgr.lock().await;
+                        if let Some(slow) = target {
+                            SlowStartAllocator::split_segment(
+                                &mut mgr,
+                                slow,
+                                constants::MIN_SEGMENT_BYTES,
+                            )
+                            .map(|(id, _)| id)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(new_id) = conn_id {
+                        let state = Arc::clone(&self.state);
+                        conn_tasks.lock().unwrap().push(tokio::spawn(async move {
+                            run_connection(state, new_id).await;
+                        }));
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -773,8 +802,8 @@ impl DownloadTask {
 
         let monitor_tasks = Arc::clone(&conn_tasks);
         let monitor = tokio::spawn(async move {
-            let stealer = WorkStealer::new();
-            let mut pid = PidController::new(0.0);
+            let min_seg = state_mon.segment_mgr.lock().await.min_segment_size;
+            let stealer = WorkStealer::new(min_seg);
             let mut prev_downloaded = 0u64;
             let mut prev_time = Instant::now();
             let mut prev_conn_bytes: std::collections::HashMap<usize, u64> =
@@ -921,60 +950,21 @@ impl DownloadTask {
                     continue;
                 }
 
-                let peak = state_mon.peak_speed.load(Ordering::Relaxed) as f64;
-                let target = if peak > 0.0 && speed < peak * 0.9 {
-                    (peak * 0.95).max(speed * 1.2)
-                } else {
-                    speed * 1.02
-                };
-                pid.set_target(target);
-                let adjustment = pid.compute(speed, dt);
-
-                let (pid_new_id, steal_new_id) = {
+                // Work stealing: redistribute segments from slow to fast connections
+                let steal_new_id = {
                     let mut mgr = state_mon.segment_mgr.lock().await;
-
-                    let pid_id = if adjustment >= 1 {
-                        mgr.slowest_connection()
-                            .and_then(|slow| {
-                                SlowStartAllocator::split_segment(
-                                    &mut mgr,
-                                    slow,
-                                    constants::SEGMENT_MIN_SIZE,
-                                )
-                            })
-                            .map(|(id, _)| id)
-                    } else {
-                        None
-                    };
-
-                    if adjustment <= -1 {
-                        if let Some(fast_id) = mgr.fastest_connection() {
-                            let _ = mgr.remove_connection(fast_id);
-                        }
-                    }
-
-                    let steal_id = stealer
+                    let min_seg = mgr.min_segment_size;
+                    stealer
                         .find_steal_targets(&mgr)
                         .and_then(|(slow_id, _)| {
                             SlowStartAllocator::split_segment(
                                 &mut mgr,
                                 slow_id,
-                                constants::SEGMENT_MIN_SIZE,
+                                min_seg,
                             )
                         })
-                        .map(|(id, _)| id);
-
-                    (pid_id, steal_id)
+                        .map(|(id, _)| id)
                 };
-                if let Some(new_id) = pid_new_id {
-                    pid.record_add(speed);
-                    pid.evaluate_improvement(speed);
-                    let s = Arc::clone(&state_mon);
-                    let mt = Arc::clone(&monitor_tasks);
-                    mt.lock()
-                        .unwrap()
-                        .push(tokio::spawn(async move { run_connection(s, new_id).await }));
-                }
                 if let Some(new_id) = steal_new_id {
                     let s = Arc::clone(&state_mon);
                     let mt = Arc::clone(&monitor_tasks);

@@ -1,3 +1,4 @@
+use crate::constants;
 use crate::segment::manager::SegmentManager;
 
 pub struct SlowStartAllocator {
@@ -112,5 +113,47 @@ impl SlowStartAllocator {
         let new_conn_id = mgr.add_connection()?;
         let new_seg_id = mgr.allocate_segment(offset, length, new_conn_id);
         Some((new_conn_id, new_seg_id))
+    }
+
+    /// Calculate the optimal number of connections based on a measured single-connection
+    /// speed and the probe bandwidth estimate.
+    ///
+    /// Returns 1 if the file is small, the single connection already saturates
+    /// the link, or measurement is invalid. Otherwise returns
+    /// `ceil(probe_bandwidth / measured_speed)`, capped at `max_connections`.
+    pub fn calculate_optimal_conns(
+        total_size: u64,
+        measured_speed: f64,
+        probe_bandwidth: f64,
+        max_connections: Option<usize>,
+    ) -> usize {
+        if measured_speed <= 0.0 {
+            return 1;
+        }
+
+        // If single connection already near probe bandwidth, stay at 1
+        if probe_bandwidth > 0.0
+            && measured_speed >= probe_bandwidth * constants::SINGLE_CONN_THRESHOLD
+        {
+            return 1;
+        }
+
+        let optimal = if probe_bandwidth > 0.0 && measured_speed > 0.0 {
+            (probe_bandwidth / measured_speed).ceil() as usize
+        } else {
+            // No probe estimate: heuristic based on file size and measured speed.
+            // For a 500 MB file at 10 MB/s, ~4 connections is reasonable.
+            // For a 5 GB file at 10 MB/s, ~8-16 connections.
+            let size_mb = total_size as f64 / 1048576.0;
+            let speed_mbps = measured_speed / 1048576.0;
+            let heuristic = (size_mb / 128.0 / speed_mbps).ceil() as usize;
+            heuristic.max(2)
+        };
+
+        let optimal = optimal.max(1);
+        match max_connections {
+            Some(max) => optimal.min(max),
+            None => optimal,
+        }
     }
 }

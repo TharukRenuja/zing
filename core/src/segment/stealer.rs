@@ -6,10 +6,10 @@ pub struct WorkStealer {
 }
 
 impl WorkStealer {
-    pub fn new() -> Self {
+    pub fn new(min_bytes: u64) -> Self {
         Self {
             steal_threshold_seconds: 3.0,
-            steal_min_bytes: crate::constants::SEGMENT_MIN_SIZE,
+            steal_min_bytes: min_bytes,
         }
     }
 
@@ -82,7 +82,7 @@ impl WorkStealer {
 
 impl Default for WorkStealer {
     fn default() -> Self {
-        Self::new()
+        Self::new(crate::constants::SEGMENT_MIN_SIZE)
     }
 }
 
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_find_steal_targets_not_enough_connections() {
-        let stealer = WorkStealer::new();
+        let stealer = WorkStealer::new(100);
         let mut mgr = SegmentManager::new(Some(4));
         mgr.add_connection();
         mgr.allocate_segment(0, 1000, 0);
@@ -126,14 +126,14 @@ mod tests {
 
     #[test]
     fn test_find_steal_targets_no_active_connections() {
-        let stealer = WorkStealer::new();
+        let stealer = WorkStealer::new(100);
         let mgr = SegmentManager::new(Some(4));
         assert!(stealer.find_steal_targets(&mgr).is_none());
     }
 
     #[test]
     fn test_find_steal_targets_fast_not_nearly_done() {
-        let stealer = WorkStealer::new();
+        let stealer = WorkStealer::new(100);
         // Slow has 500 remaining at 100 B/s (5 sec), fast has 400 remaining at 10 B/s (40 sec)
         let mgr = mgr_with_speeds(500, 400, 10.0);
         // fast_time_remaining = 400 / 10 = 40 > threshold (3.0)
@@ -142,11 +142,11 @@ mod tests {
 
     #[test]
     fn test_find_steal_targets_slow_not_enough_work() {
-        let stealer = WorkStealer::new();
+        let stealer = WorkStealer::new(100);
         // Slow has 1 remaining, fast has 5 remaining at fast speed
         let mgr = mgr_with_speeds(1, 5, 1000.0);
         // fast_time_remaining = 5/1000 = 0.005 < threshold (3.0)
-        // but slow_remaining = 1 < steal_min_bytes (default ~1MB)
+        // but slow_remaining = 1 < steal_min_bytes (100)
         assert!(stealer.find_steal_targets(&mgr).is_none());
     }
 
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_find_steal_targets_both_slow() {
-        let stealer = WorkStealer::new();
+        let stealer = WorkStealer::new(100);
         // Both have speed 0.0, so fast_time_remaining = f64::MAX
         let mgr = mgr_with_two_connections(5000, 10);
         assert!(stealer.find_steal_targets(&mgr).is_none());

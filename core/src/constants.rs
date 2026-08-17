@@ -4,6 +4,21 @@ pub const SEGMENT_MIN_SIZE: u64 = 512 * 1024;
 /// Initial split size for slow-start segment allocation: 1 MiB.
 pub const SEGMENT_INITIAL_SPLIT_SIZE: u64 = 1024 * 1024;
 
+/// Adaptive connection count: files below this size use 1 connection, skip measurement.
+pub const SMALL_FILE_THRESHOLD: u64 = 200 * 1024 * 1024;
+
+/// Adaptive connection count: minimum segment size (4 MiB). Segments won't be
+/// split below this after the adaptive count is determined.
+pub const MIN_SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Adaptive connection count: how long (seconds) to measure the first connection
+/// before deciding the optimal count.
+pub const MEASURE_DURATION_SECS: u64 = 3;
+
+/// Adaptive connection count: if a single connection achieves at least this
+/// fraction of the probe bandwidth, no additional connections are spawned.
+pub const SINGLE_CONN_THRESHOLD: f64 = 0.8;
+
 /// Minimum speed threshold (10 KiB/s) below which throttling detection is disabled.
 pub const MIN_THROTTLE_SPEED: u64 = 10 * 1024;
 
