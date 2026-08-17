@@ -3,7 +3,7 @@ title: Documentation
 section: Overview
 order: 0
 desc: Index of all zing documentation — guides, references, and architecture docs.
-keywords: zing, docs, documentation, index, reference
+keywords: zing, docs, documentation, index, reference, overview
 -->
 
 # zing Documentation
