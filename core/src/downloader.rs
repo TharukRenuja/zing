@@ -957,11 +957,7 @@ impl DownloadTask {
                     stealer
                         .find_steal_targets(&mgr)
                         .and_then(|(slow_id, _)| {
-                            SlowStartAllocator::split_segment(
-                                &mut mgr,
-                                slow_id,
-                                min_seg,
-                            )
+                            SlowStartAllocator::split_segment(&mut mgr, slow_id, min_seg)
                         })
                         .map(|(id, _)| id)
                 };
