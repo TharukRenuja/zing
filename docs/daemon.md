@@ -1,10 +1,10 @@
----
+<!--
 title: Daemon
 section: Guides
 order: 5
 desc: Background downloads with zing-daemon — JSON-RPC server, task lifecycle, session persistence, scheduled downloads, concurrency control, systemd, and event hooks.
 keywords: zing, daemon, background, rpc, json-rpc, unix socket, task manager, scheduler, systemd, session, event hooks
----
+-->
 
 # Daemon
 

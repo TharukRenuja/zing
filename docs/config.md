@@ -1,10 +1,10 @@
----
+<!--
 title: Configuration
 section: Reference
 order: 3
 desc: Config file location, all keys, zing config commands, daemon socket paths, and bandwidth schedule format.
 keywords: zing, config, configuration, settings, config.json, download_dir, max_concurrent, bandwidth schedule
----
+-->
 
 # Configuration
 

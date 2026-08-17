@@ -138,7 +138,7 @@ zing --standalone https://example.com/file.zip
 <details>
 <summary>Segmented downloads, probing, throttling, rate limits</summary>
 
-- **Segmented concurrent downloads** with adaptive connection count (PID control + slow-start) instead of a fixed static split
+- **Segmented concurrent downloads** with adaptive connection count (measure-then-decide) instead of a fixed static split
 - **Server probing** → measures RTT, protocol, and bandwidth to pick the best download strategy
 - **Throttling detection** → if speed drops too low, re-probes and fails over to mirrors
 - **End-game mode** → remaining connections race for the last few blocks to minimize tail latency
@@ -477,7 +477,7 @@ zing -p https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | 
 
 5 crates in a workspace:
 
-- **core** → Download engine: probe, segment management, PID control, rate limiting, retry, bandwidth scheduling, connection pool, cookie store, cross-platform IPC (transport layer)
+- **core** → Download engine: probe, segment management, adaptive connections, rate limiting, retry, bandwidth scheduling, connection pool, cookie store, cross-platform IPC (transport layer)
 - **cli** → CLI frontend with progress bar, daemon auto-detection, checksum verification, config/schedule management, pipe modes, cookie/netrc auth, event hooks
 - **tui** → Terminal UI: task list, per-connection view, pause/resume/stop/remove, add-URL prompt, logs panel
 - **daemon** → JSON-RPC server for background and scheduled downloads (Unix socket on Linux, TCP on Windows)

@@ -1,10 +1,10 @@
----
+<!--
 title: Installation
 section: Getting Started
 order: 1
 desc: Install zing from source, pre-built binaries, or the install script. Set up systemd service on Linux.
 keywords: zing, install, build, cargo, binary, systemd, setup, download, linux, macos, windows
----
+-->
 
 # Installation
 

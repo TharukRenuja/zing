@@ -1,10 +1,10 @@
----
+<!--
 title: Download Engine
 section: Internals
 order: 4
-desc: How zing downloads files — segmented concurrent downloads, server probing, PID controller, end-game mode, retry, rate limiting, Metalink, resume, and storage I/O.
-keywords: zing, download, engine, segmented, probing, pid controller, end-game, retry, rate limit, metalink, resume, pwrite, bitfield
----
+desc: How zing downloads files — segmented concurrent downloads, server probing, adaptive connection count, end-game mode, retry, rate limiting, Metalink, resume, and storage I/O.
+keywords: zing, download, engine, segmented, probing, adaptive, end-game, retry, rate limit, metalink, resume, pwrite, bitfield
+-->
 
 # Download Engine
 
@@ -32,8 +32,7 @@ The download engine (`zing-core`) handles the core logic of fetching files over 
 
 4. Download
    ├── Segmented: multiple connections, each downloads a range
-   │   ├── Slow-start: 1 → 2 → 4 → ... connections
-   │   ├── PID controller adjusts connection count
+   │   ├── Adaptive: small files use 1 connection, large files measure then decide
    │   ├── Work stealing: fast connections take work from slow ones
    │   └── End-game: all connections race for remaining blocks
    └── Streaming: single connection for unknown-size servers
@@ -55,38 +54,35 @@ The engine splits a file into byte-range segments, each assigned to a connection
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `SEGMENT_MIN_SIZE` | 512 KiB | Minimum segment; never split smaller |
-| `SEGMENT_INITIAL_SPLIT_SIZE` | 1 MiB | Threshold for initial split decision |
+| `SEGMENT_MIN_SIZE` | 512 KiB | Legacy minimum; used for initial split only |
+| `MIN_SEGMENT_BYTES` | 4 MiB | Dynamic minimum after adaptive count is determined |
+| `SMALL_FILE_THRESHOLD` | 200 MiB | Files below this use 1 connection, skip measurement |
 
-### Slow-start allocation
+### Adaptive connection spawning
 
-Connections are spawned in exponential batches: 1, 2, 4, 8, ... This avoids overloading the server with too many connections upfront.
+Files are split into two categories based on size:
 
-The `SlowStartAllocator` tracks which batch we're on and whether all connections have been launched.
+| Threshold | Behavior |
+|-----------|----------|
+| < 200 MiB (`SMALL_FILE_THRESHOLD`) | 1 connection, no measurement, no delays |
+| ≥ 200 MiB | Measure real speed, then calculate optimal count |
 
-## Adaptive connection count (PID controller)
+For large files:
 
-A PID (Proportional-Integral-Derivative) controller adjusts the number of connections based on measured download speed:
+1. Spawn connection 0 with the entire file
+2. Wait 3 seconds (`MEASURE_DURATION_SECS`) to measure real per-connection speed
+3. Calculate: `optimal = ceil(probe_bandwidth / measured_speed)`, capped at max_connections
+4. If single connection already at 80%+ of probe bandwidth (`SINGLE_CONN_THRESHOLD`) → stay at 1
+5. Spawn remaining connections in one shot (no batch delays)
 
-| Gain | Default | Role |
-|------|---------|------|
-| Kp | 0.1 | Proportional: reacts to current speed error |
-| Ki | 0.01 | Integral: accumulates sustained speed changes |
-| Kd | 0.05 | Derivative: dampens oscillation |
-
-The controller outputs:
-- `+1` → add a connection
-- `-1` → remove a connection
-- `0` → no change
-
-After adding a connection, the controller evaluates whether speed improved. If improvement is poor, gains are flattened (reduced by 0.85x). If improvement is strong (> 25%), gains are partially restored (1.1x).
+Dynamic minimum segment size: `max(4 MiB, total_size / optimal_connections)` replaces the fixed 512 KiB floor. This ensures segments are large enough to be meaningful while still allowing work stealing between connections.
 
 ## Work stealing
 
 When a fast connection finishes its segment early, it can "steal" remaining work from the slowest connection. This happens when:
 
 1. The fast connection will finish its current segment in < 3 seconds
-2. The slow connection has ≥ 512 KiB remaining
+2. The slow connection has ≥ `min_segment_size` remaining (dynamic: `max(4 MiB, total/conns)`)
 
 The slow connection's segment is split: the completed portion is marked done, and the remaining bytes become a new pending segment for the fast connection.
 
@@ -109,8 +105,8 @@ The probe sends `GET Range: bytes=0-65535` and analyzes the response:
 
 The `decide_strategy` heuristic then picks:
 - **Streaming mode** if no size or no range support
-- **1 connection** if file is small (< 1 MiB)
-- **N connections** based on protocol, RTT, bandwidth, and file size
+- **1 connection** if file is small (< 200 MiB)
+- **N connections** based on measured speed vs probe bandwidth
 
 ### Mirror probing
 

@@ -1,10 +1,10 @@
----
+<!--
 title: Terminal UI (TUI)
 section: Guides
 order: 6
 desc: Interactive terminal UI for managing downloads — layout, keybindings, task table, per-connection view, block map, logs panel, and daemon integration.
 keywords: zing, tui, terminal, interface, ratatui, keybindings, task table, progress, block map, logs
----
+-->
 
 # Terminal UI (TUI)
 

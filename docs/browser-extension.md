@@ -1,10 +1,10 @@
----
+<!--
 title: Browser Extension
 section: Guides
 order: 9
 desc: Native Messaging protocol for browser extensions — wire format, message schema, manifest setup, and security model.
 keywords: zing, browser, extension, chrome, firefox, edge, native messaging, nm, manifest, wire protocol
----
+-->
 
 # Browser Extension
 

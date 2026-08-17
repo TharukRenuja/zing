@@ -1,10 +1,10 @@
----
+<!--
 title: Architecture
 section: Internals
 order: 10
 desc: Workspace structure, crate responsibilities, dependency graph, transport layer, data flow, and key design decisions.
-keywords: zing, architecture, workspace, crates, design, transport, ipc, unix socket, tcp, event bus, pid controller
----
+keywords: zing, architecture, workspace, crates, design, transport, ipc, unix socket, tcp, event bus, adaptive
+-->
 
 # Architecture
 
@@ -57,7 +57,7 @@ The foundation. Everything related to actually downloading files:
 | `downloader` | Main download orchestrator: probing, segments, connections, end-game, resume |
 | `engine` | Event system (`EventBus`, `EngineEvent`) |
 | `connection` | HTTP connection pool (`reqwest` wrapper), Happy Eyeballs DNS |
-| `segment` | Segment allocation, PID controller, work stealer |
+| `segment` | Segment allocation, work stealer, dynamic sizing |
 | `storage` | Binary control file (`.zing`) and block bitfield |
 | `transport` | IPC transport: Unix socket (Linux) / TCP (Windows) |
 | `rpc` | JSON-RPC client for daemon communication |
@@ -172,7 +172,7 @@ addUri
   │   │   ├─ probe server
   │   │   ├─ allocate segments
   │   │   ├─ spawn connections
-  │   │   ├─ monitor loop (PID, work stealing, end-game)
+  │   │   ├─ monitor loop (work stealing, end-game)
   │   │   └─ save control file periodically
   │   │
   │   └─ on completion: verify checksum, run hooks, cleanup
@@ -227,9 +227,11 @@ No port conflicts, filesystem permissions control access, no network exposure.
 
 Lock-free implementation using atomics. Connections call `consume()` which async-blocks until tokens are available. The bandwidth scheduler can change the rate at runtime via `set_rate()`.
 
-### PID controller for connection count
+### Adaptive connection count
 
-Adaptive rather than fixed. The controller measures speed improvement after each connection change and adjusts gains accordingly. This avoids both under-utilization and server overload.
+Files < 200 MiB use a single connection with no overhead. Larger files start with one connection, measure real speed for 2-3 seconds, then calculate the optimal count from `probe_bandwidth / measured_speed`. This avoids both under-utilization (too few connections) and server overload (too many connections) while eliminating the latency of slow-start batch delays.
+
+Work stealing still redistributes segments from slow to fast connections using a dynamic minimum segment size derived from the optimal connection count.
 
 ### Event bus (broadcast channel)
 

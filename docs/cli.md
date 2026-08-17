@@ -1,10 +1,10 @@
----
+<!--
 title: CLI Reference
 section: Reference
 order: 2
 desc: Complete reference for all zing commands, flags, and options — download, daemon, tui, gui, schedule, config, completions.
 keywords: zing, cli, command line, flags, options, download, daemon, tui, gui, schedule, config, completions
----
+-->
 
 # CLI Reference
 

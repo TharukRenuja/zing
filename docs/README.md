@@ -1,10 +1,10 @@
----
+<!--
 title: Documentation
 section: Overview
 order: 0
 desc: Index of all zing documentation — guides, references, and architecture docs.
 keywords: zing, docs, documentation, index, reference, guide
----
+-->
 
 # zing Documentation
 
@@ -15,7 +15,7 @@ keywords: zing, docs, documentation, index, reference, guide
 | [Installation](installation.md) | Install from source, pre-built binaries, install script, systemd service |
 | [CLI Reference](cli.md) | All commands, flags, URL/file input, progress modes |
 | [Configuration](config.md) | Config file, all keys, `zing config` commands |
-| [Download Engine](download-engine.md) | Segmented downloads, probing, PID control, end-game, retry, rate limiting, bandwidth scheduling, Metalink, resume |
+| [Download Engine](download-engine.md) | Segmented downloads, probing, adaptive connections, end-game, retry, rate limiting, bandwidth scheduling, Metalink, resume |
 | [Daemon](daemon.md) | Background downloads, JSON-RPC, task management, scheduled downloads, systemd, session persistence |
 | [Terminal UI (TUI)](tui.md) | Layout, keybindings, task table, per-connection view, block map, logs panel |
 | [Desktop GUI](gui.md) | eframe/egui interface, IDM-style layout, sidebar filters, speed plot, block grid |
@@ -38,7 +38,7 @@ zing cli ──┬── standalone (in-process download)
 
 | Crate | Path | Role |
 |-------|------|------|
-| `zing-core` | `core/` | Download engine, probe, segments, PID, rate limit, storage, transport, RPC client |
+| `zing-core` | `core/` | Download engine, probe, segments, adaptive connections, rate limit, storage, transport, RPC client |
 | `zing` (cli) | `cli/` | CLI frontend, progress bar, config, event hooks, pipe modes |
 | `zing-tui` | `tui/` | Terminal UI: ratatui rendering, task table, per-connection view |
 | `zing-gui` | `gui/` | Desktop GUI: eframe/egui, IDM layout, live polling |

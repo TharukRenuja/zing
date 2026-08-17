@@ -1,10 +1,10 @@
----
+<!--
 title: Desktop GUI
 section: Guides
 order: 7
 desc: Native desktop GUI for zing — eframe/egui IDM-style layout with toolbar, sidebar filters, task table, speed plot, and block grid.
 keywords: zing, gui, desktop, eframe, egui, idm, interface, speed plot, block grid, native
----
+-->
 
 # Desktop GUI
 

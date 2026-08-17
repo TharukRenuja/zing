@@ -1,10 +1,10 @@
----
+<!--
 title: Pipe Mode
 section: Guides
 order: 8
 desc: Stream downloads to stdout — pipe to scripts, extract archives, install binaries, and pipe to any command.
 keywords: zing, pipe, stdout, streaming, bash, python, tar, app install, script, exec
----
+-->
 
 # Pipe Mode
 
