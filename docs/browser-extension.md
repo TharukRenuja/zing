@@ -267,6 +267,164 @@ Get status for a single task.
 { "ok": true, "result": "0.2.4" }
 ```
 
+---
+
+### `setMaxConcurrent`
+
+Set the maximum number of concurrent downloads.
+
+**Request:**
+```json
+{
+  "action": "setMaxConcurrent",
+  "params": { "maxConcurrent": 8 }
+}
+```
+
+**Response:**
+```json
+{ "ok": true, "result": { "max_concurrent": 8 } }
+```
+
+---
+
+### `getDefaultDir`
+
+Get the default download directory from the daemon config.
+
+**Request:**
+```json
+{ "action": "getDefaultDir" }
+```
+
+**Response:**
+```json
+{ "ok": true, "result": { "path": "/home/user/Downloads" } }
+```
+
+---
+
+### `setDefaultDir`
+
+Set the default download directory in the daemon config.
+
+**Request:**
+```json
+{
+  "action": "setDefaultDir",
+  "params": { "dir": "/home/user/Downloads" }
+}
+```
+
+**Response:**
+```json
+{ "ok": true, "result": { "path": "/home/user/Downloads" } }
+```
+
+---
+
+### `pickDirectory`
+
+Open a native directory picker dialog (zenity/kdialog on Linux, osascript on macOS).
+
+**Request:**
+```json
+{ "action": "pickDirectory" }
+```
+
+**Response:**
+```json
+{ "ok": true, "result": { "path": "/home/user/Downloads" } }
+```
+
+---
+
+### `openAddDownload`
+
+Open the add-download window in the zing GUI with a URL pre-filled.
+
+**Request:**
+```json
+{
+  "action": "openAddDownload",
+  "params": {
+    "url": "https://example.com/file.zip",
+    "filename": "file.zip"
+  }
+}
+```
+
+**Response:**
+```json
+{ "ok": true, "result": { "status": "ok" } }
+```
+
+---
+
+### `confirmUri`
+
+Confirm a pending download that was queued with `confirm: true`.
+
+**Request:**
+```json
+{
+  "action": "confirmUri",
+  "pending_id": 1
+}
+```
+
+**Response:**
+```json
+{ "ok": true, "result": { "id": 5, "url": "...", "filename": "...", "status": "pending" } }
+```
+
+---
+
+### `denyUri`
+
+Deny/remove a pending download confirmation.
+
+**Request:**
+```json
+{
+  "action": "denyUri",
+  "pending_id": 1
+}
+```
+
+**Response:**
+```json
+{ "ok": true, "result": { "pending_id": 1, "denied": true } }
+```
+
+---
+
+### `pendingConfirmations`
+
+List all pending download confirmations.
+
+**Request:**
+```json
+{ "action": "pendingConfirmations" }
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "result": {
+    "pending": [
+      {
+        "pending_id": 1,
+        "url": "https://example.com/file.zip",
+        "filename": "file.zip",
+        "dir": "/home/user/Downloads"
+      }
+    ]
+  }
+}
+```
+
 ## Error responses
 
 ```json

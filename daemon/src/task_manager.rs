@@ -120,6 +120,7 @@ pub struct TaskManager {
     session_path: PathBuf,
     semaphore: Arc<Mutex<Option<Arc<Semaphore>>>>,
     pending_confirmations: Arc<Mutex<HashMap<u64, serde_json::Value>>>,
+    pending_open_add_download: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl std::fmt::Debug for TaskManager {
@@ -143,6 +144,7 @@ impl TaskManager {
             session_path,
             semaphore: Arc::new(Mutex::new(None)),
             pending_confirmations: Arc::new(Mutex::new(HashMap::new())),
+            pending_open_add_download: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -864,6 +866,20 @@ impl TaskManager {
     pub async fn list_pending_confirmations(&self) -> Vec<(u64, serde_json::Value)> {
         let pending = self.pending_confirmations.lock().await;
         pending.iter().map(|(k, v)| (*k, v.clone())).collect()
+    }
+
+    pub async fn push_open_add_download(&self, params: serde_json::Value) {
+        let mut queue = self.pending_open_add_download.lock().await;
+        queue.push(params);
+    }
+
+    pub async fn pop_open_add_download(&self) -> Option<serde_json::Value> {
+        let mut queue = self.pending_open_add_download.lock().await;
+        if queue.is_empty() {
+            None
+        } else {
+            Some(queue.remove(0))
+        }
     }
 }
 

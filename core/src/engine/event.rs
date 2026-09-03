@@ -75,6 +75,10 @@ pub enum EngineEvent {
     PendingDownload {
         pending_id: u64,
     },
+    OpenAddDownload {
+        url: String,
+        filename: Option<String>,
+    },
 }
 
 impl fmt::Display for EngineEvent {
@@ -154,6 +158,14 @@ impl fmt::Display for EngineEvent {
             }
             EngineEvent::PendingDownload { pending_id } => {
                 write!(f, "Pending download #{pending_id} awaiting confirmation")
+            }
+            EngineEvent::OpenAddDownload { url, filename } => {
+                write!(
+                    f,
+                    "Open add-download: {} ({})",
+                    url,
+                    filename.as_deref().unwrap_or("no filename"),
+                )
             }
         }
     }

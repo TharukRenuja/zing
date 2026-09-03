@@ -478,4 +478,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
   poll();
   setInterval(poll, 700);
+
+  // Poll for open-add-download requests from the interceptor
+  function pollOpenAddDownload() {
+    invoke('pop_open_add_download').then(function(req) {
+      if (req && req.url) {
+        var u = 'add-download.html?url=' + encodeURIComponent(req.url);
+        if (req.filename) u += '&filename=' + encodeURIComponent(req.filename);
+        openWin('add-download', u, 480, 600);
+      }
+    }).catch(function() {});
+  }
+  setInterval(pollOpenAddDownload, 500);
 });

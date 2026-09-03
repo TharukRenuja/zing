@@ -75,6 +75,8 @@ pub async fn handle_request(
         "zing.confirmUri" => handle_confirm_uri(req.params, manager).await,
         "zing.denyUri" => handle_deny_uri(req.params, manager).await,
         "zing.pendingConfirmations" => handle_pending_confirmations(manager).await,
+        "zing.openAddDownload" => handle_open_add_download(req.params, manager).await,
+        "zing.popOpenAddDownload" => handle_pop_open_add_download(manager).await,
         _ => RpcResponse {
             id: req.id,
             result: None,
@@ -585,6 +587,57 @@ async fn handle_pending_confirmations(manager: &TaskManager) -> RpcResponse {
         id: None,
         result: Some(serde_json::json!({ "pending": list })),
         error: None,
+    }
+}
+
+async fn handle_open_add_download(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
+    let url = params
+        .as_ref()
+        .and_then(|v| v.get("url").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let filename = params
+        .as_ref()
+        .and_then(|v| v.get("filename").and_then(|v| v.as_str()))
+        .map(String::from);
+
+    if url.is_empty() {
+        return RpcResponse {
+            id: None,
+            result: None,
+            error: Some(RpcError {
+                code: -32000,
+                message: "missing or empty 'url'".to_string(),
+            }),
+        };
+    }
+
+    manager
+        .push_open_add_download(serde_json::json!({
+            "url": url,
+            "filename": filename,
+        }))
+        .await;
+
+    RpcResponse {
+        id: None,
+        result: Some(serde_json::json!({ "status": "ok" })),
+        error: None,
+    }
+}
+
+async fn handle_pop_open_add_download(manager: &TaskManager) -> RpcResponse {
+    match manager.pop_open_add_download().await {
+        Some(params) => RpcResponse {
+            id: None,
+            result: Some(params),
+            error: None,
+        },
+        None => RpcResponse {
+            id: None,
+            result: Some(serde_json::json!(null)),
+            error: None,
+        },
     }
 }
 

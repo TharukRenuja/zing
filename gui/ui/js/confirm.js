@@ -1,73 +1,55 @@
 /* zing-gui confirm shell logic */
 var invoke = window.__TAURI__.core.invoke;
 
-var currentPending = [];
-var existsCallback = null;
-
-function closeWin() {
-  invoke('close_current_window').catch(function(e) { console.error(e); });
-}
-
 function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function splitFilename(name) {
-  var dot = name.lastIndexOf('.');
-  if (dot <= 0) return { base: name, ext: '' };
-  return { base: name.substring(0, dot), ext: name.substring(dot) };
-}
-
-function showExistsPopup(filename, cb) {
-  var parts = splitFilename(filename);
-  document.getElementById('exists-filename').textContent = filename;
-  document.getElementById('exists-rename-name').textContent = parts.base + '-1' + parts.ext;
-  document.getElementById('exists-overlay').style.display = '';
-  existsCallback = cb;
-}
-
-function hideExistsPopup() {
-  document.getElementById('exists-overlay').style.display = 'none';
-  existsCallback = null;
+function truncateUrl(url, max) {
+  max = max || 80;
+  if (url.length <= max) return url;
+  return url.substring(0, max - 3) + '...';
 }
 
 function poll() {
   invoke('pending_confirmations').then(function(pending) {
-    currentPending = pending;
     var list = document.getElementById('pending-list');
     var empty = document.getElementById('empty-msg');
+
     if (pending.length === 0) {
       list.innerHTML = '';
       empty.style.display = '';
+      // Auto-close: no pending items left
+      setTimeout(function() {
+        invoke('close_current_window').catch(function() {});
+      }, 1500);
       return;
     }
+
     empty.style.display = 'none';
     list.innerHTML = pending.map(function(p) {
       return '<div class="confirm-card" data-id="' + p.pending_id + '">' +
-        '<div class="confirm-filename">' + esc(p.filename) + '</div>' +
-        '<div class="confirm-url">' + esc(p.url) + '</div>' +
-        '<div class="confirm-dir">Save to: ' + esc(p.dir) + '</div>' +
+        '<div class="confirm-filename">' + esc(p.filename || 'Unknown file') + '</div>' +
+        '<div class="confirm-meta">' +
+          '<div class="confirm-meta-row"><span class="label">URL</span><span class="value" title="' + esc(p.url) + '">' + esc(truncateUrl(p.url)) + '</span></div>' +
+          '<div class="confirm-meta-row"><span class="label">Save to</span><span class="value">' + esc(p.dir || '~/Downloads') + '</span></div>' +
+        '</div>' +
         '<div class="confirm-actions">' +
-          '<button class="btn btn-ghost" data-action="deny">Deny</button>' +
-          '<button class="btn btn-primary" data-action="confirm">Confirm</button>' +
+          '<button data-action="cancel">Cancel</button>' +
+          '<button data-action="schedule" class="btn-schedule" disabled title="Coming soon">Schedule</button>' +
+          '<button data-action="confirm" class="btn-confirm">Confirm</button>' +
         '</div>' +
       '</div>';
     }).join('');
 
-    list.querySelectorAll('.confirm-card').forEach(function(item) {
-      var id = parseInt(item.dataset.id);
-      item.querySelector('[data-action="confirm"]').addEventListener('click', function() {
-        showExistsPopup(
-          pending.find(function(p) { return p.pending_id === id; }).filename,
-          function(overwrite, newName) {
-            var params = { pendingId: id };
-            if (overwrite) params.overwrite = true;
-            if (newName) params.filename = newName;
-            invoke('confirm_uri', params).then(function() { poll(); });
-          }
-        );
+    list.querySelectorAll('.confirm-card').forEach(function(card) {
+      var id = parseInt(card.dataset.id);
+
+      card.querySelector('[data-action="confirm"]').addEventListener('click', function() {
+        invoke('confirm_uri', { pendingId: id }).then(function() { poll(); });
       });
-      item.querySelector('[data-action="deny"]').addEventListener('click', function() {
+
+      card.querySelector('[data-action="cancel"]').addEventListener('click', function() {
         invoke('deny_uri', { pendingId: id }).then(function() { poll(); });
       });
     });
@@ -77,33 +59,6 @@ function poll() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-  document.getElementById('btn-exists-overwrite').addEventListener('click', function() {
-    if (existsCallback) existsCallback(true, null);
-    hideExistsPopup();
-  });
-
-  document.getElementById('btn-exists-rename').addEventListener('click', function() {
-    if (existsCallback) {
-      var item = currentPending.find(function(p) {
-        return document.getElementById('exists-filename').textContent === p.filename;
-      });
-      if (item) {
-        var parts = splitFilename(item.filename);
-        var newName = parts.base + '-1' + parts.ext;
-        existsCallback(false, newName);
-      }
-    }
-    hideExistsPopup();
-  });
-
-  document.getElementById('btn-exists-cancel').addEventListener('click', function() {
-    hideExistsPopup();
-  });
-
-  document.getElementById('exists-overlay').addEventListener('click', function(e) {
-    if (e.target === this) hideExistsPopup();
-  });
-
   poll();
   setInterval(poll, 2000);
 });

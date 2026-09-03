@@ -170,4 +170,8 @@ impl GuiClient {
             }
         });
     }
+
+    pub fn pop_open_add_download(&self) -> Option<serde_json::Value> {
+        self.rt.block_on(rpc::pop_open_add_download())
+    }
 }

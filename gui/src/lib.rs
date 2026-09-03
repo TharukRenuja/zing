@@ -264,6 +264,11 @@ fn pending_confirmations(
 }
 
 #[tauri::command]
+fn pop_open_add_download(state: tauri::State<AppState>) -> Option<serde_json::Value> {
+    state.client.pop_open_add_download()
+}
+
+#[tauri::command]
 fn block_map_data(state: tauri::State<AppState>, id: u64) -> Result<BlockMapData, String> {
     let snap = state.snapshot.lock().map_err(|e| e.to_string())?;
     let task = snap.iter().find(|t| t.id == id).ok_or("task not found")?;
@@ -384,7 +389,7 @@ pub fn run() -> anyhow::Result<()> {
         tauri::image::Image::from_bytes(include_bytes!("../icons/window-icon.png")).ok();
 
     if confirm_shell {
-        let mut builder = tauri::Builder::default()
+        let builder = tauri::Builder::default()
             .plugin(tauri_plugin_shell::init())
             .manage(app_state)
             .invoke_handler(tauri::generate_handler![
@@ -392,15 +397,32 @@ pub fn run() -> anyhow::Result<()> {
                 pending_confirmations,
                 confirm_uri,
                 deny_uri,
-            ]);
-        if let Some(icon) = window_icon {
-            builder = builder.setup(move |app| {
+                close_current_window,
+            ])
+            .setup(move |app| {
+                // Close the default "main" window from tauri.conf.json
                 if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_icon(icon);
+                    let _ = win.close();
                 }
+                // Create a lightweight confirm window: no decorations, always on top
+                use tauri::WebviewUrl;
+                let mut win_builder = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "confirm",
+                    WebviewUrl::App(std::path::PathBuf::from("confirm.html")),
+                )
+                .title("zing - Confirm Download")
+                .inner_size(520.0, 500.0)
+                .resizable(false)
+                .decorations(false)
+                .always_on_top(true)
+                .center();
+                if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../icons/window-icon.png")) {
+                    win_builder = win_builder.icon(icon).map_err(|e| e.to_string())?;
+                }
+                win_builder.build().map_err(|e| e.to_string())?;
                 Ok(())
             });
-        }
         builder.run(ctx)?;
     } else {
         let mut builder = tauri::Builder::default()
@@ -427,6 +449,7 @@ pub fn run() -> anyhow::Result<()> {
                 confirm_uri,
                 deny_uri,
                 pending_confirmations,
+                pop_open_add_download,
                 block_map_data,
                 open_window_cmd,
                 close_current_window,
