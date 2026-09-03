@@ -604,6 +604,7 @@ async fn handle_open_add_download(params: Option<Value>, manager: &TaskManager) 
         .map(String::from);
 
     if url.is_empty() {
+        tracing::warn!("openAddDownload: missing or empty url");
         return RpcResponse {
             id: None,
             result: None,
@@ -614,6 +615,7 @@ async fn handle_open_add_download(params: Option<Value>, manager: &TaskManager) 
         };
     }
 
+    tracing::info!("openAddDownload: queueing url={url} filename={filename:?}");
     manager
         .push_open_add_download(serde_json::json!({
             "url": url,
@@ -630,11 +632,14 @@ async fn handle_open_add_download(params: Option<Value>, manager: &TaskManager) 
 
 async fn handle_pop_open_add_download(manager: &TaskManager) -> RpcResponse {
     match manager.pop_open_add_download().await {
-        Some(params) => RpcResponse {
-            id: None,
-            result: Some(params),
-            error: None,
-        },
+        Some(params) => {
+            tracing::info!("popOpenAddDownload: returning {params}");
+            RpcResponse {
+                id: None,
+                result: Some(params),
+                error: None,
+            }
+        }
         None => RpcResponse {
             id: None,
             result: Some(serde_json::json!(null)),

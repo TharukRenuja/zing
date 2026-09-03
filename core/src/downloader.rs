@@ -804,7 +804,7 @@ impl DownloadTask {
         let monitor = tokio::spawn(async move {
             let min_seg = state_mon.segment_mgr.lock().await.min_segment_size;
             let stealer = WorkStealer::new(min_seg);
-            let mut prev_downloaded = 0u64;
+            let mut prev_downloaded = state_mon.total_downloaded.load(Ordering::Relaxed);
             let mut prev_time = Instant::now();
             let mut prev_conn_bytes: std::collections::HashMap<usize, u64> =
                 std::collections::HashMap::new();

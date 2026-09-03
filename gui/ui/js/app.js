@@ -483,11 +483,12 @@ document.addEventListener('DOMContentLoaded', function() {
   function pollOpenAddDownload() {
     invoke('pop_open_add_download').then(function(req) {
       if (req && req.url) {
+        console.log('[zing] pop_open_add_download got request:', req.url);
         var u = 'add-download.html?url=' + encodeURIComponent(req.url);
         if (req.filename) u += '&filename=' + encodeURIComponent(req.filename);
         openWin('add-download', u, 480, 600);
       }
-    }).catch(function() {});
+    }).catch(function(e) { console.warn('[zing] pop_open_add_download error:', e); });
   }
   setInterval(pollOpenAddDownload, 500);
 });
