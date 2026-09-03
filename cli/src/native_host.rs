@@ -109,6 +109,11 @@ fn handle_message(msg: Value) -> Value {
         "pendingConfirmations" => {
             call_daemon("zing.pendingConfirmations", None, |r| Some(r.clone()))
         }
+        "getConfig" => call_daemon("zing.getConfig", None, |r| Some(r.clone())),
+        "updateConfig" => {
+            let params = msg.get("params").cloned();
+            call_daemon("zing.updateConfig", params, |r| Some(r.clone()))
+        }
         _ => err(format!("unknown action: '{action}'")),
     }
 }

@@ -77,6 +77,8 @@ pub async fn handle_request(
         "zing.pendingConfirmations" => handle_pending_confirmations(manager).await,
         "zing.openAddDownload" => handle_open_add_download(req.params, manager).await,
         "zing.popOpenAddDownload" => handle_pop_open_add_download(manager).await,
+        "zing.getConfig" => handle_get_config().await,
+        "zing.updateConfig" => handle_update_config(req.params).await,
         _ => RpcResponse {
             id: req.id,
             result: None,
@@ -637,6 +639,86 @@ async fn handle_pop_open_add_download(manager: &TaskManager) -> RpcResponse {
             id: None,
             result: Some(serde_json::json!(null)),
             error: None,
+        },
+    }
+}
+
+fn config_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("zing")
+        .join("config.json")
+}
+
+async fn handle_get_config() -> RpcResponse {
+    let path = config_path();
+    match tokio::fs::read_to_string(&path).await {
+        Ok(content) => match serde_json::from_str::<Value>(&content) {
+            Ok(v) => RpcResponse {
+                id: None,
+                result: Some(v),
+                error: None,
+            },
+            Err(e) => RpcResponse {
+                id: None,
+                result: None,
+                error: Some(RpcError {
+                    code: -32000,
+                    message: format!("Failed to parse config: {e}"),
+                }),
+            },
+        },
+        Err(_) => RpcResponse {
+            id: None,
+            result: Some(serde_json::json!({})),
+            error: None,
+        },
+    }
+}
+
+async fn handle_update_config(params: Option<Value>) -> RpcResponse {
+    let updates = match params {
+        Some(Value::Object(m)) => m,
+        _ => {
+            return RpcResponse {
+                id: None,
+                result: None,
+                error: Some(RpcError {
+                    code: -32602,
+                    message: "Invalid params: expected object".to_string(),
+                }),
+            }
+        }
+    };
+
+    let path = config_path();
+    let mut config: serde_json::Map<String, Value> =
+        match tokio::fs::read_to_string(&path).await {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => serde_json::Map::new(),
+        };
+
+    for (k, v) in updates {
+        config.insert(k, v);
+    }
+
+    let updated = Value::Object(config);
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    match tokio::fs::write(&path, serde_json::to_string_pretty(&updated).unwrap_or_default()).await {
+        Ok(()) => RpcResponse {
+            id: None,
+            result: Some(updated),
+            error: None,
+        },
+        Err(e) => RpcResponse {
+            id: None,
+            result: None,
+            error: Some(RpcError {
+                code: -32000,
+                message: format!("Failed to write config: {e}"),
+            }),
         },
     }
 }
