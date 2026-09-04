@@ -844,7 +844,8 @@ impl DownloadTask {
                 let downloaded = state_mon.total_downloaded.load(Ordering::Relaxed);
 
                 let now = Instant::now();
-                let dt = now.duration_since(prev_time).as_secs_f64();
+                let raw_dt = now.duration_since(prev_time).as_secs_f64();
+                let dt = raw_dt.max(0.05);
                 let delta_bytes = downloaded.saturating_sub(prev_downloaded);
                 let speed = if dt > 0.0 {
                     delta_bytes as f64 / dt

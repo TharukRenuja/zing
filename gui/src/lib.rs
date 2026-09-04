@@ -735,8 +735,13 @@ fn save_settings_dir_inner(dir: &str) {
     path.push("zing");
     let _ = std::fs::create_dir_all(&path);
     path.push("config.json");
-    let cfg = serde_json::json!({ "default_dir": dir });
-    let _ = std::fs::write(path, serde_json::to_string_pretty(&cfg).unwrap_or_default());
+    let mut config: serde_json::Map<String, serde_json::Value> =
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or_default();
+    config.insert("download_dir".to_string(), serde_json::json!(dir));
+    let _ = std::fs::write(path, serde_json::to_string_pretty(&config).unwrap_or_default());
 }
 
 // ── Category filter ───────────────────────────────────────────────

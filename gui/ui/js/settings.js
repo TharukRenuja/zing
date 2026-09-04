@@ -121,60 +121,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   // Load backend config
-  invoke('get_config').then(function(cfg) {
-    if (cfg.download_dir) {
-      document.getElementById('cfg-dir').value = cfg.download_dir;
-    } else {
-      // Auto-detect default download directory
-      invoke('get_default_download_dir').then(function(dir) {
-        document.getElementById('cfg-dir').value = dir;
-      }).catch(function() {});
-    }
-    if (cfg.max_concurrent_downloads != null) document.getElementById('cfg-max-concurrent').value = cfg.max_concurrent_downloads;
-    if (cfg.sched_max_concurrent != null) document.getElementById('cfg-sched-max-concurrent').value = cfg.sched_max_concurrent;
-    if (cfg.default_connections) document.getElementById('cfg-connections').value = cfg.default_connections;
-    if (cfg.connect_timeout) document.getElementById('cfg-connect-timeout').value = cfg.connect_timeout;
-    if (cfg.max_transfer_time) document.getElementById('cfg-max-time').value = cfg.max_transfer_time;
-    if (cfg.retry_count != null) document.getElementById('cfg-retry').value = cfg.retry_count;
-    if (cfg.retry_wait_ms != null) document.getElementById('cfg-retry-wait').value = cfg.retry_wait_ms;
-    if (cfg.default_proxy) document.getElementById('cfg-proxy').value = cfg.default_proxy;
-    if (cfg.active_hours_from) document.getElementById('cfg-active-from').value = cfg.active_hours_from;
-    if (cfg.active_hours_to) document.getElementById('cfg-active-to').value = cfg.active_hours_to;
-    if (cfg.default_rate_limit) {
-      var sel = document.getElementById('cfg-rate-limit');
-      var found = false;
-      for (var i = 0; i < sel.options.length; i++) {
-        if (sel.options[i].value === cfg.default_rate_limit) { sel.selectedIndex = i; found = true; break; }
-      }
-      if (!found && cfg.default_rate_limit) {
-        sel.value = 'custom';
-        document.getElementById('cfg-rate-limit-custom').value = cfg.default_rate_limit;
-        document.getElementById('cfg-rate-limit-custom').style.display = '';
-      }
-    }
-    // General toggles
-    setToggle('cfg-prompt-location', cfg.prompt_location);
-    setToggle('cfg-update-check', cfg.update_check_interval_days !== 0);
-    setToggle('cfg-clipboard-monitor', cfg.clipboard_monitor);
-    // Bandwidth schedule slots
-    if (cfg.bwlimit_schedule) {
-      var slots = cfg.bwlimit_schedule.trim().split(/\s+/);
-      slots.forEach(function(slot) {
-        var parts = slot.split(',');
-        if (parts.length === 2) addSlotRow(parts[0], parts[1]);
-      });
-    }
-    // Toggles
-    setToggle('cfg-end-game', cfg.end_game);
-    setToggle('cfg-throttle-reprobe', cfg.throttle_reprobe);
-    setToggle('cfg-auto-rename', cfg.auto_rename !== false);
-    setToggle('cfg-overwrite', cfg.allow_overwrite);
-    setToggle('cfg-content-disposition', cfg.content_disposition);
-    setToggle('cfg-download-categories', cfg.download_categories !== false);
-    if (cfg.post_download_action) {
-      document.getElementById('cfg-post-action').value = cfg.post_download_action;
-    }
-  }).catch(function(e) { console.error(e); });
+  loadBackendConfig();
 
   // Version
   invoke('get_version').then(function(ver) {
@@ -359,3 +306,53 @@ function saveAll() {
     .then(function() { return invoke('notify_settings_changed'); })
     .catch(function(e) { console.error('Save error:', e); });
 }
+
+function loadBackendConfig() {
+  invoke('get_config').then(function(cfg) {
+    if (cfg.download_dir) {
+      document.getElementById('cfg-dir').value = cfg.download_dir;
+    } else {
+      invoke('get_default_download_dir').then(function(dir) {
+        document.getElementById('cfg-dir').value = dir;
+      }).catch(function() {});
+    }
+    if (cfg.max_concurrent_downloads != null) document.getElementById('cfg-max-concurrent').value = cfg.max_concurrent_downloads;
+    if (cfg.sched_max_concurrent != null) document.getElementById('cfg-sched-max-concurrent').value = cfg.sched_max_concurrent;
+    if (cfg.default_connections) document.getElementById('cfg-connections').value = cfg.default_connections;
+    if (cfg.connect_timeout) document.getElementById('cfg-connect-timeout').value = cfg.connect_timeout;
+    if (cfg.max_transfer_time) document.getElementById('cfg-max-time').value = cfg.max_transfer_time;
+    if (cfg.retry_count != null) document.getElementById('cfg-retry').value = cfg.retry_count;
+    if (cfg.retry_wait_ms != null) document.getElementById('cfg-retry-wait').value = cfg.retry_wait_ms;
+    if (cfg.default_proxy) document.getElementById('cfg-proxy').value = cfg.default_proxy;
+    if (cfg.active_hours_from) document.getElementById('cfg-active-from').value = cfg.active_hours_from;
+    if (cfg.active_hours_to) document.getElementById('cfg-active-to').value = cfg.active_hours_to;
+    if (cfg.default_rate_limit) {
+      var sel = document.getElementById('cfg-rate-limit');
+      var found = false;
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === cfg.default_rate_limit) { sel.selectedIndex = i; found = true; break; }
+      }
+      if (!found && cfg.default_rate_limit) {
+        sel.value = 'custom';
+        document.getElementById('cfg-rate-limit-custom').value = cfg.default_rate_limit;
+        document.getElementById('cfg-rate-limit-custom').style.display = '';
+      }
+    }
+    setToggle('cfg-prompt-location', cfg.prompt_location);
+    setToggle('cfg-update-check', cfg.update_check_interval_days !== 0);
+    setToggle('cfg-clipboard-monitor', cfg.clipboard_monitor);
+    setToggle('cfg-end-game', cfg.end_game);
+    setToggle('cfg-throttle-reprobe', cfg.throttle_reprobe);
+    setToggle('cfg-auto-rename', cfg.auto_rename !== false);
+    setToggle('cfg-overwrite', cfg.allow_overwrite);
+    setToggle('cfg-content-disposition', cfg.content_disposition);
+    setToggle('cfg-download-categories', cfg.download_categories !== false);
+    if (cfg.post_download_action) {
+      document.getElementById('cfg-post-action').value = cfg.post_download_action;
+    }
+  }).catch(function(e) { console.error('loadBackendConfig:', e); });
+}
+
+window.__TAURI__.event.listen('settings-changed', function() {
+  loadBackendConfig();
+});
