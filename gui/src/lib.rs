@@ -458,6 +458,7 @@ pub fn run() -> anyhow::Result<()> {
             builder = builder.setup(move |app| {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.set_icon(icon);
+                    let _ = win.show();
                 }
                 Ok(())
             });
