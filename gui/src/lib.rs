@@ -396,6 +396,8 @@ pub fn run() -> anyhow::Result<()> {
                 pending_confirmations,
                 confirm_uri,
                 deny_uri,
+                window_exists,
+                open_window_cmd,
                 close_current_window,
             ])
             .setup(move |app| {
@@ -403,18 +405,16 @@ pub fn run() -> anyhow::Result<()> {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.close();
                 }
-                // Create a lightweight confirm window: no decorations, always on top
+                // Open the Add Download window in confirm mode
                 use tauri::WebviewUrl;
                 let mut win_builder = tauri::WebviewWindowBuilder::new(
                     app,
-                    "confirm",
-                    WebviewUrl::App(std::path::PathBuf::from("confirm.html")),
+                    "add-download",
+                    WebviewUrl::App(std::path::PathBuf::from("add-download.html?confirmMode=true")),
                 )
-                .title("zing - Confirm Download")
-                .inner_size(520.0, 500.0)
+                .title("zing - Add Download")
+                .inner_size(480.0, 600.0)
                 .resizable(false)
-                .decorations(false)
-                .always_on_top(true)
                 .center();
                 if let Ok(icon) = tauri::image::Image::from_bytes(include_bytes!("../icons/window-icon.png")) {
                     win_builder = win_builder.icon(icon).map_err(|e| e.to_string())?;

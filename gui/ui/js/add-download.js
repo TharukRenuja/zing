@@ -92,6 +92,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // Pre-fill URL from query parameter (e.g., from clipboard toast)
   var params = new URLSearchParams(window.location.search);
   pendingId = params.get('pendingId');
+  var confirmMode = params.get('confirmMode') === 'true';
   var presetUrl = params.get('url');
   if (presetUrl) {
     document.getElementById('add-url').value = presetUrl;
@@ -101,7 +102,37 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
-  // Confirm mode: fetch stored params from the daemon and pre-fill the form.
+  // Confirm mode (from tray confirm shell): fetch the first pending confirmation
+  // and pre-fill the form. Also polls for new pending confirmations.
+  if (confirmMode && !pendingId) {
+    function loadFirstPending() {
+      invoke('pending_confirmations').then(function(pending) {
+        if (!pending || !pending.length) {
+          setTimeout(closeWin, 500);
+          return;
+        }
+        var item = pending[0];
+        pendingId = String(item.pending_id);
+        storedParams = item.params || {};
+        if (item.url) document.getElementById('add-url').value = item.url;
+        if (item.filename) document.getElementById('add-filename').value = item.filename;
+        if (item.dir) document.getElementById('add-dir').value = item.dir;
+        fillFormFromStoredParams();
+      }).catch(function() {});
+    }
+    loadFirstPending();
+    var confirmPollInterval = setInterval(function() {
+      if (submitted) { clearInterval(confirmPollInterval); return; }
+      invoke('pending_confirmations').then(function(pending) {
+        if (!pending || !pending.length) {
+          clearInterval(confirmPollInterval);
+          setTimeout(closeWin, 500);
+        }
+      }).catch(function() {});
+    }, 2000);
+  }
+
+  // Confirm mode (from main GUI pollPendingTakeover): pre-fill from stored params.
   if (pendingId) {
     invoke('pending_confirmations').then(function(pending) {
       var item = pending.filter(function(p) { return String(p.pending_id) === pendingId; })[0];
@@ -110,37 +141,40 @@ document.addEventListener('DOMContentLoaded', function() {
       if (item.url) document.getElementById('add-url').value = item.url;
       if (item.filename) document.getElementById('add-filename').value = item.filename;
       if (item.dir) document.getElementById('add-dir').value = item.dir;
-      // Pre-fill referer from stored headers
-      if (storedParams.headers) {
-        for (var i = 0; i < storedParams.headers.length; i++) {
-          var h = storedParams.headers[i];
-          if (typeof h === 'string') {
-            if (h.toLowerCase().startsWith('referer:')) {
-              document.getElementById('add-referer').value = h.substring(8).trim();
-            } else if (h.toLowerCase().startsWith('user-agent:')) {
-              var ua = h.substring(11).trim();
-              var uaSel = document.getElementById('add-user-agent');
-              var matched = false;
-              var keys = Object.keys(UA_MAP);
-              for (var k = 0; k < keys.length; k++) {
-                if (UA_MAP[keys[k]] === ua) { uaSel.value = keys[k]; matched = true; break; }
-              }
-              if (!matched && ua) {
-                uaSel.value = 'custom';
-                document.getElementById('add-ua-custom').value = ua;
-                document.getElementById('custom-ua-row').style.display = '';
-              }
+      fillFormFromStoredParams();
+    }).catch(function() {});
+  }
+
+  function fillFormFromStoredParams() {
+    if (!storedParams) return;
+    if (storedParams.headers) {
+      for (var i = 0; i < storedParams.headers.length; i++) {
+        var h = storedParams.headers[i];
+        if (typeof h === 'string') {
+          if (h.toLowerCase().startsWith('referer:')) {
+            document.getElementById('add-referer').value = h.substring(8).trim();
+          } else if (h.toLowerCase().startsWith('user-agent:')) {
+            var ua = h.substring(11).trim();
+            var uaSel = document.getElementById('add-user-agent');
+            var matched = false;
+            var keys = Object.keys(UA_MAP);
+            for (var k = 0; k < keys.length; k++) {
+              if (UA_MAP[keys[k]] === ua) { uaSel.value = keys[k]; matched = true; break; }
+            }
+            if (!matched && ua) {
+              uaSel.value = 'custom';
+              document.getElementById('add-ua-custom').value = ua;
+              document.getElementById('custom-ua-row').style.display = '';
             }
           }
         }
       }
-      // Pre-fill connections
-      var conns = storedParams.connections;
-      if (conns > 0) {
-        var segs = document.querySelectorAll('.segment');
-        segs.forEach(function(s) { if (parseInt(s.dataset.value) === conns) s.classList.add('active'); else s.classList.remove('active'); });
-      }
-    }).catch(function() {});
+    }
+    var conns = storedParams.connections;
+    if (conns > 0) {
+      var segs = document.querySelectorAll('.segment');
+      segs.forEach(function(s) { if (parseInt(s.dataset.value) === conns) s.classList.add('active'); else s.classList.remove('active'); });
+    }
   }
 
   document.getElementById('btn-browse-dir').addEventListener('click', function() {
