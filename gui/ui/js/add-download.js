@@ -55,13 +55,12 @@ function applyFontSize(s) {
   document.documentElement.style.setProperty('--font-size', map[s] || '13px');
 }
 
-function calcHeight() {
-  var wrap = document.getElementById('add-wrap');
-  return wrap.scrollHeight + 8;
-}
+var COLLAPSED_HEIGHT = 600;
+var EXPANDED_HEIGHT = 880;
 
 function resizeWin() {
-  var h = calcHeight();
+  var panel = document.getElementById('adv-panel');
+  var h = (!panel || panel.style.display === 'none') ? COLLAPSED_HEIGHT : EXPANDED_HEIGHT;
   invoke('resize_window', { label: 'add-download', width: 480, height: h }).catch(function() {});
 }
 
