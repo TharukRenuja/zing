@@ -36,7 +36,10 @@ function detectCategory(url) {
 }
 
 function closeWin() {
-  invoke('close_current_window').catch(function(e) { console.error(e); });
+  invoke('close_current_window').then(function() {
+    // Show main window after add-download closes
+    invoke('show_main_window').catch(function() {});
+  }).catch(function(e) { console.error(e); });
 }
 
 function applyTheme(t) {
@@ -77,12 +80,46 @@ document.addEventListener('DOMContentLoaded', function() {
     segs.appendChild(btn);
   });
 
-  invoke('get_settings_dir').then(function(dlDir) {
-    if (dlDir) {
-      document.getElementById('add-dir').value = dlDir;
+  invoke('get_config').then(function(cfg) {
+    // Download dir from config
+    if (cfg.download_dir) {
+      document.getElementById('add-dir').value = cfg.download_dir;
     } else {
-      var fallback = window.__TAURI__ && window.__TAURI__.os ? window.__TAURI__.os.downloadDir() : '';
-      if (fallback) document.getElementById('add-dir').value = fallback;
+      return invoke('get_settings_dir').then(function(dlDir) {
+        if (dlDir) document.getElementById('add-dir').value = dlDir;
+      });
+    }
+  }).then(function() {
+    return invoke('get_settings_dir');
+  }).then(function(dlDir) {
+    // Only use settings_dir as fallback if config didn't set it
+    if (dlDir && !document.getElementById('add-dir').value) {
+      document.getElementById('add-dir').value = dlDir;
+    }
+  }).catch(function() {
+    // Fallback
+    invoke('get_settings_dir').then(function(dlDir) {
+      if (dlDir) document.getElementById('add-dir').value = dlDir;
+    }).catch(function() {});
+  });
+
+  // Load default connections and rate limit from daemon config
+  invoke('get_config').then(function(cfg) {
+    if (cfg.default_connections && cfg.default_connections > 0) {
+      var segs = document.querySelectorAll('#conn-segments .segment');
+      segs.forEach(function(s) {
+        if (parseInt(s.dataset.value) === cfg.default_connections) s.classList.add('active');
+        else s.classList.remove('active');
+      });
+    }
+    if (cfg.default_rate_limit) {
+      var sel = document.getElementById('add-speed-limit');
+      if (sel) {
+        var found = false;
+        for (var i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value === cfg.default_rate_limit) { sel.selectedIndex = i; found = true; break; }
+        }
+      }
     }
   }).catch(function() {});
 
@@ -245,6 +282,17 @@ document.addEventListener('DOMContentLoaded', function() {
     if (e.key === 'zing-theme') applyTheme(e.newValue || 'dark');
     if (e.key === 'zing-accent') applyAccent(e.newValue || '#5b7fff');
     if (e.key === 'zing-font-size') applyFontSize(e.newValue || 'md');
+  });
+
+  // When user clicks the X button, deny pending confirmation so it
+  // doesn't keep reappearing via pollPendingTakeover.
+  window.__TAURI__.event.listen('tauri://close-requested', function() {
+    if (pendingId && !submitted) {
+      invoke('deny_uri', { pendingId: Number(pendingId) }).catch(function() {});
+    }
+    invoke('close_current_window').then(function() {
+      invoke('show_main_window').catch(function() {});
+    }).catch(function() {});
   });
 });
 

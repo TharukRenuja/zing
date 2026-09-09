@@ -114,7 +114,7 @@ fn main() {
     // Block on menu events.
     while let Ok(event) = done_rx.recv() {
         match event.id().0.as_str() {
-            "open" | "downloads" => spawn_gui(),
+            "downloads" => spawn_gui(),
             "pause_all" => {
                 let _ = rt.block_on(pause_all());
             }
@@ -132,14 +132,12 @@ fn main() {
 
 fn build_menu() -> Menu {
     let menu = Menu::new();
-    let open_item = MenuItem::with_id("open", "Open zing", true, None);
-    let show_downloads = MenuItem::with_id("downloads", "Show downloads", true, None);
-    let pause_all = MenuItem::with_id("pause_all", "Pause all", true, None);
-    let resume_all = MenuItem::with_id("resume_all", "Resume all", true, None);
+    let show_downloads = MenuItem::with_id("downloads", "Show Downloads", true, None);
+    let pause_all = MenuItem::with_id("pause_all", "Pause All", true, None);
+    let resume_all = MenuItem::with_id("resume_all", "Resume All", true, None);
     let quit = MenuItem::with_id("quit", "Quit", true, None);
 
     let _ = menu.append_items(&[
-        &open_item,
         &show_downloads,
         &PredefinedMenuItem::separator(),
         &pause_all,

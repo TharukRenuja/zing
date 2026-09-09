@@ -334,6 +334,23 @@ fn close_current_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn resize_window(
     app: tauri::AppHandle,
     label: String,
@@ -448,6 +465,8 @@ pub fn run() -> anyhow::Result<()> {
                 block_map_data,
                 open_window_cmd,
                 close_current_window,
+                show_main_window,
+                hide_main_window,
                 resize_window,
             ]);
         builder = builder.setup(move |app| {
@@ -464,8 +483,8 @@ pub fn run() -> anyhow::Result<()> {
             if let Some(ref icon) = window_icon {
                 win_builder = win_builder.icon(icon.clone()).map_err(|e| e.to_string())?;
             }
-            let win = win_builder.build().map_err(|e| e.to_string())?;
-            let _ = win.show();
+            let _ = win_builder.build().map_err(|e| e.to_string())?;
+            // Window created hidden — only shown via show_main_window command
             Ok(())
         });
         builder.run(ctx)?;

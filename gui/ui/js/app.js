@@ -494,6 +494,8 @@ document.addEventListener('DOMContentLoaded', function() {
         handledPendingId = item.pending_id;
         var u = 'add-download.html?pendingId=' + item.pending_id;
         openWin('add-download', u, 480, 600);
+        // Hide main window — only show via tray or manual launch
+        invoke('hide_current_window').catch(function() {});
       });
     }).catch(function() {});
   }
