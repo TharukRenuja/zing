@@ -401,10 +401,6 @@ pub fn run() -> anyhow::Result<()> {
                 close_current_window,
             ])
             .setup(move |app| {
-                // Close the default "main" window from tauri.conf.json
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.close();
-                }
                 // Open the Add Download window in confirm mode
                 use tauri::WebviewUrl;
                 let mut win_builder = tauri::WebviewWindowBuilder::new(
@@ -454,15 +450,24 @@ pub fn run() -> anyhow::Result<()> {
                 close_current_window,
                 resize_window,
             ]);
-        if let Some(icon) = window_icon {
-            builder = builder.setup(move |app| {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.set_icon(icon);
-                    let _ = win.show();
-                }
-                Ok(())
-            });
-        }
+        builder = builder.setup(move |app| {
+            use tauri::WebviewUrl;
+            let mut win_builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                WebviewUrl::App(std::path::PathBuf::from("index.html")),
+            )
+            .title("zing")
+            .inner_size(1220.0, 800.0)
+            .resizable(true)
+            .decorations(true);
+            if let Some(ref icon) = window_icon {
+                win_builder = win_builder.icon(icon.clone()).map_err(|e| e.to_string())?;
+            }
+            let win = win_builder.build().map_err(|e| e.to_string())?;
+            let _ = win.show();
+            Ok(())
+        });
         builder.run(ctx)?;
     }
 
