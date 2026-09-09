@@ -54,6 +54,7 @@ fn main() {
                 // leak. The trade-off is that all stderr output (including
                 // panics) from this thread goes silent, which is acceptable
                 // for a tray daemon.
+                let mut tray_icon = None;
                 unsafe {
                     let saved_stderr = libc::dup(libc::STDERR_FILENO);
                     let devnull = libc::open(c"/dev/null".as_ptr().cast(), libc::O_WRONLY);
@@ -62,28 +63,32 @@ fn main() {
                         libc::close(devnull);
                     }
                     let init_ok = gtk::init().is_ok();
-                    let mut tray_ok = false;
                     if init_ok {
                         let menu = build_menu();
                         let icon = load_icon().expect("tray icon");
-                        tray_ok = TrayIconBuilder::new()
+                        match TrayIconBuilder::new()
                             .with_menu(Box::new(menu))
                             .with_tooltip("zing \u{2014} download manager")
                             .with_icon(icon)
                             .build()
-                            .is_ok();
+                        {
+                            Ok(ti) => { tray_icon = Some(ti); }
+                            Err(_) => {
+                                if saved_stderr >= 0 {
+                                    libc::dup2(saved_stderr, libc::STDERR_FILENO);
+                                    libc::close(saved_stderr);
+                                }
+                                let _ = ready_tx.send(Err("tray icon creation failed".into()));
+                                return;
+                            }
+                        }
                     }
-                    if !init_ok || !tray_ok {
-                        // Restore stderr so the caller can see the error.
+                    if !init_ok {
                         if saved_stderr >= 0 {
                             libc::dup2(saved_stderr, libc::STDERR_FILENO);
                             libc::close(saved_stderr);
                         }
-                        let _ = ready_tx.send(if !init_ok {
-                            Err("gtk init failed".into())
-                        } else {
-                            Err("tray icon creation failed".into())
-                        });
+                        let _ = ready_tx.send(Err("gtk init failed".into()));
                         return;
                     }
                     // Success: leave stderr on /dev/null permanently.
@@ -93,6 +98,7 @@ fn main() {
                 }
                 let _ = ready_tx.send(Ok(()));
                 gtk::main();
+                drop(tray_icon);
             })
             .expect("tray thread");
         ready_rx.recv().expect("tray ready").expect("tray init");
