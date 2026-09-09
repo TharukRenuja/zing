@@ -75,8 +75,6 @@ pub async fn handle_request(
         "zing.confirmUri" => handle_confirm_uri(req.params, manager).await,
         "zing.denyUri" => handle_deny_uri(req.params, manager).await,
         "zing.pendingConfirmations" => handle_pending_confirmations(manager).await,
-        "zing.openAddDownload" => handle_open_add_download(req.params, manager).await,
-        "zing.popOpenAddDownload" => handle_pop_open_add_download(manager).await,
         "zing.getConfig" => handle_get_config().await,
         "zing.updateConfig" => handle_update_config(req.params).await,
         _ => RpcResponse {
@@ -527,10 +525,11 @@ async fn handle_remove(params: Option<Value>, manager: &TaskManager) -> RpcRespo
 
 async fn handle_confirm_uri(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
     let pending_id = params
+        .as_ref()
         .and_then(|v| v.get("pending_id").and_then(|v| v.as_u64()))
         .unwrap_or(0);
 
-    let stored = match manager.take_pending_confirmation(pending_id).await {
+    let mut stored = match manager.take_pending_confirmation(pending_id).await {
         Some(p) => p,
         None => {
             return RpcResponse {
@@ -544,10 +543,61 @@ async fn handle_confirm_uri(params: Option<Value>, manager: &TaskManager) -> Rpc
         }
     };
 
-    // The stored params are the original addUri params (minus the confirm flag).
-    // Feed them through the same add_uri logic.
+    // Optional per-key overrides from the Add Download window. Keys present in
+    // `updates` win; everything else (notably browser Cookie headers the form
+    // can't represent) keeps the originally captured value. For the `headers`
+    // key specifically, the stored entries whose header name is *not* present in
+    // `updates` are appended so that cookies survive the user's edit.
+    if let Some(updates) = params
+        .as_ref()
+        .and_then(|v| v.get("updates"))
+        .filter(|v| v.is_object())
+    {
+        merge_updates(&mut stored, updates);
+    }
+
     let resp = handle_add_uri(Some(stored), manager).await;
     resp
+}
+
+/// Per-key overlay: `updates` wins; for the `headers` key, browser-captured
+/// entries not present in `updates` are kept (preserves Cookie etc.).
+fn merge_updates(stored: &mut Value, updates: &Value) {
+    let Some(dst) = stored.as_object_mut() else {
+        return;
+    };
+    let Some(src) = updates.as_object() else {
+        return;
+    };
+    for (k, v) in src {
+        if k == "headers" {
+            let mut merged: Vec<Value> = v.as_array().cloned().unwrap_or_default();
+            let names: std::collections::HashSet<String> = merged
+                .iter()
+                .filter_map(|h| {
+                    h.as_str()?
+                        .split(':')
+                        .next()
+                        .map(|s| s.trim().to_lowercase())
+                })
+                .collect();
+            if let Some(stored_hdrs) = dst.get("headers").and_then(|h| h.as_array()) {
+                for h in stored_hdrs {
+                    if let Some(name) = h
+                        .as_str()
+                        .and_then(|s| s.split(':').next().map(|s| s.trim().to_lowercase()))
+                    {
+                        if !names.contains(&name) {
+                            merged.push(h.clone());
+                        }
+                    }
+                }
+            }
+            dst.insert("headers".to_string(), Value::Array(merged));
+        } else {
+            dst.insert(k.clone(), v.clone());
+        }
+    }
 }
 
 async fn handle_deny_uri(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
@@ -582,6 +632,7 @@ async fn handle_pending_confirmations(manager: &TaskManager) -> RpcResponse {
                 "url": url,
                 "filename": filename,
                 "dir": dir,
+                "params": params,
             })
         })
         .collect();
@@ -589,62 +640,6 @@ async fn handle_pending_confirmations(manager: &TaskManager) -> RpcResponse {
         id: None,
         result: Some(serde_json::json!({ "pending": list })),
         error: None,
-    }
-}
-
-async fn handle_open_add_download(params: Option<Value>, manager: &TaskManager) -> RpcResponse {
-    let url = params
-        .as_ref()
-        .and_then(|v| v.get("url").and_then(|v| v.as_str()))
-        .unwrap_or("")
-        .to_string();
-    let filename = params
-        .as_ref()
-        .and_then(|v| v.get("filename").and_then(|v| v.as_str()))
-        .map(String::from);
-
-    if url.is_empty() {
-        tracing::warn!("openAddDownload: missing or empty url");
-        return RpcResponse {
-            id: None,
-            result: None,
-            error: Some(RpcError {
-                code: -32000,
-                message: "missing or empty 'url'".to_string(),
-            }),
-        };
-    }
-
-    tracing::info!("openAddDownload: queueing url={url} filename={filename:?}");
-    manager
-        .push_open_add_download(serde_json::json!({
-            "url": url,
-            "filename": filename,
-        }))
-        .await;
-
-    RpcResponse {
-        id: None,
-        result: Some(serde_json::json!({ "status": "ok" })),
-        error: None,
-    }
-}
-
-async fn handle_pop_open_add_download(manager: &TaskManager) -> RpcResponse {
-    match manager.pop_open_add_download().await {
-        Some(params) => {
-            tracing::info!("popOpenAddDownload: returning {params}");
-            RpcResponse {
-                id: None,
-                result: Some(params),
-                error: None,
-            }
-        }
-        None => RpcResponse {
-            id: None,
-            result: Some(serde_json::json!(null)),
-            error: None,
-        },
     }
 }
 
@@ -853,6 +848,105 @@ mod tests {
         let req = make_req("zing.addUri", Some(params));
         let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
         assert!(resp.error.is_some(), "expected error for missing url");
+    }
+
+    #[tokio::test]
+    async fn test_confirm_flow_queues_lists_and_consumes() {
+        let (mgr, stx) = test_setup();
+        // Extension-style addUri with confirm: full params incl. cookie.
+        let req = make_req(
+            "zing.addUri",
+            Some(json!({
+                "url": "http://example.com/file",
+                "filename": "/tmp/test-confirm",
+                "headers": ["Cookie: session=abc", "Referer: http://example.com/page"],
+                "confirm": true,
+            })),
+        );
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let result = resp.result.unwrap();
+        assert_eq!(result["status"], "pending_confirmation");
+        let pending_id = result["id"].as_u64().unwrap();
+
+        // Pending list carries the full stored params for GUI pre-filling.
+        let req = make_req("zing.pendingConfirmations", None);
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        let list = resp.result.unwrap()["pending"]
+            .as_array()
+            .cloned()
+            .unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["pending_id"].as_u64().unwrap(), pending_id);
+        assert_eq!(list[0]["params"]["headers"][0], "Cookie: session=abc");
+
+        // Confirm with user edits: new referer wins, cookie survives, download added.
+        let req = make_req(
+            "zing.confirmUri",
+            Some(json!({
+                "pending_id": pending_id,
+                "updates": {
+                    "filename": "/tmp/test-renamed",
+                    "headers": ["Referer: http://example.com/other"],
+                },
+            })),
+        );
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let task_id = resp.result.unwrap()["id"].as_u64().unwrap();
+        assert!(mgr.get_task(task_id).await.is_some());
+
+        // Confirming consumed the pending entry.
+        let req = make_req("zing.pendingConfirmations", None);
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        let list = resp.result.unwrap()["pending"]
+            .as_array()
+            .cloned()
+            .unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_confirm_uri_unknown_id() {
+        let (mgr, stx) = test_setup();
+        let req = make_req(
+            "zing.confirmUri",
+            Some(json!({ "pending_id": 999, "updates": {} })),
+        );
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32000);
+    }
+
+    #[test]
+    fn test_merge_updates_keeps_browser_headers() {
+        let mut stored = json!({
+            "url": "http://example.com/file",
+            "filename": "file",
+            "headers": ["Cookie: a=b", "Referer: http://example.com/"],
+        });
+        merge_updates(
+            &mut stored,
+            &json!({
+                "filename": "renamed.bin",
+                "headers": ["Referer: http://example.com/other"],
+            }),
+        );
+        assert_eq!(stored["filename"], "renamed.bin");
+        let hdrs = stored["headers"].as_array().unwrap();
+        assert_eq!(hdrs.len(), 2, "user referer + stored cookie: {hdrs:?}");
+        assert!(hdrs.iter().any(|h| h == "Cookie: a=b"));
+        assert!(hdrs.iter().any(|h| h == "Referer: http://example.com/other"));
+    }
+
+    #[test]
+    fn test_merge_updates_plain_overlay() {
+        let mut stored = json!({ "url": "http://example.com/f", "connections": 4 });
+        merge_updates(&mut stored, &json!({ "connections": 8, "dir": "/tmp" }));
+        assert_eq!(stored["connections"], 8);
+        assert_eq!(stored["dir"], "/tmp");
+        // Untouched keys survive.
+        assert_eq!(stored["url"], "http://example.com/f");
     }
 
     #[tokio::test]

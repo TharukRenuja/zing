@@ -66,6 +66,8 @@ pub struct PendingConfirmation {
     pub url: String,
     pub filename: String,
     pub dir: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
 }
 
 impl GuiClient {
@@ -116,15 +118,11 @@ impl GuiClient {
     pub fn confirm_uri(
         &self,
         pending_id: u64,
-        overwrite: Option<bool>,
-        filename: Option<String>,
+        updates: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let mut params = serde_json::json!({ "pending_id": pending_id });
-        if let Some(ow) = overwrite {
-            params["allow_overwrite"] = serde_json::json!(ow);
-        }
-        if let Some(name) = filename {
-            params["filename"] = serde_json::json!(name);
+        if let Some(u) = updates {
+            params["updates"] = u;
         }
         self.rt
             .block_on(rpc::send_request("zing.confirmUri", Some(params)))
@@ -169,9 +167,5 @@ impl GuiClient {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
         });
-    }
-
-    pub fn pop_open_add_download(&self) -> Option<serde_json::Value> {
-        self.rt.block_on(rpc::pop_open_add_download())
     }
 }

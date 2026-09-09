@@ -357,6 +357,12 @@ fn confirmation_poller(handle: tokio::runtime::Handle) {
             continue;
         }
 
+        // The main GUI takes over pending confirmations (opens the Add
+        // Download window). Only surface the confirm shell when it's closed.
+        if is_gui_running() {
+            continue;
+        }
+
         // Only try to (re)start the confirm shell every 10s at most.
         if last_spawn.elapsed() < std::time::Duration::from_secs(10) {
             continue;

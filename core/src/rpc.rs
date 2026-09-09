@@ -138,14 +138,6 @@ pub async fn set_max_concurrent(max: usize) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn pop_open_add_download() -> Option<serde_json::Value> {
-    match send_request("zing.popOpenAddDownload", None).await {
-        Ok(v) if v.is_null() => None,
-        Ok(v) => Some(v),
-        Err(_) => None,
-    }
-}
-
 /// Live event stream from the daemon (`zing.subscribe`).
 ///
 /// Opens a subscribe connection and spawns a keepalive task so the daemon

@@ -479,16 +479,23 @@ document.addEventListener('DOMContentLoaded', function() {
   poll();
   setInterval(poll, 700);
 
-  // Poll for open-add-download requests from the interceptor
-  function pollOpenAddDownload() {
-    invoke('pop_open_add_download').then(function(req) {
-      if (req && req.url) {
-        console.log('[zing] pop_open_add_download got request:', req.url);
-        var u = 'add-download.html?url=' + encodeURIComponent(req.url);
-        if (req.filename) u += '&filename=' + encodeURIComponent(req.filename);
+  // Poll for pending confirmations (non-silent intercepts from the browser
+  // extension). When one appears and the Add Download window is not already
+  // open, open it in "confirm mode" with the pending id. The tray confirm
+  // shell covers the case where the main GUI is closed.
+  var handledPendingId = null;
+  function pollPendingTakeover() {
+    invoke('window_exists', { label: 'add-download' }).then(function(exists) {
+      if (exists) return;
+      return invoke('pending_confirmations').then(function(pending) {
+        if (!pending.length) return;
+        var item = pending[0];
+        if (item.pending_id === handledPendingId) return;
+        handledPendingId = item.pending_id;
+        var u = 'add-download.html?pendingId=' + item.pending_id;
         openWin('add-download', u, 480, 600);
-      }
-    }).catch(function(e) { console.warn('[zing] pop_open_add_download error:', e); });
+      });
+    }).catch(function() {});
   }
-  setInterval(pollOpenAddDownload, 500);
+  setInterval(pollPendingTakeover, 1000);
 });

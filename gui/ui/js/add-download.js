@@ -4,6 +4,9 @@ var invoke = window.__TAURI__.core.invoke;
 var addFilenameAuto = false;
 var prevAddUrl = '';
 var advOpen = false;
+var pendingId = null;
+var storedParams = null;
+var submitted = false;
 
 var UA_MAP = {
   'chrome': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -88,6 +91,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Pre-fill URL from query parameter (e.g., from clipboard toast)
   var params = new URLSearchParams(window.location.search);
+  pendingId = params.get('pendingId');
   var presetUrl = params.get('url');
   if (presetUrl) {
     document.getElementById('add-url').value = presetUrl;
@@ -95,6 +99,48 @@ document.addEventListener('DOMContentLoaded', function() {
     if (fn && fn.includes('.')) {
       document.getElementById('add-filename').value = decodeURIComponent(fn);
     }
+  }
+
+  // Confirm mode: fetch stored params from the daemon and pre-fill the form.
+  if (pendingId) {
+    invoke('pending_confirmations').then(function(pending) {
+      var item = pending.filter(function(p) { return String(p.pending_id) === pendingId; })[0];
+      if (!item) return;
+      storedParams = item.params || {};
+      if (item.url) document.getElementById('add-url').value = item.url;
+      if (item.filename) document.getElementById('add-filename').value = item.filename;
+      if (item.dir) document.getElementById('add-dir').value = item.dir;
+      // Pre-fill referer from stored headers
+      if (storedParams.headers) {
+        for (var i = 0; i < storedParams.headers.length; i++) {
+          var h = storedParams.headers[i];
+          if (typeof h === 'string') {
+            if (h.toLowerCase().startsWith('referer:')) {
+              document.getElementById('add-referer').value = h.substring(8).trim();
+            } else if (h.toLowerCase().startsWith('user-agent:')) {
+              var ua = h.substring(11).trim();
+              var uaSel = document.getElementById('add-user-agent');
+              var matched = false;
+              var keys = Object.keys(UA_MAP);
+              for (var k = 0; k < keys.length; k++) {
+                if (UA_MAP[keys[k]] === ua) { uaSel.value = keys[k]; matched = true; break; }
+              }
+              if (!matched && ua) {
+                uaSel.value = 'custom';
+                document.getElementById('add-ua-custom').value = ua;
+                document.getElementById('custom-ua-row').style.display = '';
+              }
+            }
+          }
+        }
+      }
+      // Pre-fill connections
+      var conns = storedParams.connections;
+      if (conns > 0) {
+        var segs = document.querySelectorAll('.segment');
+        segs.forEach(function(s) { if (parseInt(s.dataset.value) === conns) s.classList.add('active'); else s.classList.remove('active'); });
+      }
+    }).catch(function() {});
   }
 
   document.getElementById('btn-browse-dir').addEventListener('click', function() {
@@ -140,6 +186,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
   document.getElementById('btn-add-cancel').addEventListener('click', function() {
     this.classList.add('btn-press');
+    if (pendingId && !submitted) {
+      invoke('deny_uri', { pendingId: Number(pendingId) }).catch(function() {});
+    }
     setTimeout(closeWin, 80);
   });
 
@@ -208,9 +257,7 @@ function submitAddUrl(paused) {
   var category = document.getElementById('add-category').value;
   if (category) params.category = category;
 
-  invoke('add_uri', { params: params }).then(function() {
-    closeWin();
-  }).catch(function() {
+  function submitError() {
     var urlField = document.getElementById('add-url');
     urlField.style.borderColor = 'var(--danger)';
     urlField.style.animation = 'shake 0.3s ease';
@@ -218,7 +265,21 @@ function submitAddUrl(paused) {
       urlField.style.borderColor = '';
       urlField.style.animation = '';
     }, 2000);
-  });
+  }
+
+  if (pendingId) {
+    // Confirm mode: the daemon overlays these form values over the stored
+    // browser params — cookies and other captured headers ride along.
+    invoke('confirm_uri', { pendingId: Number(pendingId), updates: params }).then(function() {
+      submitted = true;
+      closeWin();
+    }).catch(submitError);
+    return;
+  }
+
+  invoke('add_uri', { params: params }).then(function() {
+    closeWin();
+  }).catch(submitError);
 }
 
 function filenameFromUrl(url) {

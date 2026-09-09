@@ -90,25 +90,6 @@ fn handle_message(msg: Value) -> Value {
         "getDefaultDir" => get_default_dir(),
         "setDefaultDir" => set_default_dir(&msg),
         "pickDirectory" => pick_directory(),
-        "openAddDownload" => {
-            let params = msg.get("params").cloned();
-            call_daemon("zing.openAddDownload", params, |r| Some(r.clone()))
-        }
-        "confirmUri" => {
-            let pending_id = msg.get("pending_id").and_then(|v| v.as_u64()).unwrap_or(0);
-            call_daemon("zing.confirmUri", Some(json!({ "pending_id": pending_id })), |r| {
-                Some(r.clone())
-            })
-        }
-        "denyUri" => {
-            let pending_id = msg.get("pending_id").and_then(|v| v.as_u64()).unwrap_or(0);
-            call_daemon("zing.denyUri", Some(json!({ "pending_id": pending_id })), |r| {
-                Some(r.clone())
-            })
-        }
-        "pendingConfirmations" => {
-            call_daemon("zing.pendingConfirmations", None, |r| Some(r.clone()))
-        }
         "getConfig" => call_daemon("zing.getConfig", None, |r| Some(r.clone())),
         "updateConfig" => {
             let params = msg.get("params").cloned();

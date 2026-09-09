@@ -245,10 +245,9 @@ fn start_clipboard_monitor(app: tauri::AppHandle) -> Result<(), String> {
 fn confirm_uri(
     state: tauri::State<AppState>,
     pending_id: u64,
-    overwrite: Option<bool>,
-    filename: Option<String>,
+    updates: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    state.client.confirm_uri(pending_id, overwrite, filename)
+    state.client.confirm_uri(pending_id, updates)
 }
 
 #[tauri::command]
@@ -264,8 +263,8 @@ fn pending_confirmations(
 }
 
 #[tauri::command]
-fn pop_open_add_download(state: tauri::State<AppState>) -> Option<serde_json::Value> {
-    state.client.pop_open_add_download()
+fn window_exists(app: tauri::AppHandle, label: String) -> bool {
+    app.get_webview_window(&label).is_some()
 }
 
 #[tauri::command]
@@ -449,7 +448,7 @@ pub fn run() -> anyhow::Result<()> {
                 confirm_uri,
                 deny_uri,
                 pending_confirmations,
-                pop_open_add_download,
+                window_exists,
                 block_map_data,
                 open_window_cmd,
                 close_current_window,
