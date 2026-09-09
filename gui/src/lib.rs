@@ -416,6 +416,13 @@ pub fn run() -> anyhow::Result<()> {
                 window_exists,
                 open_window_cmd,
                 close_current_window,
+                get_config,
+                get_settings_dir,
+                get_default_download_dir,
+                browse_folder,
+                show_main_window,
+                hide_main_window,
+                resize_window,
             ])
             .setup(move |app| {
                 // Open the Add Download window in confirm mode
