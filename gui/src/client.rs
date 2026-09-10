@@ -148,6 +148,46 @@ impl GuiClient {
             .collect()
     }
 
+    pub fn probe_url(&self, url: String) -> Result<serde_json::Value, String> {
+        self.rt.block_on(async {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| format!("http client: {e}"))?;
+            let resp = client
+                .get(&url)
+                .header("Range", "bytes=0-0")
+                .send()
+                .await
+                .map_err(|e| format!("probe request: {e}"))?;
+
+            let content_disposition = resp
+                .headers()
+                .get("content-disposition")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            let total_size = if resp.status() == 206 {
+                resp.headers()
+                    .get("content-range")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.split('/').next_back())
+                    .and_then(|n| n.parse::<u64>().ok())
+            } else {
+                resp.content_length().filter(|n| *n > 0)
+            };
+
+            let filename = content_disposition
+                .as_deref()
+                .and_then(zing_ext::filename::from_content_disposition);
+
+            Ok(serde_json::json!({
+                "filename": filename,
+                "size": total_size,
+            }))
+        })
+    }
+
     /// Spawns a background thread that continuously refreshes `snapshot` with
     /// the latest task list. The GUI reads from `snapshot` instead of blocking.
     pub fn spawn_poller(&self, snapshot: Arc<Mutex<Vec<TaskInfo>>>) {

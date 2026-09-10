@@ -7,6 +7,15 @@ var advOpen = false;
 var pendingId = null;
 var storedParams = null;
 var submitted = false;
+var userEditedFilename = false;
+
+function formatSize(bytes) {
+  if (bytes == null || bytes === 0) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1073741824).toFixed(2) + ' GB';
+}
 
 var UA_MAP = {
   'chrome': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -55,8 +64,8 @@ function applyFontSize(s) {
   document.documentElement.style.setProperty('--font-size', map[s] || '13px');
 }
 
-var COLLAPSED_HEIGHT = 600;
-var EXPANDED_HEIGHT = 880;
+var COLLAPSED_HEIGHT = 560;
+var EXPANDED_HEIGHT = 780;
 
 function resizeWin() {
   var panel = document.getElementById('adv-panel');
@@ -124,6 +133,38 @@ document.addEventListener('DOMContentLoaded', function() {
 
   document.getElementById('add-url').focus();
   resizeWin();
+
+  // Track manual edits to the filename field
+  document.getElementById('add-filename').addEventListener('input', function() {
+    userEditedFilename = true;
+  });
+
+  // Probe URL on paste and blur to pre-fill filename from Content-Disposition
+  function probeUrl(url) {
+    if (!url || url.length < 10) return;
+    invoke('probe_url', { url: url }).then(function(info) {
+      if (info.filename && !userEditedFilename) {
+        document.getElementById('add-filename').value = info.filename;
+      }
+      var sizeEl = document.getElementById('add-file-size');
+      if (sizeEl && info.size) {
+        sizeEl.textContent = '(' + formatSize(info.size) + ')';
+      }
+    }).catch(function() {});
+  }
+
+  var urlField = document.getElementById('add-url');
+  urlField.addEventListener('paste', function() {
+    userEditedFilename = false;
+    setTimeout(function() { probeUrl(urlField.value.trim()); }, 50);
+  });
+  urlField.addEventListener('blur', function() {
+    var v = urlField.value.trim();
+    if (v && v !== prevAddUrl) {
+      prevAddUrl = v;
+      probeUrl(v);
+    }
+  });
 
   // Pre-fill URL from query parameter (e.g., from clipboard toast)
   var params = new URLSearchParams(window.location.search);

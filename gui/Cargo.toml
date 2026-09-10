@@ -29,6 +29,8 @@ notify-rust = "4.11"
 open = "5"
 rfd = "0.15"
 arboard = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+zing-ext = { path = "../ext" }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

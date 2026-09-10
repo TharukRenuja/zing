@@ -33,6 +33,11 @@ fn add_uri(state: tauri::State<AppState>, params: serde_json::Value) -> Result<u
 }
 
 #[tauri::command]
+fn probe_url(state: tauri::State<AppState>, url: String) -> Result<serde_json::Value, String> {
+    state.client.probe_url(url)
+}
+
+#[tauri::command]
 fn pause_task(state: tauri::State<AppState>, id: u64) -> Result<(), String> {
     state.client.pause(id)
 }
@@ -423,6 +428,7 @@ pub fn run() -> anyhow::Result<()> {
                 show_main_window,
                 hide_main_window,
                 resize_window,
+                probe_url,
             ])
             .setup(move |app| {
                 // Open the Add Download window in confirm mode
@@ -450,6 +456,7 @@ pub fn run() -> anyhow::Result<()> {
             .invoke_handler(tauri::generate_handler![
                 list_tasks,
                 add_uri,
+                probe_url,
                 pause_task,
                 resume_task,
                 stop_task,
