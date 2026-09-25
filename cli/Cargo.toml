@@ -20,7 +20,6 @@ depends = "libc6, libssl3"
 assets = [
     ["target/release/zing", "/usr/bin/zing", "755"],
     ["target/release/zing-daemon", "/usr/bin/zing-daemon", "755"],
-    ["target/release/zing-gui", "/usr/bin/zing-gui", "755"],
 ]
 extended-description = """
 A modern HTTP downloader with support for HTTP/1.1, HTTP/2, and HTTP/3.

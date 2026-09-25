@@ -205,7 +205,7 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
     };
 
     // Check for confirm flag — if set, hold in pending queue instead of
-    // starting the download immediately. The GUI will call confirmUri/denyUri.
+    // starting the download immediately. A confirmation client will call confirmUri/denyUri.
     let confirm = map
         .remove("confirm")
         .and_then(|v| v.as_bool())
@@ -692,11 +692,10 @@ async fn handle_update_config(params: Option<Value>) -> RpcResponse {
     };
 
     let path = config_path();
-    let mut config: serde_json::Map<String, Value> =
-        match tokio::fs::read_to_string(&path).await {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => serde_json::Map::new(),
-        };
+    let mut config: serde_json::Map<String, Value> = match tokio::fs::read_to_string(&path).await {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => serde_json::Map::new(),
+    };
 
     for (k, v) in updates {
         config.insert(k, v);
@@ -706,7 +705,12 @@ async fn handle_update_config(params: Option<Value>) -> RpcResponse {
     if let Some(parent) = path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    match tokio::fs::write(&path, serde_json::to_string_pretty(&updated).unwrap_or_default()).await {
+    match tokio::fs::write(
+        &path,
+        serde_json::to_string_pretty(&updated).unwrap_or_default(),
+    )
+    .await
+    {
         Ok(()) => RpcResponse {
             id: None,
             result: Some(updated),
@@ -869,13 +873,10 @@ mod tests {
         assert_eq!(result["status"], "pending_confirmation");
         let pending_id = result["id"].as_u64().unwrap();
 
-        // Pending list carries the full stored params for GUI pre-filling.
+        // Pending list carries the full stored params for confirmation clients.
         let req = make_req("zing.pendingConfirmations", None);
         let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
-        let list = resp.result.unwrap()["pending"]
-            .as_array()
-            .cloned()
-            .unwrap();
+        let list = resp.result.unwrap()["pending"].as_array().cloned().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["pending_id"].as_u64().unwrap(), pending_id);
         assert_eq!(list[0]["params"]["headers"][0], "Cookie: session=abc");
@@ -899,10 +900,7 @@ mod tests {
         // Confirming consumed the pending entry.
         let req = make_req("zing.pendingConfirmations", None);
         let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
-        let list = resp.result.unwrap()["pending"]
-            .as_array()
-            .cloned()
-            .unwrap();
+        let list = resp.result.unwrap()["pending"].as_array().cloned().unwrap();
         assert!(list.is_empty());
     }
 
@@ -936,7 +934,9 @@ mod tests {
         let hdrs = stored["headers"].as_array().unwrap();
         assert_eq!(hdrs.len(), 2, "user referer + stored cookie: {hdrs:?}");
         assert!(hdrs.iter().any(|h| h == "Cookie: a=b"));
-        assert!(hdrs.iter().any(|h| h == "Referer: http://example.com/other"));
+        assert!(hdrs
+            .iter()
+            .any(|h| h == "Referer: http://example.com/other"));
     }
 
     #[test]

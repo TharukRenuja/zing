@@ -49,13 +49,11 @@ The CLI has one optional feature, on by default:
 |---------|---------|-----------------|
 | `tui` | yes | `zing tui` terminal UI |
 
-The desktop GUI is a separate binary. Build it from the workspace root:
+The release build produces the CLI and daemon binaries:
 
 ```bash
-cargo build --release --bin zing-gui
+cargo build --release
 ```
-
-`cargo build --release` builds both `zing` and `zing-gui`.
 
 Build the CLI without TUI:
 
@@ -70,7 +68,6 @@ zing/
 ├── core/       # zing-core: download engine
 ├── cli/        # zing: CLI frontend
 ├── tui/        # zing-tui: terminal UI
-├── gui/        # zing-gui: desktop GUI
 ├── daemon/     # zing-daemon: background daemon
 └── ext/        # zing-ext: utilities
 ```

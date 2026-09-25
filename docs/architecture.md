@@ -14,8 +14,7 @@ keywords: zing, architecture, workspace, crates, design, transport, ipc, unix so
 zing/
 ├── core/           zing-core: download engine, transport, RPC
 ├── cli/            zing: CLI frontend (default member)
-├── tui/            zing-tui: terminal UI
-├── gui/            zing-gui: desktop GUI
+├── tui/           zing-tui: terminal UI
 ├── daemon/         zing-daemon: background process
 ├── ext/            zing-ext: utilities (checksum, metalink, etc.)
 └── docs/           documentation
@@ -34,9 +33,6 @@ zing-daemon
 └── zing-ext
 
 zing-tui
-└── zing-core
-
-zing-gui
 └── zing-core
 
 zing-ext
@@ -93,16 +89,6 @@ Terminal UI built with ratatui. Features:
 - Log panel
 - Add URL input
 - Daemon mode (RPC polling) and standalone mode (in-process)
-
-### zing-gui
-
-Desktop GUI built with eframe/egui. Features:
-
-- IDM-style layout (toolbar, sidebar, table, detail panel)
-- Speed plot (egui_plot)
-- Block grid visualization
-- Daemon-first (auto-starts daemon)
-- Background polling via dedicated tokio runtime
 
 ### zing-daemon
 
@@ -193,20 +179,6 @@ zing tui URL
   │   └─ remove() → remove RPC
   │
   └─ (TUI renders TaskControl snapshots identically whether local or remote)
-```
-
-### GUI → Daemon
-
-```
-zing-gui
-  │
-  ├─ auto-start daemon if not running
-  ├─ add URLs via addUri RPC
-  ├─ GuiClient polls list_tasks every 500ms
-  │   └─ snapshots stored in Arc<Mutex<Vec<TaskInfo>>>
-  │       └─ egui reads on each frame
-  │
-  └─ control actions (pause/resume/stop/remove) via RPC
 ```
 
 ## Key design decisions

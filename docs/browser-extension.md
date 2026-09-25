@@ -339,28 +339,6 @@ Open a native directory picker dialog (zenity/kdialog on Linux, osascript on mac
 
 ---
 
-### `openAddDownload`
-
-Open the add-download window in the zing GUI with a URL pre-filled.
-
-**Request:**
-```json
-{
-  "action": "openAddDownload",
-  "params": {
-    "url": "https://example.com/file.zip",
-    "filename": "file.zip"
-  }
-}
-```
-
-**Response:**
-```json
-{ "ok": true, "result": { "status": "ok" } }
-```
-
----
-
 ### `confirmUri`
 
 Confirm a pending download that was queued with `confirm: true`.

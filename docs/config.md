@@ -67,7 +67,7 @@ zing config delete download_dir
 
 2. **Daemon**: `max_concurrent_downloads` controls how many downloads can run simultaneously. The daemon reads this at startup and when `zing config set` is called.
 
-3. **TUI/GUI**: Read `download_dir` as the default save location.
+3. **TUI**: Read `download_dir` as the default save location.
 
 ## Daemon socket and auth
 

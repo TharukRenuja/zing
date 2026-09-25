@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "daemon", "ext", "tui", "gui", "tray"]
-default-members = ["cli", "gui"]
+members = ["core", "cli", "daemon", "ext", "tui"]
+default-members = ["cli"]
 
 [profile.release]
 codegen-units = 1
