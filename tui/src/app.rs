@@ -60,6 +60,16 @@ impl Entry {
     }
 }
 
+/// How long to wait for tasks to finish after a shutdown request before
+/// aborting them. Keeps `q` responsive even if a task is stuck.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Reject accidental prompt submissions: a bare single key is a mistyped
+/// keypress, not a URL (`q` typed while trying to quit, for example).
+fn is_bare_single_key(url: &str) -> bool {
+    url.len() == 1 && url.chars().next().is_some_and(|c| !c.is_ascii_digit())
+}
+
 enum InputMode {
     None,
     AddUrl { buffer: String },
@@ -146,7 +156,9 @@ impl TuiApp {
             if event::poll(poll_timeout)? {
                 match event::read()? {
                     Event::Key(key) => {
-                        if key.kind == KeyEventKind::Press {
+                        // Accept auto-repeat so holding a key still acts on
+                        // terminals that only emit repeat events for it.
+                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                             self.handle_key(key.code, key.modifiers);
                         }
                     }
@@ -174,14 +186,28 @@ impl TuiApp {
                 tokio::time::sleep(Duration::from_millis(16)).await;
             }
         }
-        // Gracefully stop still-running tasks so `.zing` control files persist.
+        self.shutdown_tasks().await;
+        Ok(())
+    }
+
+    /// Stop still-running tasks so `.zing` control files persist.
+    ///
+    /// Bounded by [`SHUTDOWN_TIMEOUT`] and followed by an abort so a wedged or
+    /// paused task can never leave the terminal stuck in raw/alternate-screen
+    /// mode after the user presses `q`.
+    async fn shutdown_tasks(&mut self) {
         let _ = self.shutdown_tx.send(());
         for entry in &mut self.entries {
-            if let Some(h) = entry.handle.take() {
-                let _ = h.await;
+            if let Some(mut h) = entry.handle.take() {
+                match tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut h).await {
+                    Ok(_) => {}
+                    Err(_) => {
+                        tracing::warn!("Task did not exit within shutdown timeout, aborting");
+                        h.abort();
+                    }
+                }
             }
         }
-        Ok(())
     }
 
     async fn refresh(&mut self) {
@@ -220,6 +246,12 @@ impl TuiApp {
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         if let InputMode::AddUrl { buffer } = &mut self.input {
             match code {
+                // `q` types a character here (URLs legitimately contain it), so
+                // quitting from the prompt needs an unambiguous key. Ctrl+C is
+                // matched first because crossterm reports it as `Char('c')`.
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.input = InputMode::None
+                }
                 KeyCode::Char(c) => buffer.push(c),
                 KeyCode::Backspace => {
                     buffer.pop();
@@ -228,8 +260,10 @@ impl TuiApp {
                 KeyCode::Enter => {
                     let url = buffer.trim().to_string();
                     self.input = InputMode::None;
-                    if !url.is_empty() {
+                    if !url.is_empty() && !is_bare_single_key(&url) {
                         self.pending_add = Some(url);
+                    } else if !url.is_empty() {
+                        self.logs.push(format!("Not a valid URL: {url}"));
                     }
                 }
                 _ => {}
@@ -237,8 +271,20 @@ impl TuiApp {
             return;
         }
 
+        // Ctrl+C is checked first so it quits even with a modifier held on a
+        // terminal that reports Ctrl+C as a plain `Char('c')` press.
         match code {
-            KeyCode::Char('q') => self.should_exit = true,
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                self.should_exit = true
+            }
+            _ => {}
+        }
+        if self.should_exit {
+            return;
+        }
+
+        match code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.should_exit = true,
             KeyCode::Esc => self.should_exit = true,
             KeyCode::Char('a') if self.factory.is_some() => {
                 self.input = InputMode::AddUrl {
@@ -251,9 +297,6 @@ impl TuiApp {
             KeyCode::Char('r') => self.remove_selected(),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_exit = true
-            }
             _ => {}
         }
     }

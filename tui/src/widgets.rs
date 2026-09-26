@@ -95,7 +95,7 @@ pub fn render_unified(
         render_logs_panel(frame, rects.logs, logs);
     }
 
-    render_unified_footer(frame, rects.footer, entries, selected);
+    render_unified_footer(frame, rects.footer, entries, selected, input);
 }
 
 fn render_unified_title(frame: &mut Frame, area: Rect, entries: &[Entry]) {
@@ -300,14 +300,29 @@ fn render_url_input(frame: &mut Frame, area: Rect, buffer: &str) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let text = Line::from(vec![
+    let mut lines = vec![Line::from(vec![
         Span::styled("URL: ", Style::default().fg(Color::Yellow)),
         Span::raw(buffer.to_string()),
-    ]);
-    frame.render_widget(Paragraph::new(text), inner);
+    ])];
+    if inner.height >= 2 {
+        lines.push(Line::from(vec![
+            Span::styled("Enter ", Style::default().fg(Color::Yellow)),
+            Span::styled("add", Style::default().fg(Color::Gray)),
+            Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc ", Style::default().fg(Color::Yellow)),
+            Span::styled("cancel", Style::default().fg(Color::Gray)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_unified_footer(frame: &mut Frame, area: Rect, entries: &[Entry], selected: usize) {
+fn render_unified_footer(
+    frame: &mut Frame,
+    area: Rect,
+    entries: &[Entry],
+    selected: usize,
+    input: Option<&str>,
+) {
     let peak = entries
         .get(selected)
         .and_then(|e| e.snapshot.as_ref())
@@ -334,15 +349,25 @@ fn render_unified_footer(frame: &mut Frame, area: Rect, entries: &[Entry], selec
         }
     };
 
-    let text = Line::from(vec![
-        Span::styled(
-            " q ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("quit", Style::default().fg(Color::Gray)),
-        Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+    // The Add URL prompt consumes printable keys (including `q`), so don't
+    // advertise `q quit` while it is open.
+    let quit_spans: Vec<Span> = if input.is_some() {
+        Vec::new()
+    } else {
+        vec![
+            Span::styled(
+                " q ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("quit", Style::default().fg(Color::Gray)),
+            Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
+        ]
+    };
+
+    let mut text_spans = quit_spans;
+    text_spans.extend([
         Span::styled(
             " j/k ",
             Style::default()
@@ -398,7 +423,7 @@ fn render_unified_footer(frame: &mut Frame, area: Rect, entries: &[Entry], selec
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::DarkGray))
-        .title_bottom(text.centered());
+        .title_bottom(Line::from(text_spans).centered());
 
     frame.render_widget(block, area);
 }

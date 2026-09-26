@@ -1277,6 +1277,39 @@ impl Drop for WorkerGuard {
     }
 }
 
+/// How often a parked (paused) worker rechecks for a stop request.
+const PAUSE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Park the calling worker while the task is paused.
+///
+/// Returns `true` when the task was resumed and the worker should continue, and
+/// `false` when the task was stopped or the pause channel closed, in which case
+/// the worker must return. The stop flag is polled while parked so a graceful
+/// stop (TUI `q`, daemon shutdown) never has to wait for a resume that will
+/// never arrive.
+async fn wait_while_paused(
+    state: &SharedState,
+    pause_rx: &mut tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    loop {
+        if state.done.load(Ordering::Acquire) {
+            return false;
+        }
+        if !*pause_rx.borrow() {
+            return true;
+        }
+        // `changed()` is version based, so a resume that lands between the
+        // borrow above and this call is still observed; the timeout only bounds
+        // how long a stop request can go unnoticed.
+        let resumed = tokio::time::timeout(PAUSE_POLL_INTERVAL, pause_rx.wait_for(|p| !*p)).await;
+        match resumed {
+            Ok(Ok(_)) => return !state.done.load(Ordering::Acquire),
+            Ok(Err(_)) => return false,
+            Err(_) => continue,
+        }
+    }
+}
+
 async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
     let _guard = WorkerGuard::enter(state.clone());
     run_connection_work(state, conn_id).await;
@@ -1299,12 +1332,10 @@ async fn run_connection_work(state: Arc<SharedState>, conn_id: usize) {
         if state.done.load(Ordering::Acquire) {
             return;
         }
-        // Park while paused, waiting for resume. `wait_for(|p| !*p)` blocks
-        // until the value becomes false and re-checks on every change, so it
-        // cannot lose a pause()/resume() that lands between our check and the
-        // wait (the old changed()-after-borrow() pattern could consume the
-        // change and then hang forever waiting for one that never arrives).
-        if *pause_rx.borrow() && pause_rx.wait_for(|p| !*p).await.is_err() {
+        // Park while paused, waiting for resume or stop. `wait_while_paused`
+        // rechecks the stop flag periodically, so a graceful stop does not have
+        // to wait for a resume that may never come.
+        if !wait_while_paused(&state, &mut pause_rx).await {
             return;
         }
 
@@ -1772,11 +1803,8 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
         if state.done.load(Ordering::Acquire) {
             return;
         }
-        if *pause_rx.borrow() {
-            if pause_rx.wait_for(|p| !*p).await.is_err() {
-                return;
-            }
-            continue;
+        if !wait_while_paused(&state, &mut pause_rx).await {
+            return;
         }
 
         let (total_size, block_idx) = {

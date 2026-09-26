@@ -35,6 +35,15 @@ impl LogBuffer {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Append a line from the UI itself (e.g. input validation messages).
+    pub fn push(&self, line: impl Into<String>) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.len() >= self.max_lines {
+            guard.pop_front();
+        }
+        guard.push_back(line.into());
+    }
 }
 
 impl io::Write for LogBuffer {

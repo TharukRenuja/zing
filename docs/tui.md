@@ -84,6 +84,10 @@ The TUI requires at least 40×20 characters. If the terminal is smaller, a "Term
 
 Press `a` to enter URL input mode. Type a URL and press Enter to add it. Press Esc to cancel.
 
+While the prompt is open, printable keys go to the URL buffer — including `q`, which is
+legitimate in a query string. The `q quit` footer hint is therefore hidden and `q` does
+not quit from the prompt; use `Esc` or `Ctrl+C` instead.
+
 ## Panels
 
 ### Title bar

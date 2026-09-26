@@ -71,9 +71,22 @@ impl TaskControl for LocalTask {
     ) -> Option<tokio::task::JoinHandle<()>> {
         let flags = Arc::clone(&self.flags);
         let task = Arc::clone(&self.task);
+        let mut shutdown = shutdown;
         Some(tokio::spawn(async move {
+            // Wait for a concurrency permit, but stay responsive to shutdown so
+            // quitting the TUI never blocks behind queued tasks.
             let _permit = if let Some(ref s) = sem {
-                Some(s.acquire().await.expect("semaphore closed"))
+                let permit = tokio::select! {
+                    permit = s.acquire() => permit.ok(),
+                    _ = shutdown.recv() => None,
+                };
+                match permit {
+                    Some(permit) => Some(permit),
+                    None => {
+                        tracing::debug!("Task released before starting: shutdown requested");
+                        return;
+                    }
+                }
             } else {
                 None
             };
