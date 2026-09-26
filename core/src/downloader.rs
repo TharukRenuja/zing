@@ -3,6 +3,7 @@ use crate::connection::ConnectionPool;
 use crate::constants;
 use crate::cookie_store::ZingCookieStore;
 use crate::engine::event::{EngineEvent, EventBus, TaskId, TaskProgress};
+use crate::http_method::RequestSpec;
 use crate::probe;
 use crate::ratelimit::{SharedRateLimiter, TokenBucket};
 use crate::retry::RetryManager;
@@ -94,6 +95,9 @@ struct SharedState {
     pub endgame_cursor: AtomicU32,
     pub throttle_reprobe_enabled: bool,
     pub paused: AtomicBool,
+    /// Method and body for every request this task issues. Segmented/range
+    /// downloads are only attempted when `spec.supports_segmentation()`.
+    pub spec: RequestSpec,
     pub pause_tx: tokio::sync::watch::Sender<bool>,
     pub pause_rx: tokio::sync::watch::Receiver<bool>,
     pub claimed_blocks: tokio::sync::Mutex<HashSet<u32>>,
@@ -253,6 +257,7 @@ impl DownloadTask {
         digest_auth: bool,
         endgame_enabled: bool,
         throttle_reprobe_enabled: bool,
+        spec: RequestSpec,
     ) -> Self {
         // Happy Eyeballs DNS resolution: resolve the URL hostname with IPv6
         // preference so the HTTP client tries IPv6 first, then IPv4.
@@ -282,7 +287,8 @@ impl DownloadTask {
             dns_overrides.as_deref().unwrap_or(&[]),
         )
         .with_event_bus(bus.clone())
-        .with_headers(headers);
+        .with_headers(headers)
+        .with_content_type(spec.content_type.clone());
         let rate_limiter = if max_download_rate > 0 {
             Some(Arc::new(TokenBucket::new(max_download_rate)))
         } else {
@@ -339,6 +345,7 @@ impl DownloadTask {
                 endgame_cursor: AtomicU32::new(0),
                 throttle_reprobe_enabled,
                 paused: AtomicBool::new(false),
+                spec,
                 pause_tx,
                 pause_rx,
                 claimed_blocks: tokio::sync::Mutex::new(HashSet::new()),
@@ -458,10 +465,27 @@ impl DownloadTask {
         if self.state.to_stdout {
             return self.run_to_stdout(&current_url).await;
         }
+
+        // Probing issues a second request, and segmentation issues many. Both are
+        // only sound for GET/HEAD with no body: replaying a DELETE or POST would
+        // duplicate the side effect, and replaying a body across ranges would
+        // re-submit it. Everything else runs as exactly one streaming request.
+        if !self.state.spec.method.allows_probe() || self.state.spec.has_body() {
+            tracing::debug!(
+                "Single-request mode: method={} body={}",
+                self.state.spec.method,
+                self.state.spec.has_body()
+            );
+            self.state.total_downloaded.store(0, Ordering::Relaxed);
+            *self.state.start_time.lock().await = Instant::now();
+            return self.run_streaming().await;
+        }
+
         let profile = probe::probe(
             &self.state.pool,
             &current_url,
             self.state.segment_mgr.lock().await.max_connections,
+            &self.state.spec.method,
         )
         .await;
 
@@ -560,7 +584,19 @@ impl DownloadTask {
         }
 
         if profile.total_size.is_none_or(|s| s == 0) && !resume.is_some() {
-            let resp = self.state.pool.client().get(&current_url).send().await?;
+            // Surface a bad status here rather than silently streaming an error
+            // page to disk. Uses the configured method and headers.
+            let resp = self
+                .state
+                .pool
+                .request(
+                    self.state.spec.method.as_str(),
+                    &current_url,
+                    None,
+                    self.state.spec.body.as_ref(),
+                    self.state.id,
+                )
+                .await?;
             if !resp.status().is_success() {
                 bail!("HTTP {} from {}", resp.status(), current_url);
             }
@@ -1063,14 +1099,26 @@ impl DownloadTask {
         let filename = self.state.filename.lock().await.clone();
 
         let stream_url = self.state.url.lock().await.clone();
-        let resp = self.state.pool.get(&stream_url, self.state.id).await?;
+        let resp = self
+            .state
+            .pool
+            .request(
+                self.state.spec.method.as_str(),
+                &stream_url,
+                None,
+                self.state.spec.body.as_ref(),
+                self.state.id,
+            )
+            .await?;
         if !resp.status().is_success() {
             bail!("HTTP {}", resp.status());
         }
 
         use futures::StreamExt;
 
-        let mut file = tokio::fs::File::create(&filename).await?;
+        // Created lazily: a 204/empty response (e.g. DELETE) must not leave a
+        // zero-byte file behind.
+        let mut file: Option<tokio::fs::File> = None;
         let mut stream = resp.into_inner().bytes_stream();
         let mut downloaded: u64 = 0;
         let start = Instant::now();
@@ -1095,7 +1143,9 @@ impl DownloadTask {
                         Ok(Some(Ok(d))) => d,
                         Ok(Some(Err(e))) => return Err(e.into()),
                         Ok(None) => {
-                            file.flush().await?;
+                            if let Some(f) = file.as_mut() {
+                                f.flush().await?;
+                            }
                             self.state.bus.emit(EngineEvent::TaskCompleted {
                                 id: self.state.id,
                                 total_bytes: downloaded,
@@ -1116,7 +1166,11 @@ impl DownloadTask {
                 limiter.consume(data.len() as u64).await;
             }
 
-            file.write_all(&data).await?;
+            if file.is_none() {
+                file = Some(tokio::fs::File::create(&filename).await?);
+            }
+            let f = file.as_mut().expect("file created above");
+            f.write_all(&data).await?;
             downloaded += data.len() as u64;
 
             let elapsed = start.elapsed().as_secs_f64();
@@ -1134,7 +1188,9 @@ impl DownloadTask {
             }));
         }
 
-        file.flush().await?;
+        if let Some(mut f) = file {
+            f.flush().await?;
+        }
         self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
             id: self.state.id,
             bytes_downloaded: downloaded,
@@ -1146,7 +1202,17 @@ impl DownloadTask {
 
     async fn run_to_stdout(&self, url: &str) -> Result<()> {
         tracing::debug!("Streaming to stdout");
-        let resp = self.state.pool.get(url, self.state.id).await?;
+        let resp = self
+            .state
+            .pool
+            .request(
+                self.state.spec.method.as_str(),
+                url,
+                None,
+                self.state.spec.body.as_ref(),
+                self.state.id,
+            )
+            .await?;
         if !resp.status().is_success() {
             bail!("HTTP {}", resp.status());
         }
@@ -1474,14 +1540,22 @@ async fn download_range(
                 if let Some((username, password)) = creds {
                     let url_str = state.url.lock().await.clone();
                     if let Some(auth_header) = zing_ext::digest_auth::compute_digest_auth(
-                        challenge, &username, &password, "GET", &url_str,
+                        challenge,
+                        &username,
+                        &password,
+                        state.spec.method.as_str(),
+                        &url_str,
                     ) {
                         tracing::debug!("Conn {conn_id}: retrying with Digest auth");
                         let end = offset + length - 1;
                         let http_resp = state
                             .pool
                             .client()
-                            .get(&url_str)
+                            .request(
+                                reqwest::Method::from_bytes(state.spec.method.as_str().as_bytes())
+                                    .map_err(|e| anyhow::anyhow!(e))?,
+                                &url_str,
+                            )
                             .header("Range", format!("bytes={offset}-{end}"))
                             .header("Authorization", &auth_header)
                             .send()

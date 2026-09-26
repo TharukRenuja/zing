@@ -1,4 +1,5 @@
 use crate::connection::pool::{ConnectionPool, Protocol};
+use crate::http_method::HttpMethod;
 use std::time::{Duration, Instant};
 
 pub struct ServerProfile {
@@ -36,15 +37,25 @@ pub async fn probe(
     pool: &ConnectionPool,
     url: &str,
     max_connections: Option<usize>,
+    method: &HttpMethod,
 ) -> ServerProfile {
     let start = Instant::now();
-    let resp = match pool
-        .client()
-        .get(url)
-        .header("Range", "bytes=0-65535")
-        .send()
-        .await
-    {
+    let mut req = pool.client().request(
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
+        url,
+    );
+    // HEAD must not carry a body or a Range: a HEAD response has no content to
+    // measure and servers commonly reject ranged HEAD requests.
+    if !method.is_head() {
+        req = req.header("Range", "bytes=0-65535");
+    }
+    // Probe must carry the same headers as the real request: without them an
+    // authenticated resource answers 401, the size looks unknown, and the task
+    // silently falls back to streaming.
+    for (k, v) in pool.header_list() {
+        req = req.header(k, v);
+    }
+    let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("Probe failed: {e}");
@@ -59,10 +70,23 @@ pub async fn probe(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
+    // A HEAD response has no body: the size comes from Content-Length, range
+    // support from Accept-Ranges, and there is no body to time a bandwidth
+    // estimate from.
+    let is_head = method.is_head();
+
     // A single range request yields range support (206), total size
     // (Content-Range) and a bandwidth estimate from the 64KB body.
-    let supports_ranges = resp.status() == 206;
-    let total_size = if supports_ranges {
+    let supports_ranges = if is_head {
+        resp.headers()
+            .get("accept-ranges")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("bytes"))
+            .unwrap_or(false)
+    } else {
+        resp.status() == 206
+    };
+    let total_size = if supports_ranges && !is_head {
         resp.headers()
             .get("content-range")
             .and_then(|v| v.to_str().ok())
@@ -72,7 +96,9 @@ pub async fn probe(
         resp.content_length().filter(|n| *n > 0)
     };
 
-    let bandwidth_estimate = if supports_ranges {
+    let bandwidth_estimate = if is_head {
+        None
+    } else if supports_ranges {
         let body_start = Instant::now();
         let len = match resp.bytes().await {
             Ok(b) => b.len() as f64,
@@ -135,7 +161,11 @@ pub async fn probe_mirrors(pool: &ConnectionPool, urls: &[String]) -> Vec<String
     let mut results: Vec<MirrorRtt> = Vec::with_capacity(urls.len());
     for url in urls {
         let start = Instant::now();
-        match pool.client().head(url).send().await {
+        let mut req = pool.client().head(url);
+        for (k, v) in pool.header_list() {
+            req = req.header(k, v);
+        }
+        match req.send().await {
             Ok(_) => {
                 let rtt = start.elapsed();
                 results.push(MirrorRtt {

@@ -1,5 +1,6 @@
 use crate::cookie_store::ZingCookieStore;
 use crate::engine::event::{EngineEvent, EventBus, TaskId};
+use crate::http_method::{HttpMethod, RequestBody};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,6 +33,8 @@ pub struct ConnectionPool {
     event_bus: Option<EventBus>,
     created_at: Instant,
     headers: Vec<(String, String)>,
+    /// Content-Type applied to request bodies that carry no explicit header.
+    content_type: Option<String>,
     pub cookie_jar: Option<Arc<ZingCookieStore>>,
 }
 
@@ -142,6 +145,7 @@ impl ConnectionPool {
             event_bus: None,
             created_at: Instant::now(),
             headers: Vec::new(),
+            content_type: None,
             cookie_jar,
         }
     }
@@ -153,6 +157,12 @@ impl ConnectionPool {
 
     pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
         self.headers = headers;
+        self
+    }
+
+    /// Content-Type for request bodies, unless overridden by an explicit header.
+    pub fn with_content_type(mut self, content_type: Option<String>) -> Self {
+        self.content_type = content_type;
         self
     }
 
@@ -179,17 +189,45 @@ impl ConnectionPool {
         }
     }
 
-    /// Perform a GET request with protocol detection.
-    pub async fn get(
+    /// Perform a request with protocol detection.
+    ///
+    /// `range` adds a `Range: bytes=start-end` header, `body` (if present) is
+    /// sent as the request content. The method is explicit so callers can never
+    /// silently fall back to GET.
+    pub async fn request(
         &self,
+        method: &str,
         url: &str,
+        range: Option<(u64, u64)>,
+        body: Option<&RequestBody>,
         task_id: TaskId,
-    ) -> Result<ConnectionResponse, reqwest::Error> {
+    ) -> anyhow::Result<ConnectionResponse> {
         self.metrics.requests_total.fetch_add(1, Ordering::Relaxed);
 
-        let mut req = self.client.get(url);
+        let verb = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|_| anyhow::anyhow!("Invalid HTTP method: {method}"))?;
+        let mut req = self.client.request(verb, url);
+
+        if let Some((offset, length)) = range {
+            let end = offset + length.saturating_sub(1);
+            req = req.header("Range", format!("bytes={}-{}", offset, end));
+        }
+        if let Some(body) = body {
+            req = req.body(body.bytes().to_vec());
+        }
         for (k, v) in &self.headers {
             req = req.header(k.as_str(), v.as_str());
+        }
+        if let Some(ct) = &self.content_type {
+            // reqwest only derives Content-Type from a typed body (json/text/
+            // form); a raw byte body carries none, so set it explicitly.
+            if !self
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            {
+                req = req.header("Content-Type", ct.as_str());
+            }
         }
         let resp = req.send().await?;
 
@@ -205,6 +243,12 @@ impl ConnectionPool {
         Ok(ConnectionResponse { resp, protocol })
     }
 
+    /// Perform a GET request with protocol detection.
+    pub async fn get(&self, url: &str, task_id: TaskId) -> anyhow::Result<ConnectionResponse> {
+        self.request(HttpMethod::GET, url, None, None, task_id)
+            .await
+    }
+
     /// Perform a GET request with a Range header.
     pub async fn get_range(
         &self,
@@ -212,30 +256,14 @@ impl ConnectionPool {
         offset: u64,
         length: u64,
         task_id: TaskId,
-    ) -> Result<ConnectionResponse, reqwest::Error> {
-        self.metrics.requests_total.fetch_add(1, Ordering::Relaxed);
+    ) -> anyhow::Result<ConnectionResponse> {
+        self.request(HttpMethod::GET, url, Some((offset, length)), None, task_id)
+            .await
+    }
 
-        let end = offset + length - 1;
-
-        let mut req = self
-            .client
-            .get(url)
-            .header("Range", format!("bytes={}-{}", offset, end));
-        for (k, v) in &self.headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-        let resp = req.send().await?;
-
-        let protocol = Self::detect_protocol(&resp);
-        if protocol == Protocol::Http2 {
-            self.metrics
-                .h2_streams_created
-                .fetch_add(1, Ordering::Relaxed);
-        }
-
-        self.emit_connection(task_id, &protocol);
-
-        Ok(ConnectionResponse { resp, protocol })
+    /// Custom headers applied to every request, including probes.
+    pub fn header_list(&self) -> &[(String, String)] {
+        &self.headers
     }
 
     pub fn metrics_summary(&self) -> String {

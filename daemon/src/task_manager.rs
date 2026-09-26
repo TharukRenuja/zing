@@ -500,6 +500,7 @@ impl TaskManager {
                 false, // digest_auth
                 end_game,
                 throttle_reprobe,
+                zing_core::http_method::RequestSpec::get(),
             ));
             task.set_conflict_policy(if allow_overwrite {
                 ConflictPolicy::Overwrite

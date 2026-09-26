@@ -795,6 +795,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 use std::sync::Arc;
                 use zing_core::downloader::{ConflictPolicy, DownloadTask};
                 use zing_core::engine::event::EventBus;
+                use zing_core::http_method::RequestSpec;
                 use zing_tui::task::{LocalTask, TaskControl};
                 use zing_tui::{TaskFactory, TuiOptions};
 
@@ -1022,6 +1023,9 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 };
 
                 let bus = EventBus::new();
+                // The TUI drives in-process tasks over GET; method/body support is
+                // wired for the plain download path in commit 2.
+                let spec = RequestSpec::get();
 
                 // Build a task for a URL. Kept in a closure so the initial batch
                 // and the interactive "add URL" prompt share identical config.
@@ -1066,6 +1070,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         digest,
                         endgame_enabled,
                         throttle_reprobe_enabled,
+                        spec.clone(),
                     ));
                     task.set_conflict_policy(conflict_policy.clone());
                     Ok(task)
@@ -1507,6 +1512,8 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let cert_key_path = args.cert_key.clone();
         let digest = args.digest;
         let user_creds = args.user.clone();
+        // Wired up in commit 2; GET for now.
+        let spec = std::sync::Arc::new(zing_core::http_method::RequestSpec::get());
 
         let endgame_enabled = if args.end_game {
             true
@@ -1580,6 +1587,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     digest,
                     endgame_enabled,
                     throttle_reprobe_enabled,
+                    spec.as_ref().clone(),
                 );
                 task.set_conflict_policy(conflict_policy.clone());
                 if digest {

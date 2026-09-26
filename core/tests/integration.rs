@@ -1,10 +1,11 @@
 mod common;
 
-use common::{test_payload, TestServer};
+use common::{test_payload, RecordingServer, TestServer};
 use tokio::sync::broadcast;
 use zing_core::connection::ConnectionPool;
 use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::EventBus;
+use zing_core::http_method::{HttpMethod, RequestSpec};
 use zing_core::storage::ControlFile;
 
 /// test that the mock server serves the full file on a plain GET
@@ -94,6 +95,7 @@ async fn test_full_download() {
         false,
         true,
         true,
+        RequestSpec::get(),
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;
@@ -174,6 +176,7 @@ async fn test_resume_download() {
         false,
         true,
         true,
+        RequestSpec::get(),
     );
 
     let result = task.run_with_shutdown(shutdown_rx).await;
@@ -235,6 +238,7 @@ async fn test_pause_resume_download() {
         false,
         true,
         true,
+        RequestSpec::get(),
     ));
 
     let task_for_run = std::sync::Arc::clone(&task);
@@ -335,6 +339,7 @@ async fn test_shutdown_while_paused_exits() {
         false,
         true,
         true,
+        RequestSpec::get(),
     ));
 
     let task_for_run = std::sync::Arc::clone(&task);
@@ -405,6 +410,7 @@ async fn test_shutdown_pause_then_resume() {
         false,
         true,
         true,
+        RequestSpec::get(),
     ));
 
     let task_for_run = std::sync::Arc::clone(&task);
@@ -466,6 +472,7 @@ async fn test_shutdown_pause_then_resume() {
         false,
         true,
         true,
+        RequestSpec::get(),
     );
 
     let result = tokio::time::timeout(
@@ -479,4 +486,224 @@ async fn test_shutdown_pause_then_resume() {
     let downloaded = tokio::fs::read(&output).await.unwrap();
     assert_eq!(downloaded.len(), payload.len(), "file size mismatch");
     assert_eq!(downloaded, payload, "file content mismatch");
+}
+
+// ---------------------------------------------------------------------------
+// HTTP method support
+// ---------------------------------------------------------------------------
+
+/// Build a task with an explicit request spec, using test-friendly defaults.
+#[allow(clippy::too_many_arguments)]
+fn task_with_spec(
+    url: &str,
+    filename: &str,
+    bus: EventBus,
+    spec: RequestSpec,
+    headers: Vec<(String, String)>,
+) -> DownloadTask {
+    DownloadTask::new(
+        0,
+        url,
+        filename,
+        false,
+        false,
+        Some(4),
+        bus,
+        false,
+        0,
+        None,
+        vec![],
+        None,
+        headers,
+        0,
+        5,
+        500,
+        30,
+        300,
+        None,
+        true,
+        None,
+        None,
+        0,
+        30,
+        5,
+        None,
+        None,
+        None,
+        false,
+        true,
+        true,
+        spec,
+    )
+}
+
+#[tokio::test]
+async fn test_head_method_sends_single_head_request() {
+    let server = RecordingServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("head.bin");
+    let bus = EventBus::new();
+
+    let task = task_with_spec(
+        &server.url(),
+        output.to_str().unwrap(),
+        bus,
+        RequestSpec::with_body(HttpMethod::parse("HEAD").unwrap(), None, None),
+        vec![],
+    );
+    task.run().await.expect("HEAD should succeed");
+
+    let reqs = server.recorded();
+    assert!(!reqs.is_empty(), "server saw no requests");
+    for r in &reqs {
+        assert_eq!(r.method, "HEAD", "expected HEAD, got {}", r.method);
+        assert!(
+            r.header("Range").is_none(),
+            "HEAD must not carry a Range header: {:?}",
+            r.header("Range")
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_post_sends_body_and_content_type_once() {
+    let server = RecordingServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("post.bin");
+    let bus = EventBus::new();
+
+    let spec = RequestSpec::with_body(
+        HttpMethod::parse("POST").unwrap(),
+        Some(b"q=foo&limit=10".to_vec()),
+        Some("application/x-www-form-urlencoded".into()),
+    );
+    let task = task_with_spec(&server.url(), output.to_str().unwrap(), bus, spec, vec![]);
+    task.run().await.expect("POST should succeed");
+
+    let reqs = server.recorded();
+    assert_eq!(reqs.len(), 1, "POST must be sent exactly once: {reqs:?}");
+    assert_eq!(reqs[0].method, "POST");
+    assert_eq!(reqs[0].body, b"q=foo&limit=10");
+    assert_eq!(
+        reqs[0].header("Content-Type"),
+        Some("application/x-www-form-urlencoded")
+    );
+    assert!(
+        reqs[0].header("Range").is_none(),
+        "non-GET must never be segmented"
+    );
+    assert_eq!(
+        std::fs::read(&output).unwrap(),
+        b"hello",
+        "response body should be written to the output file"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_does_not_create_empty_file() {
+    let server = RecordingServer::with_response("204 No Content", Vec::new()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("deleted.bin");
+    let bus = EventBus::new();
+
+    let spec = RequestSpec::with_body(HttpMethod::parse("DELETE").unwrap(), None, None);
+    let task = task_with_spec(&server.url(), output.to_str().unwrap(), bus, spec, vec![]);
+    task.run().await.expect("DELETE should succeed");
+
+    let reqs = server.recorded();
+    assert_eq!(reqs.len(), 1, "DELETE must be sent exactly once");
+    assert_eq!(reqs[0].method, "DELETE");
+    assert!(
+        !output.exists(),
+        "empty response must not leave a zero-byte file behind"
+    );
+}
+
+#[tokio::test]
+async fn test_non_idempotent_method_is_not_retried() {
+    let server =
+        RecordingServer::with_response("500 Internal Server Error", b"boom".to_vec()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("fail.bin");
+    let bus = EventBus::new();
+
+    let spec = RequestSpec::with_body(HttpMethod::parse("POST").unwrap(), None, None);
+    let task = task_with_spec(&server.url(), output.to_str().unwrap(), bus, spec, vec![]);
+    let result = task.run().await;
+
+    assert!(result.is_err(), "HTTP 500 should fail the task");
+    assert_eq!(
+        server.request_count(),
+        1,
+        "a non-idempotent request must never be retried"
+    );
+}
+
+#[tokio::test]
+async fn test_query_method_is_sent_as_query() {
+    let server = RecordingServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("query.json");
+    let bus = EventBus::new();
+
+    // QUERY is range-capable and idempotent (RFC 10008) but must not be probed,
+    // since a probe would be a second execution of the request.
+    let spec = RequestSpec::with_body(HttpMethod::parse("QUERY").unwrap(), None, None);
+    let task = task_with_spec(&server.url(), output.to_str().unwrap(), bus, spec, vec![]);
+    task.run().await.expect("QUERY should succeed");
+
+    let reqs = server.recorded();
+    assert_eq!(reqs.len(), 1, "QUERY must be sent exactly once: {reqs:?}");
+    assert_eq!(reqs[0].method, "QUERY");
+}
+
+#[tokio::test]
+async fn test_get_still_uses_ranges_and_segments() {
+    let payload = test_payload(4 * 1024 * 1024);
+    let server = TestServer::new(payload.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("segmented.bin");
+    let bus = EventBus::new();
+
+    let task = task_with_spec(
+        &server.url(),
+        output.to_str().unwrap(),
+        bus,
+        RequestSpec::get(),
+        vec![],
+    );
+    task.run().await.expect("GET download should succeed");
+
+    assert_eq!(std::fs::read(&output).unwrap(), payload);
+}
+
+#[tokio::test]
+async fn test_probe_sends_custom_headers() {
+    let payload = test_payload(1024);
+    let server = RecordingServer::with_response("200 OK", payload.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("probed.bin");
+    let bus = EventBus::new();
+
+    // Regression: probe used `pool.client()` and skipped the header list, so an
+    // authenticated resource answered 401 and the size came back unknown.
+    let headers = vec![("X-Probe-Token".to_string(), "secret".to_string())];
+    let task = task_with_spec(
+        &server.url(),
+        output.to_str().unwrap(),
+        bus,
+        RequestSpec::get(),
+        headers,
+    );
+    task.run().await.expect("download should succeed");
+
+    let reqs = server.recorded();
+    let probe = reqs
+        .first()
+        .expect("expected at least one request (the probe)");
+    assert_eq!(
+        probe.header("X-Probe-Token"),
+        Some("secret"),
+        "probe request must carry custom headers"
+    );
 }
