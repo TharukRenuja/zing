@@ -123,8 +123,11 @@ impl SlowStartAllocator {
         probe_bandwidth: f64,
         max_connections: Option<usize>,
     ) -> usize {
+        let cap = max_connections
+            .unwrap_or(constants::MAX_AUTO_CONNECTIONS)
+            .max(1);
         if measured_speed <= 0.0 {
-            return 1;
+            return 2.min(cap);
         }
 
         let size_mb = total_size as f64 / 1048576.0;
@@ -137,9 +140,6 @@ impl SlowStartAllocator {
         };
 
         let optimal = size_based.max(probe_based).max(2);
-        let cap = max_connections
-            .unwrap_or(constants::MAX_AUTO_CONNECTIONS)
-            .max(1);
         optimal.min(cap)
     }
 }
@@ -178,9 +178,17 @@ mod tests {
     }
 
     #[test]
-    fn invalid_measurement_stays_single_connection() {
+    fn missing_measurement_starts_with_two_connections() {
         assert_eq!(
             SlowStartAllocator::calculate_optimal_conns(500, 0.0, MIB, Some(4)),
+            2
+        );
+    }
+
+    #[test]
+    fn missing_measurement_respects_single_connection_cap() {
+        assert_eq!(
+            SlowStartAllocator::calculate_optimal_conns(500, 0.0, MIB, Some(1)),
             1
         );
     }

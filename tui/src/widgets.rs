@@ -530,11 +530,14 @@ fn render_stats(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let in_flight = snap
-        .connections
-        .iter()
-        .filter(|c| c.segment_id.is_some())
-        .count();
+    let in_flight = if snap.paused {
+        0
+    } else {
+        snap.connections
+            .iter()
+            .filter(|c| c.segment_id.is_some())
+            .count()
+    };
 
     let eta = if snap.speed > 0 && !snap.done {
         let remaining = snap.total_bytes.saturating_sub(snap.bytes_downloaded);
@@ -630,10 +633,18 @@ fn render_connections(frame: &mut Frame, area: Rect, snap: &TaskSnapshot, scroll
                 "-".to_string()
             };
             let secs = c.started_at.elapsed().as_secs();
-            let time = format!("{}s", secs);
-            let (state_label, state_color) = match c.segment_id {
-                Some(_) => ("● active", Color::Green),
-                None => ("◐ idle", Color::Gray),
+            let time = if snap.paused {
+                "paused".to_string()
+            } else {
+                format!("{secs}s")
+            };
+            let (state_label, state_color) = if snap.paused {
+                ("⏸ paused", Color::Yellow)
+            } else {
+                match c.segment_id {
+                    Some(_) => ("● active", Color::Green),
+                    None => ("◐ idle", Color::Gray),
+                }
             };
             let byt = if c.bytes_downloaded > 0 {
                 human_bytes(c.bytes_downloaded)
@@ -677,11 +688,14 @@ fn render_block_map(frame: &mut Frame, area: Rect, snap: &TaskSnapshot) {
         ((snap.bytes_downloaded as f64 / snap.total_bytes as f64 * 100.0) as u16).min(100)
     };
 
-    let in_flight = snap
-        .connections
-        .iter()
-        .filter(|c| c.segment_id.is_some())
-        .count();
+    let in_flight = if snap.paused {
+        0
+    } else {
+        snap.connections
+            .iter()
+            .filter(|c| c.segment_id.is_some())
+            .count()
+    };
 
     let endgame_str = if snap.endgame { "ON" } else { "OFF" };
     let speed = human_speed(snap.speed);
