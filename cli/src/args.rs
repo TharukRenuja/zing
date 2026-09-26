@@ -33,7 +33,7 @@ pub struct Args {
     #[arg(
         long = "connections",
         short = 'n',
-        help = "Max parallel connections (default: unlimited)"
+        help = "Max parallel connections (default: adaptive, capped at 8)"
     )]
     pub connections: Option<usize>,
 

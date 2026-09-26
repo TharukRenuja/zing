@@ -79,6 +79,7 @@ struct SharedState {
     pub reprobe: AtomicBool,
     pub peak_speed: AtomicU64,
     pub bandwidth_estimate: AtomicU64,
+    pub probe_bandwidth_estimate: AtomicU64,
     pub max_filesize: u64,
     pub use_cd: bool,
     pub cookie_jar: Option<Arc<ZingCookieStore>>,
@@ -317,6 +318,7 @@ impl DownloadTask {
                 reprobe: AtomicBool::new(false),
                 peak_speed: AtomicU64::new(0),
                 bandwidth_estimate: AtomicU64::new(0),
+                probe_bandwidth_estimate: AtomicU64::new(0),
                 max_filesize,
                 use_cd,
                 cookie_jar,
@@ -456,6 +458,10 @@ impl DownloadTask {
         )
         .await;
 
+        self.state.probe_bandwidth_estimate.store(
+            profile.bandwidth_estimate.unwrap_or(0.0) as u64,
+            Ordering::Relaxed,
+        );
         self.state.bandwidth_estimate.store(
             profile.bandwidth_estimate.unwrap_or(0.0) as u64,
             Ordering::Relaxed,
@@ -571,16 +577,6 @@ impl DownloadTask {
                 tracing::warn!("Server file size changed, starting fresh");
                 let _ = tokio::fs::remove_file(&control_path).await;
                 return self.run_fresh(total_size).await;
-            }
-        }
-
-        {
-            let mut mgr = self.state.segment_mgr.lock().await;
-            // Only lower max_connections if user set an explicit limit and probe recommends fewer
-            if let Some(user_max) = mgr.max_connections {
-                if profile.recommended_connections < user_max {
-                    mgr.max_connections = Some(profile.recommended_connections);
-                }
             }
         }
 
@@ -703,7 +699,7 @@ impl DownloadTask {
             .await;
 
             if !self.state.segment_mgr.lock().await.is_all_complete() {
-                let probe_bw = self.state.bandwidth_estimate.load(Ordering::Relaxed) as f64;
+                let probe_bw = self.state.probe_bandwidth_estimate.load(Ordering::Relaxed) as f64;
                 let (measured_speed, max_conns) = {
                     let mgr = self.state.segment_mgr.lock().await;
                     let speed = mgr.connection_speed(0);
@@ -719,19 +715,22 @@ impl DownloadTask {
                 );
 
                 tracing::info!(
-                    "Adaptive: measured {:.1} MB/s, probe {:.1} MB/s → {} connections for {} MB file",
+                    "Adaptive: measured {:.1} MB/s, probe {:.1} MB/s → {} connections (max {:?}) for {} MB file",
                     measured_speed / 1048576.0,
                     probe_bw / 1048576.0,
                     optimal,
+                    max_conns,
                     total_size / 1048576,
                 );
 
-                // Update dynamic min segment size
+                // Use a small floor while building the initial worker set so the
+                // adaptive split can actually reach the selected count.
                 {
                     let mut mgr = self.state.segment_mgr.lock().await;
-                    let dyn_min =
-                        std::cmp::max(constants::MIN_SEGMENT_BYTES, total_size / optimal as u64);
-                    mgr.min_segment_size = dyn_min;
+                    if mgr.max_connections.is_none() {
+                        mgr.max_connections = Some(constants::MAX_AUTO_CONNECTIONS);
+                    }
+                    mgr.min_segment_size = constants::MIN_SEGMENT_BYTES;
                 }
 
                 // Spawn remaining connections
@@ -764,6 +763,13 @@ impl DownloadTask {
                     } else {
                         break;
                     }
+                }
+
+                // Restore the larger floor for later work-stealing decisions.
+                {
+                    let mut mgr = self.state.segment_mgr.lock().await;
+                    mgr.min_segment_size =
+                        std::cmp::max(constants::MIN_SEGMENT_BYTES, total_size / optimal as u64);
                 }
             }
         }

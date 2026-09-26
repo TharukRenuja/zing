@@ -73,7 +73,7 @@ When no subcommand is given, `zing` downloads the provided URLs directly (standa
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--connections` | `-n` | unlimited | Max parallel connections per download |
+| `--connections` | `-n` | adaptive, max 8 | Max parallel connections per download |
 | `--max-concurrent` | | 3 | Max concurrent downloads (0 = unlimited) |
 | `--connect-timeout` | | 30 | Connection timeout in seconds |
 | `--max-time` | | 300 | Maximum total transfer time in seconds |

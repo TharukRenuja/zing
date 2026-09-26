@@ -71,11 +71,11 @@ For large files:
 
 1. Spawn connection 0 with the entire file
 2. Wait 3 seconds (`MEASURE_DURATION_SECS`) to measure real per-connection speed
-3. Calculate: `optimal = ceil(probe_bandwidth / measured_speed)`, capped at max_connections
-4. If single connection already at 80%+ of probe bandwidth (`SINGLE_CONN_THRESHOLD`) → stay at 1
-5. Spawn remaining connections in one shot (no batch delays)
+3. Use the independent probe estimate and a size-based heuristic to select the connection count
+4. Keep at least two connections for large segmented downloads, capped by `-n` or the automatic limit of 8
+5. Spawn the selected connections, then restore the dynamic minimum segment size for work stealing
 
-Dynamic minimum segment size: `max(4 MiB, total_size / optimal_connections)` replaces the fixed 512 KiB floor. This ensures segments are large enough to be meaningful while still allowing work stealing between connections.
+The initial probe estimate is kept separate from the live monitor speed. A momentary speed dip therefore cannot incorrectly force a large download down to one connection. During initial splitting, the minimum segment floor is temporarily `MIN_SEGMENT_BYTES` so the selected worker count can actually be reached; later work stealing uses `max(4 MiB, total_size / optimal_connections)`.
 
 ## Work stealing
 

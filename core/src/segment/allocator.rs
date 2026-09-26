@@ -115,12 +115,8 @@ impl SlowStartAllocator {
         Some((new_conn_id, new_seg_id))
     }
 
-    /// Calculate the optimal number of connections based on a measured single-connection
-    /// speed and the probe bandwidth estimate.
-    ///
-    /// Returns 1 if the file is small, the single connection already saturates
-    /// the link, or measurement is invalid. Otherwise returns
-    /// `ceil(probe_bandwidth / measured_speed)`, capped at `max_connections`.
+    /// Calculate the number of connections from a measured single-stream rate,
+    /// an independent probe estimate, and a size-based lower bound.
     pub fn calculate_optimal_conns(
         total_size: u64,
         measured_speed: f64,
@@ -131,29 +127,61 @@ impl SlowStartAllocator {
             return 1;
         }
 
-        // If single connection already near probe bandwidth, stay at 1
-        if probe_bandwidth > 0.0
-            && measured_speed >= probe_bandwidth * constants::SINGLE_CONN_THRESHOLD
-        {
-            return 1;
-        }
-
-        let optimal = if probe_bandwidth > 0.0 && measured_speed > 0.0 {
+        let size_mb = total_size as f64 / 1048576.0;
+        let speed_mbps = (measured_speed / 1048576.0).max(0.1);
+        let size_based = (size_mb / 128.0 / speed_mbps).ceil() as usize;
+        let probe_based = if probe_bandwidth > 0.0 {
             (probe_bandwidth / measured_speed).ceil() as usize
         } else {
-            // No probe estimate: heuristic based on file size and measured speed.
-            // For a 500 MB file at 10 MB/s, ~4 connections is reasonable.
-            // For a 5 GB file at 10 MB/s, ~8-16 connections.
-            let size_mb = total_size as f64 / 1048576.0;
-            let speed_mbps = measured_speed / 1048576.0;
-            let heuristic = (size_mb / 128.0 / speed_mbps).ceil() as usize;
-            heuristic.max(2)
+            0
         };
 
-        let optimal = optimal.max(1);
-        match max_connections {
-            Some(max) => optimal.min(max),
-            None => optimal,
-        }
+        let optimal = size_based.max(probe_based).max(2);
+        let cap = max_connections
+            .unwrap_or(constants::MAX_AUTO_CONNECTIONS)
+            .max(1);
+        optimal.min(cap)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIB: f64 = 1024.0 * 1024.0;
+
+    #[test]
+    fn low_probe_estimate_does_not_force_single_connection() {
+        let total = (500.0 * MIB) as u64;
+        assert_eq!(
+            SlowStartAllocator::calculate_optimal_conns(total, MIB, 0.1 * MIB, Some(4)),
+            4
+        );
+    }
+
+    #[test]
+    fn automatic_mode_is_bounded() {
+        let total = (8.0 * 1024.0 * MIB) as u64;
+        assert_eq!(
+            SlowStartAllocator::calculate_optimal_conns(total, MIB, 0.1 * MIB, None),
+            constants::MAX_AUTO_CONNECTIONS
+        );
+    }
+
+    #[test]
+    fn explicit_single_connection_is_respected() {
+        let total = (500.0 * MIB) as u64;
+        assert_eq!(
+            SlowStartAllocator::calculate_optimal_conns(total, MIB, 0.1 * MIB, Some(1)),
+            1
+        );
+    }
+
+    #[test]
+    fn invalid_measurement_stays_single_connection() {
+        assert_eq!(
+            SlowStartAllocator::calculate_optimal_conns(500, 0.0, MIB, Some(4)),
+            1
+        );
     }
 }
