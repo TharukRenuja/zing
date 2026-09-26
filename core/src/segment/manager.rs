@@ -153,6 +153,58 @@ impl SegmentManager {
         }
     }
 
+    pub fn redivide_active(
+        &mut self,
+        conn_id: usize,
+        target_connections: usize,
+        min_segment: u64,
+    ) -> Vec<usize> {
+        if target_connections <= 1 {
+            return Vec::new();
+        }
+        let Some(seg_id) = self.active_segment_for(conn_id).map(|s| s.id) else {
+            return Vec::new();
+        };
+        let Some(seg) = self.segments.iter().find(|s| s.id == seg_id) else {
+            return Vec::new();
+        };
+        let offset = seg.offset;
+        let segment_end = offset + seg.length;
+        let downloaded = seg.downloaded;
+        let remaining = seg.remaining();
+        if remaining < min_segment.saturating_mul(target_connections as u64) {
+            return Vec::new();
+        }
+
+        let chunk = remaining.div_ceil(target_connections as u64);
+        if chunk < min_segment {
+            return Vec::new();
+        }
+
+        let new_offset = offset + downloaded;
+        if let Some(seg) = self.segments.iter_mut().find(|s| s.id == seg_id) {
+            seg.length = downloaded + chunk;
+        }
+
+        let mut new_ids = Vec::new();
+        for index in 1..target_connections {
+            let new_offset = new_offset + chunk * index as u64;
+            if new_offset >= segment_end {
+                break;
+            }
+            let length = chunk.min(segment_end - new_offset);
+            if length < min_segment {
+                break;
+            }
+            let Some(new_conn_id) = self.add_connection() else {
+                break;
+            };
+            self.allocate_segment(new_offset, length, new_conn_id);
+            new_ids.push(new_conn_id);
+        }
+        new_ids
+    }
+
     pub fn active_segment_for(&self, conn_id: usize) -> Option<&Segment> {
         self.segments
             .iter()
@@ -398,6 +450,45 @@ mod tests {
 
         mgr.update_progress(0, 100);
         assert!(mgr.is_all_complete());
+    }
+
+    #[test]
+    fn test_redivide_active_segment() {
+        let mut mgr = SegmentManager::new(Some(4));
+        mgr.set_total_size(1000);
+        mgr.add_connection();
+        mgr.allocate_segment(0, 1000, 0);
+
+        let new_ids = mgr.redivide_active(0, 4, 10);
+        assert_eq!(new_ids, vec![1, 2, 3]);
+        assert_eq!(mgr.active_segment_for(0).unwrap().length, 250);
+        for id in new_ids {
+            assert_eq!(mgr.active_segment_for(id).unwrap().length, 250);
+        }
+    }
+
+    #[test]
+    fn test_redivide_preserves_downloaded_prefix() {
+        let mut mgr = SegmentManager::new(Some(3));
+        mgr.set_total_size(1000);
+        mgr.add_connection();
+        mgr.allocate_segment(0, 1000, 0);
+        mgr.update_progress(0, 100);
+
+        let new_ids = mgr.redivide_active(0, 3, 10);
+        assert_eq!(new_ids, vec![1, 2]);
+        assert_eq!(mgr.active_segment_for(0).unwrap().length, 400);
+        assert_eq!(mgr.active_segment_for(0).unwrap().downloaded, 100);
+    }
+
+    #[test]
+    fn test_redivide_respects_minimum_segment() {
+        let mut mgr = SegmentManager::new(Some(4));
+        mgr.set_total_size(100);
+        mgr.add_connection();
+        mgr.allocate_segment(0, 100, 0);
+
+        assert!(mgr.redivide_active(0, 4, 40).is_empty());
     }
 
     #[test]

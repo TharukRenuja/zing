@@ -742,36 +742,16 @@ impl DownloadTask {
                     mgr.min_segment_size = constants::MIN_SEGMENT_BYTES;
                 }
 
-                // Spawn remaining connections
-                for _ in 1..optimal {
-                    if self.state.segment_mgr.lock().await.is_all_complete() {
-                        break;
-                    }
-                    let target = {
-                        let mgr = self.state.segment_mgr.lock().await;
-                        mgr.slowest_connection()
-                    };
-                    let conn_id = {
-                        let mut mgr = self.state.segment_mgr.lock().await;
-                        if let Some(slow) = target {
-                            SlowStartAllocator::split_segment(
-                                &mut mgr,
-                                slow,
-                                constants::MIN_SEGMENT_BYTES,
-                            )
-                            .map(|(id, _)| id)
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(new_id) = conn_id {
-                        let state = Arc::clone(&self.state);
-                        conn_tasks.lock().unwrap().push(tokio::spawn(async move {
-                            run_connection(state, new_id).await;
-                        }));
-                    } else {
-                        break;
-                    }
+                // Divide the active range evenly across the selected workers.
+                let new_ids = {
+                    let mut mgr = self.state.segment_mgr.lock().await;
+                    mgr.redivide_active(0, optimal, constants::MIN_SEGMENT_BYTES)
+                };
+                for new_id in new_ids {
+                    let state = Arc::clone(&self.state);
+                    conn_tasks.lock().unwrap().push(tokio::spawn(async move {
+                        run_connection(state, new_id).await;
+                    }));
                 }
 
                 // Restore the larger floor for later work-stealing decisions.
