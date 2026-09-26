@@ -10,6 +10,7 @@ use crate::segment::allocator::SlowStartAllocator;
 use crate::segment::manager::{Segment, SegmentManager, SegmentState};
 use crate::segment::stealer::WorkStealer;
 use crate::storage::control::BlockBitfield;
+use crate::storage::coverage::BlockCoverage;
 use crate::storage::ControlFile;
 use crate::util;
 use anyhow::{bail, Result};
@@ -18,7 +19,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
@@ -74,6 +75,7 @@ struct SharedState {
     pub rate_limiter: SharedRateLimiter,
     pub start_time: tokio::sync::Mutex<Instant>,
     pub total_downloaded: AtomicU64,
+    pub alive_workers: AtomicUsize,
     pub done: AtomicBool,
     pub completion: tokio::sync::Notify,
     pub reprobe: AtomicBool,
@@ -85,9 +87,11 @@ struct SharedState {
     pub cookie_jar: Option<Arc<ZingCookieStore>>,
     pub save_cookies_path: Option<String>,
     pub block_bitfield: tokio::sync::Mutex<BlockBitfield>,
+    pub block_coverage: std::sync::Mutex<BlockCoverage>,
     pub chunk_hashes: Option<ChunkHashes>,
     pub endgame: AtomicBool,
     pub endgame_enabled: bool,
+    pub endgame_cursor: AtomicU32,
     pub throttle_reprobe_enabled: bool,
     pub paused: AtomicBool,
     pub pause_tx: tokio::sync::watch::Sender<bool>,
@@ -313,6 +317,7 @@ impl DownloadTask {
                 rate_limiter,
                 start_time: tokio::sync::Mutex::new(Instant::now()),
                 total_downloaded: AtomicU64::new(0),
+                alive_workers: AtomicUsize::new(0),
                 done: AtomicBool::new(false),
                 completion: tokio::sync::Notify::new(),
                 reprobe: AtomicBool::new(false),
@@ -327,9 +332,11 @@ impl DownloadTask {
                     0,
                     crate::storage::control::BLOCK_SIZE,
                 )),
+                block_coverage: std::sync::Mutex::new(BlockCoverage::default()),
                 chunk_hashes,
                 endgame: AtomicBool::new(false),
                 endgame_enabled,
+                endgame_cursor: AtomicU32::new(0),
                 throttle_reprobe_enabled,
                 paused: AtomicBool::new(false),
                 pause_tx,
@@ -601,6 +608,8 @@ impl DownloadTask {
         total_size: u64,
     ) -> Result<()> {
         tracing::debug!("Segmented: {} bytes", total_size);
+        self.state.endgame.store(false, Ordering::Release);
+        self.state.endgame_cursor.store(0, Ordering::Release);
         let mut filename = self.state.filename.lock().await.clone();
         loop {
             if resume.is_some() {
@@ -814,6 +823,7 @@ impl DownloadTask {
             let mut prev_time = Instant::now();
             let mut prev_conn_bytes: std::collections::HashMap<usize, u64> =
                 std::collections::HashMap::new();
+            let monitor_started = Instant::now();
             let mut throttle_start: Option<Instant> = None;
             loop {
                 if state_mon.done.load(Ordering::Acquire) {
@@ -848,6 +858,20 @@ impl DownloadTask {
                     mgr.total_size
                 };
                 let downloaded = state_mon.total_downloaded.load(Ordering::Relaxed);
+
+                if state_mon.alive_workers.load(Ordering::Acquire) == 0
+                    && monitor_started.elapsed() > std::time::Duration::from_secs(1)
+                {
+                    let unfinished = {
+                        let mgr = state_mon.segment_mgr.lock().await;
+                        mgr.active_connection_count() > 0 || mgr.pending_segment_count() > 0
+                    };
+                    if unfinished {
+                        tracing::error!("All download workers exited with unfinished work");
+                        state_mon.done.store(true, Ordering::Release);
+                        return;
+                    }
+                }
 
                 let now = Instant::now();
                 let raw_dt = now.duration_since(prev_time).as_secs_f64();
@@ -1255,9 +1279,27 @@ fn is_retryable_error(e: &anyhow::Error) -> bool {
         || msg.contains("hash mismatch")
 }
 
+struct WorkerGuard {
+    state: Arc<SharedState>,
+}
+
+impl WorkerGuard {
+    fn enter(state: Arc<SharedState>) -> Self {
+        state.alive_workers.fetch_add(1, Ordering::AcqRel);
+        Self { state }
+    }
+}
+
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        self.state.alive_workers.fetch_sub(1, Ordering::AcqRel);
+        self.state.completion.notify_one();
+    }
+}
+
 async fn run_connection(state: Arc<SharedState>, conn_id: usize) {
-    run_connection_work(state.clone(), conn_id).await;
-    state.completion.notify_one();
+    let _guard = WorkerGuard::enter(state.clone());
+    run_connection_work(state, conn_id).await;
 }
 
 async fn run_connection_work(state: Arc<SharedState>, conn_id: usize) {
@@ -1636,15 +1678,25 @@ async fn process_range_response(
                 .total_downloaded
                 .fetch_add(write_size, Ordering::Relaxed);
 
-            // Mark completed blocks in bitfield
-            let block_size = crate::storage::control::BLOCK_SIZE;
-            let end_pos = pos;
-            let start_block = (pos - write_size) / block_size;
-            let end_block = (end_pos - 1) / block_size;
-            if start_block <= end_block {
+            let write_start = pos - write_size;
+            let completed_blocks = {
+                let bf = state.block_bitfield.lock().await;
+                let total_size = bf.total_size;
+                let mut coverage = state
+                    .block_coverage
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                coverage.record(
+                    write_start,
+                    pos,
+                    total_size,
+                    crate::storage::control::BLOCK_SIZE,
+                )
+            };
+            if !completed_blocks.is_empty() {
                 let mut bf = state.block_bitfield.lock().await;
-                for b in start_block as u32..=end_block as u32 {
-                    bf.mark_complete(b);
+                for block in completed_blocks {
+                    bf.mark_complete(block);
                 }
             }
         } else {
@@ -1714,6 +1766,7 @@ async fn process_range_response(
                     let mut bf = state.block_bitfield.lock().await;
                     for &(block_idx, ..) in &mismatches {
                         bf.mark_incomplete(block_idx);
+                        state.endgame_cursor.fetch_min(block_idx, Ordering::AcqRel);
                     }
                     drop(bf);
                     let (first_bad, exp, got) = mismatches.into_iter().next().unwrap();
@@ -1752,11 +1805,15 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
                 return;
             }
             let total_size = bf.total_size;
-            let idx = (0..bf.num_blocks).find(|&i| !bf.is_complete(i));
-            match idx {
-                Some(i) => (total_size, i),
-                None => return,
+            let mut idx = state.endgame_cursor.load(Ordering::Acquire);
+            while idx < bf.num_blocks && bf.is_complete(idx) {
+                idx += 1;
             }
+            state.endgame_cursor.store(idx, Ordering::Release);
+            if idx >= bf.num_blocks {
+                return;
+            }
+            (total_size, idx)
         };
 
         // Atomically claim this block — skip if another connection
@@ -1787,7 +1844,6 @@ async fn run_endgame(state: Arc<SharedState>, conn_id: usize) {
                 if state.paused.load(Ordering::Acquire) {
                     return;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
             Err(e) => {
                 if !is_retryable_error(&e) {
@@ -1887,6 +1943,10 @@ async fn download_endgame_block(
         written += write_size;
     }
 
+    if written != length {
+        bail!("End-game block {block_idx} incomplete: received {written} of {length} bytes");
+    }
+
     // Atomically mark the block complete (only if still incomplete)
     if written > 0 {
         let mut bf = state.block_bitfield.lock().await;
@@ -1915,6 +1975,7 @@ async fn download_endgame_block(
                     match computed {
                         Some(computed) if !computed.eq_ignore_ascii_case(expected_hex) => {
                             state.block_bitfield.lock().await.mark_incomplete(block_idx);
+                            state.endgame_cursor.fetch_min(block_idx, Ordering::AcqRel);
                             bail!(
                                 "Hash mismatch for block {block_idx}: \
                                  expected {expected_hex}, got {computed}"
@@ -1923,6 +1984,7 @@ async fn download_endgame_block(
                         Some(_) => {} // match OK
                         None => {
                             state.block_bitfield.lock().await.mark_incomplete(block_idx);
+                            state.endgame_cursor.fetch_min(block_idx, Ordering::AcqRel);
                             bail!("Failed to read block {block_idx} for hash verification");
                         }
                     }

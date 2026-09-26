@@ -328,12 +328,14 @@ main() {
 
                 echo "$tool,$name,$bytes,$round,$ELAPSED,$mbps,$PEAK_MBPS,$MAX_CONNS,$RETRIES,$USER_CPU,$SYS_CPU,$MAX_RSS,$SHA,$RC" >> "$CSV"
 
-                # integrity: compare every tool's sha against the first one
+                # integrity: compare every successful tool against the first successful one
                 key="$name:$round"
-                if [ -z "${ref_sha[$key]:-}" ]; then
-                    ref_sha[$key]="$SHA"
-                elif [ -n "$SHA" ] && [ "$SHA" != "${ref_sha[$key]}" ]; then
-                    echo "  !!! INTEGRITY MISMATCH: $name round $round $tool differs"
+                if [ "$RC" -eq 0 ] && [ -n "$SHA" ]; then
+                    if [ -z "${ref_sha[$key]:-}" ]; then
+                        ref_sha[$key]="$SHA"
+                    elif [ "$SHA" != "${ref_sha[$key]}" ]; then
+                        echo "  !!! INTEGRITY MISMATCH: $name round $round $tool differs"
+                    fi
                 fi
                 # cleanup: remove previous tool's file to save disk space
                 [ "$LARGE" -eq 1 ] && clean_previous "$name" "$tool"

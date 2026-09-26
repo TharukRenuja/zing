@@ -168,12 +168,14 @@ impl SegmentManager {
     }
 
     pub fn is_all_complete(&self) -> bool {
-        if self.segments.is_empty() {
+        if self.total_size.is_none() {
             return false;
         }
-        self.segments
-            .iter()
-            .all(|s| s.state == SegmentState::Complete)
+        self.segments.is_empty()
+            || self
+                .segments
+                .iter()
+                .all(|s| s.state == SegmentState::Complete)
     }
 
     pub fn total_downloaded(&self) -> u64 {
@@ -385,7 +387,10 @@ mod tests {
     #[test]
     fn test_is_all_complete() {
         let mut mgr = SegmentManager::new(Some(4));
-        assert!(!mgr.is_all_complete()); // empty
+        assert!(!mgr.is_all_complete());
+
+        mgr.set_total_size(100);
+        assert!(mgr.is_all_complete());
 
         mgr.add_connection();
         mgr.allocate_segment(0, 100, 0);
