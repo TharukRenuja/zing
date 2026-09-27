@@ -123,26 +123,69 @@ fn resolve_bool_flag(
 /// forces single-connection mode, because replaying a body across range
 /// requests would re-submit it.
 fn build_request_spec(args: &Args) -> Result<RequestSpec> {
-    let method = match &args.method {
-        Some(m) => HttpMethod::parse(m).map_err(|e| color_eyre::eyre::eyre!("{e}"))?,
-        None => HttpMethod::get(),
-    };
-
-    if args.data.is_some() && args.upload_file.is_some() {
+    if !args.data.is_empty() && args.upload_file.is_some() {
         bail!("--data and --upload-file are mutually exclusive");
     }
 
-    let (body, default_ct) = if let Some(raw) = &args.data {
-        let bytes = match raw.strip_prefix('@') {
-            Some(path) => std::fs::read(path)
-                .map_err(|e| color_eyre::eyre::eyre!("Cannot read --data file '{path}': {e}"))?,
-            None => raw.clone().into_bytes(),
-        };
-        (Some(bytes), "text/plain")
-    } else if let Some(path) = &args.upload_file {
+    // curl parity: the method follows from what you asked to send. An explicit
+    // -X always wins, and -G forces the data into the query string.
+    let has_data = !args.data.is_empty();
+    let has_upload = args.upload_file.is_some();
+
+    if args.get && !has_data {
+        bail!("-G/--get requires --data");
+    }
+
+    let inferred = if args.head {
+        HttpMethod::parse(HttpMethod::HEAD).expect("HEAD is a valid token")
+    } else if args.get {
+        HttpMethod::get()
+    } else if has_data {
+        HttpMethod::parse(HttpMethod::POST).expect("POST is a valid token")
+    } else if has_upload {
+        HttpMethod::parse(HttpMethod::PUT).expect("PUT is a valid token")
+    } else {
+        HttpMethod::get()
+    };
+
+    let method = match &args.method {
+        Some(m) => HttpMethod::parse(m).map_err(|e| color_eyre::eyre::eyre!("{e}"))?,
+        None => inferred,
+    };
+
+    if args.head && args.method.is_some() {
+        bail!("-I/--head and -X/--method are mutually exclusive");
+    }
+
+    // -G moves the body into the query string, so the request carries no body.
+    if args.get {
+        return Ok(RequestSpec::with_body(method, None, None));
+    }
+
+    let (body, default_ct) = if has_data {
+        // Multiple -d values concatenate with '&', as in curl.
+        let mut buf = Vec::new();
+        for (i, raw) in args.data.iter().enumerate() {
+            if i > 0 {
+                buf.push(b'&');
+            }
+            match raw.strip_prefix('@') {
+                Some(path) => {
+                    let bytes = std::fs::read(path).map_err(|e| {
+                        color_eyre::eyre::eyre!("Cannot read --data file '{path}': {e}")
+                    })?;
+                    buf.extend_from_slice(&bytes);
+                }
+                None => buf.extend_from_slice(raw.as_bytes()),
+            }
+        }
+        (Some(buf), "application/x-www-form-urlencoded")
+    } else if has_upload {
+        let path = args.upload_file.as_deref().unwrap_or_default();
         let bytes = std::fs::read(path)
             .map_err(|e| color_eyre::eyre::eyre!("Cannot read --upload-file '{path}': {e}"))?;
-        (Some(bytes), "application/octet-stream")
+        // curl sends no Content-Type for -T, so we do not invent one either.
+        (Some(bytes), "")
     } else {
         (None, "")
     };
@@ -154,14 +197,49 @@ fn build_request_spec(args: &Args) -> Result<RequestSpec> {
     }
 
     let content_type = args.content_type.clone().or_else(|| {
-        if body.is_some() {
-            Some(default_ct.to_string())
-        } else {
+        if default_ct.is_empty() {
             None
+        } else {
+            Some(default_ct.to_string())
         }
     });
 
     Ok(RequestSpec::with_body(method, body, content_type))
+}
+
+/// Apply `-G/--get`: move the request data into the URL query string.
+fn apply_get_to_urls(args: &Args, urls: &mut [String]) -> Result<()> {
+    if !args.get {
+        return Ok(());
+    }
+    for url in urls.iter_mut() {
+        let mut parts: Vec<String> = Vec::new();
+        for raw in &args.data {
+            match raw.strip_prefix('@') {
+                Some(path) => {
+                    let bytes = std::fs::read(path).map_err(|e| {
+                        color_eyre::eyre::eyre!("Cannot read --data file '{path}': {e}")
+                    })?;
+                    parts.push(String::from_utf8_lossy(&bytes).to_string());
+                }
+                None => parts.push(raw.clone()),
+            }
+        }
+        let query = parts.join("&");
+        if query.is_empty() {
+            continue;
+        }
+        let (base, existing) = match url.split_once('?') {
+            Some((b, e)) => (b, Some(e)),
+            None => (url.as_str(), None),
+        };
+        let merged = match existing {
+            Some(e) if !e.is_empty() => format!("{base}?{e}&{query}"),
+            _ => format!("{base}?{query}"),
+        };
+        *url = merged;
+    }
+    Ok(())
 }
 
 fn build_headers(args: &Args) -> Vec<(String, String)> {
@@ -1225,6 +1303,10 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     } else {
         args.urls.clone()
     };
+
+    // -G folds the request data into each URL's query string.
+    let mut urls = urls;
+    apply_get_to_urls(&args, &mut urls)?;
 
     let to_stdout =
         args.pipe.is_some() || args.output.as_deref() == Some(std::path::Path::new("-"));
@@ -2810,4 +2892,95 @@ async fn progress_json_writer(mut rx: broadcast::Receiver<EngineEvent>) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod curl_compat_tests {
+    use super::*;
+
+    fn argv(v: &[&str]) -> Vec<String> {
+        let mut a = vec!["zing".to_string(), "--standalone".to_string()];
+        a.extend(v.iter().map(|s| s.to_string()));
+        a.push("https://example.com/res".to_string());
+        a
+    }
+
+    fn spec(v: &[&str]) -> RequestSpec {
+        let args = Args::parse_from(argv(v));
+        build_request_spec(&args).expect("spec should build")
+    }
+
+    /// curl infers the method from what you send; zing must do the same.
+    #[test]
+    fn method_inference_matches_curl() {
+        assert_eq!(spec(&[]).method.as_str(), "GET");
+        assert_eq!(spec(&["-d", "x=1"]).method.as_str(), "POST");
+        assert_eq!(spec(&["--data", "x=1"]).method.as_str(), "POST");
+        assert_eq!(spec(&["-T", "/etc/hostname"]).method.as_str(), "PUT");
+        assert_eq!(spec(&["-I"]).method.as_str(), "HEAD");
+        assert_eq!(spec(&["-G", "-d", "x=1"]).method.as_str(), "GET");
+    }
+
+    /// An explicit -X always wins over inference.
+    #[test]
+    fn explicit_method_overrides_inference() {
+        assert_eq!(spec(&["-d", "x=1", "-X", "PUT"]).method.as_str(), "PUT");
+        assert_eq!(
+            spec(&["-T", "/etc/hostname", "-X", "POST"]).method.as_str(),
+            "POST"
+        );
+    }
+
+    #[test]
+    fn data_content_type_defaults_to_form_encoding() {
+        let s = spec(&["-d", "x=1"]);
+        assert_eq!(
+            s.content_type.as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
+        // curl sends no Content-Type for -T, so neither do we.
+        let s = spec(&["-T", "/etc/hostname"]);
+        assert_eq!(s.content_type, None);
+        // explicit wins
+        let s = spec(&["-d", "x=1", "--content-type", "application/json"]);
+        assert_eq!(s.content_type.as_deref(), Some("application/json"));
+    }
+
+    #[test]
+    fn multiple_data_is_joined_with_ampersand() {
+        let s = spec(&["-d", "x=1", "-d", "y=2"]);
+        assert_eq!(s.body.unwrap().bytes(), b"x=1&y=2");
+    }
+
+    #[test]
+    fn get_moves_data_into_the_query_string() {
+        let args = Args::parse_from(argv(&["-G", "-d", "x=1"]));
+        let mut urls = vec!["https://example.com/res".to_string()];
+        apply_get_to_urls(&args, &mut urls).unwrap();
+        assert_eq!(urls, vec!["https://example.com/res?x=1"]);
+
+        // Existing query is preserved and the new data appended.
+        let mut urls = vec!["https://example.com/res?old=1".to_string()];
+        apply_get_to_urls(&args, &mut urls).unwrap();
+        assert_eq!(urls, vec!["https://example.com/res?old=1&x=1"]);
+
+        // -G sends no body.
+        let s = spec(&["-G", "-d", "x=1"]);
+        assert!(s.body.is_none());
+    }
+
+    #[test]
+    fn invalid_combinations_are_rejected() {
+        for v in [
+            vec!["-G"],
+            vec!["-I", "-X", "POST"],
+            vec!["-d", "a", "-T", "/etc/hostname"],
+        ] {
+            let args = Args::parse_from(argv(&v));
+            assert!(
+                build_request_spec(&args).is_err(),
+                "expected {v:?} to be rejected"
+            );
+        }
+    }
 }

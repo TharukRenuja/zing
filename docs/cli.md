@@ -17,6 +17,28 @@ zing <COMMAND>
 
 When no subcommand is given, `zing` downloads the provided URLs directly (standalone mode). If a daemon is running, it automatically proxies through the daemon instead.
 
+## curl compatibility
+
+The transfer-related flags follow curl conventions, so existing curl muscle memory
+carries over:
+
+| Intent | zing | curl |
+|---|---|---|
+| Send a request body | `-d 'x=1'` (implies POST) | `-d 'x=1'` |
+| Send a file as the body | `-T file` (implies PUT) | `-T file` |
+| Put data in the query string | `-G -d 'x=1'` | `-G -d 'x=1'` |
+| Headers only | `-I` | `-I` |
+| Pick a method explicitly | `-X DELETE` | `-X DELETE` |
+| Choose the method | `-o FILE`, `-H`, `-u`, `-A`, `-e`, `-x`, `-k` | same |
+
+The method is inferred from what you send, exactly as curl does. `--data` gives
+`application/x-www-form-urlencoded`, repeated `-d` values join with `&`, and `-G`
+moves the data into the URL and drops the body. An explicit `-X` always wins.
+
+Note that `-d` is now `--data`; the output directory is `--output-dir` (with
+`--dir` kept as an alias). zing keeps flags curl has no equivalent for, such as
+`-n/--connections`, `-m/--mirror`, `-c/--checksum`, and `--end-game`.
+
 ## Commands
 
 | Command | Aliases | Description |
@@ -63,7 +85,7 @@ When no subcommand is given, `zing` downloads the provided URLs directly (standa
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--output` | `-o` | Output filename |
-| `--dir` | `-d` | Output directory |
+| `--output-dir` | | Directory to save files in (alias: `--dir`) |
 | `--auto-file-renaming` | | Auto-rename if file exists (`file-1.ext`, `file-2.ext`, ...) |
 | `--allow-overwrite` | | Overwrite existing files without prompting |
 | `-C, --content-disposition` | | Use server-provided filename from Content-Disposition (on by default) |
@@ -120,8 +142,10 @@ When no subcommand is given, `zing` downloads the provided URLs directly (standa
 | `-k, --insecure` | | Skip TLS verification |
 | `-e, --referer` | | Referer header |
 | `-X, --method` | | HTTP method (any RFC 9110 token) |
-| `-T, --upload-file` | | Send a file as the request body |
-| `--data` | | Request body inline (`@path` reads from a file) |
+| `-d, --data` | | Request body; repeatable, `@path` reads a file. Implies POST |
+| `-G, --get` | | Move `--data` into the query string, use GET |
+| `-I, --head` | | Show document info only (HEAD request) |
+| `-T, --upload-file` | | Send a file as the request body. Implies PUT |
 | `--content-type` | | Content-Type for the request body |
 
 ### Input

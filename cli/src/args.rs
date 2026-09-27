@@ -27,7 +27,11 @@ pub struct Args {
     #[arg(long = "output", short = 'o', help = "Output filename")]
     pub output: Option<PathBuf>,
 
-    #[arg(long = "dir", short = 'd', help = "Output directory")]
+    #[arg(
+        long = "output-dir",
+        visible_alias = "dir",
+        help = "Directory to save files in"
+    )]
     pub dir: Option<PathBuf>,
 
     #[arg(
@@ -193,10 +197,26 @@ pub struct Args {
 
     #[arg(
         long = "data",
+        short = 'd',
         value_name = "DATA",
-        help = "Request body sent inline (use @path to read from a file)"
+        action = clap::ArgAction::Append,
+        help = "Request body sent inline; repeat or use @path to read a file. Implies POST"
     )]
-    pub data: Option<String>,
+    pub data: Vec<String>,
+
+    #[arg(
+        long = "get",
+        short = 'G',
+        help = "Move --data into the query string and use GET"
+    )]
+    pub get: bool,
+
+    #[arg(
+        long = "head",
+        short = 'I',
+        help = "Show document info only (HEAD request)"
+    )]
+    pub head: bool,
 
     #[arg(
         long = "upload-file",
@@ -828,5 +848,45 @@ mod tests {
         assert!(parse_bandwidth("abc").is_err());
         assert!(parse_bandwidth("-1").is_err());
         assert_eq!(parse_bandwidth("0"), Ok(0));
+    }
+}
+
+#[cfg(test)]
+mod curl_compat_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(argv: &[&str]) -> Args {
+        let mut full = vec!["zing", "--standalone"];
+        full.extend_from_slice(argv);
+        full.push("https://example.com/res");
+        Args::parse_from(full)
+    }
+
+    /// `-d` must mean `--data` (curl), not `--dir`.
+    #[test]
+    fn short_d_is_data_not_dir() {
+        let a = parse(&["-d", "x=1"]);
+        assert_eq!(a.data, vec!["x=1".to_string()]);
+        assert!(a.dir.is_none(), "-d must not set the output directory");
+
+        // The directory is still reachable by its long form.
+        let a = parse(&["--dir", "/tmp"]);
+        assert_eq!(a.dir.as_deref(), Some(std::path::Path::new("/tmp")));
+        let a = parse(&["--output-dir", "/tmp"]);
+        assert_eq!(a.dir.as_deref(), Some(std::path::Path::new("/tmp")));
+    }
+
+    #[test]
+    fn data_is_repeatable() {
+        let a = parse(&["-d", "x=1", "-d", "y=2", "--data", "z=3"]);
+        assert_eq!(a.data, vec!["x=1", "y=2", "z=3"]);
+    }
+
+    #[test]
+    fn get_and_head_flags() {
+        assert!(parse(&["-G", "-d", "x=1"]).get);
+        assert!(parse(&["-I"]).head);
+        assert!(parse(&["--head"]).head);
     }
 }
