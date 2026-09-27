@@ -1156,6 +1156,11 @@ impl DownloadTask {
             if self.state.paused.load(Ordering::Acquire) {
                 break;
             }
+            // Honour a graceful stop promptly instead of streaming the whole
+            // body before returning.
+            if self.state.done.load(Ordering::Acquire) {
+                break;
+            }
 
             let data = tokio::select! {
                 biased;
@@ -1265,6 +1270,11 @@ impl DownloadTask {
 
         loop {
             if self.state.paused.load(Ordering::Acquire) {
+                break;
+            }
+            // Honour a graceful stop promptly instead of streaming the whole
+            // body before returning.
+            if self.state.done.load(Ordering::Acquire) {
                 break;
             }
 
@@ -1729,6 +1739,13 @@ async fn process_range_response(
 
     loop {
         if *pause_rx.borrow() {
+            break;
+        }
+
+        // A graceful stop (Ctrl+C, SIGTERM) sets `done`. Without this the
+        // worker keeps draining its in-flight range to completion, so quitting
+        // would block for as long as the slowest range takes.
+        if state.done.load(Ordering::Acquire) {
             break;
         }
 

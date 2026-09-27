@@ -1878,11 +1878,12 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 }
 
                 if quit_requested.load(Ordering::Acquire) {
-                    let control_path = zing_core::storage::control::ControlFile::control_path(
-                        Path::new(&filename),
+                    // Keep the control file: the download stopped cleanly and
+                    // re-running the same command resumes from here. Deleting it
+                    // here threw away the whole partial download.
+                    tracing::info!(
+                        "Quit requested. Partial download saved; run the same command to resume."
                     );
-                    let _ = tokio::fs::remove_file(&control_path).await;
-                    tracing::info!("Quit requested, cleaning up...");
                     break;
                 }
 
@@ -1906,8 +1907,9 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                             break;
                         }
                         if quit_requested.load(Ordering::Acquire) {
-                            let _ = tokio::fs::remove_file(&control_path).await;
-                            tracing::info!("Quit requested, cleaning up...");
+                            // Same as above: the control file is the resume
+                            // point, so leave it in place.
+                            tracing::info!("Quit requested. Partial download kept for resume.");
                             break;
                         }
                     }

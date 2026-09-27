@@ -707,3 +707,70 @@ async fn test_probe_sends_custom_headers() {
         "probe request must carry custom headers"
     );
 }
+
+/// Regression: a graceful stop must interrupt an in-flight range read.
+///
+/// Connection workers only rechecked `done` at the top of their claim loop, so a
+/// stop during `process_range_response` waited for the whole range to finish.
+/// On a slow single-connection download that meant Ctrl+C hung until the file
+/// was fully transferred.
+#[tokio::test]
+async fn test_shutdown_interrupts_in_flight_range() {
+    let payload = test_payload(16 * 1024 * 1024);
+    // One chunk per 40ms over 64KiB: a full transfer takes ~10s, so only an
+    // early interrupt can meet the 3s budget below.
+    let server = TestServer::new_throttled(payload.clone(), 40).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("interrupt.bin");
+
+    let bus = EventBus::new();
+    let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+
+    let task = std::sync::Arc::new(DownloadTask::new(
+        0,
+        &server.url(),
+        output.to_str().unwrap(),
+        false,
+        false,
+        Some(1),
+        bus,
+        false,
+        0,
+        None,
+        vec![],
+        None,
+        vec![],
+        0,
+        5,
+        500,
+        30,
+        300,
+        None,
+        true,
+        None,
+        None,
+        0,
+        30,
+        5,
+        None,
+        None,
+        None,
+        false,
+        true,
+        true,
+        RequestSpec::get(),
+    ));
+
+    let task_for_run = std::sync::Arc::clone(&task);
+    let handle = tokio::spawn(async move { task_for_run.run_with_shutdown(shutdown_rx).await });
+
+    // Let the transfer get going, then stop it partway through.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let _ = shutdown_tx.send(());
+
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(3), handle).await;
+    assert!(
+        completed.is_ok(),
+        "shutdown did not interrupt the in-flight range (Ctrl+C would hang)"
+    );
+}
