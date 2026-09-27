@@ -39,6 +39,35 @@ Note that `-d` is now `--data`; the output directory is `-W/--output-dir` (with
 `--dir` kept as an alias). zing keeps flags curl has no equivalent for, such as
 `-n/--connections`, `-m/--mirror`, `-c/--checksum`, and `--end-game`.
 
+## File downloads vs HTTP requests
+
+zing behaves in one of two modes, chosen automatically.
+
+**File download** — writes to disk, shows a progress bar, resumes from a `.zing`
+control file, and asks before replacing an existing file. You get this when you
+ask for a destination (`-o` or `-W`) or when the URL names a file:
+
+```bash
+zing https://example.com/ubuntu.iso          # /ubuntu.iso has an extension
+zing -W ~/Downloads https://example.com/get?id=42
+zing -o report.json https://api.example.com/report
+```
+
+**HTTP request** — the response goes to stdout. No file is created, no progress
+bar, no resume, and no prompt. This is the default for API endpoints and for
+every non-GET method:
+
+```bash
+zing -G -d 'q=hello' https://api.synclrc.dev/search
+zing -X DELETE https://api.example.com/tokens/abc
+zing -X POST --data @query.sql --content-type application/sql https://api.example.com/db
+```
+
+A URL counts as naming a file when its last path segment has an extension. Query
+strings are ignored for this test, because signed download URLs carry them
+(`ubuntu.iso?X-Amz-Signature=...`) while API endpoints generally do not. If a
+server would send `Content-Disposition`, pass `-o` or `-W` to save the response.
+
 ## Commands
 
 | Command | Aliases | Description |
