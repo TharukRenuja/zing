@@ -184,22 +184,33 @@ pub struct Args {
     )]
     pub input_file: Option<String>,
 
-    #[arg(long = "continue", help = "Resume partially downloaded files")]
-    pub resume: bool,
-
     #[arg(
         long = "method",
         short = 'X',
-        help = "HTTP method (GET, POST, PUT, etc.)"
+        help = "HTTP method (GET, HEAD, POST, PUT, PATCH, DELETE, QUERY, ...) — any RFC 9110 token"
     )]
     pub method: Option<String>,
 
     #[arg(
+        long = "data",
+        value_name = "DATA",
+        help = "Request body sent inline (use @path to read from a file)"
+    )]
+    pub data: Option<String>,
+
+    #[arg(
         long = "upload-file",
         short = 'T',
-        help = "Upload file as request body (PUT/POST)"
+        help = "Send FILE as the request body (PUT/POST)"
     )]
     pub upload_file: Option<String>,
+
+    #[arg(
+        long = "content-type",
+        value_name = "TYPE",
+        help = "Content-Type for the request body [default: text/plain for --data, application/octet-stream for -T]"
+    )]
+    pub content_type: Option<String>,
 
     #[arg(
         long = "pipe",

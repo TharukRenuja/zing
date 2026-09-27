@@ -1,4 +1,4 @@
-use crate::task_manager::TaskManager;
+use crate::task_manager::{RequestOptions, TaskManager};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zing_core::engine::event::EngineEvent;
@@ -357,14 +357,6 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .remove("on_download_error")
         .and_then(|v| v.as_str().map(String::from));
 
-    let end_game = map
-        .remove("end_game")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let throttle_reprobe = map
-        .remove("throttle_reprobe")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
     let auto_file_renaming = map
         .remove("auto_file_renaming")
         .and_then(|v| v.as_bool())
@@ -383,6 +375,83 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
         .remove("category")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default();
+
+    // Flags the CLI used to accept but silently drop here. Anything the daemon
+    // invents a default for must be sent explicitly by the client.
+    let end_game = map
+        .remove("end_game")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let throttle_reprobe = map
+        .remove("throttle_reprobe")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let user_agent = map
+        .remove("user_agent")
+        .and_then(|v| v.as_str().map(String::from));
+    let digest = map
+        .remove("digest")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let digest_user = map
+        .remove("digest_user")
+        .and_then(|v| v.as_str().map(String::from));
+    let retry_count = map.remove("retry").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
+    let retry_wait_ms = map
+        .remove("retry_wait")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(500);
+    let connect_timeout_secs = map
+        .remove("connect_timeout")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30);
+    let max_time_secs = map
+        .remove("max_time")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(300);
+    let cert_path = map
+        .remove("cert")
+        .and_then(|v| v.as_str().map(String::from));
+    let cert_key_path = map
+        .remove("cert_key")
+        .and_then(|v| v.as_str().map(String::from));
+    let load_cookies = map
+        .remove("load_cookies")
+        .and_then(|v| v.as_str().map(String::from));
+    let save_cookies = map
+        .remove("save_cookies")
+        .and_then(|v| v.as_str().map(String::from));
+    let use_cd = map
+        .remove("content_disposition")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let method = match map
+        .remove("method")
+        .and_then(|v| v.as_str().map(String::from))
+    {
+        Some(m) => match zing_core::http_method::HttpMethod::parse(&m) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                return RpcResponse {
+                    id: None,
+                    result: None,
+                    error: Some(RpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {e}"),
+                    }),
+                }
+            }
+        },
+        None => zing_core::http_method::HttpMethod::get(),
+    };
+    let body = map
+        .remove("body")
+        .and_then(|v| v.as_str().map(|s| s.as_bytes().to_vec()));
+    let body_content_type = map
+        .remove("body_content_type")
+        .and_then(|v| v.as_str().map(String::from));
+    let spec = zing_core::http_method::RequestSpec::with_body(method, body, body_content_type);
 
     let id = manager
         .add_task(
@@ -409,6 +478,21 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
             allow_overwrite,
             paused,
             &category,
+            &RequestOptions {
+                user_agent,
+                retry_count,
+                retry_wait_ms,
+                connect_timeout_secs,
+                max_time_secs,
+                use_cd,
+                cert_path,
+                cert_key_path,
+                load_cookies,
+                save_cookies,
+                digest,
+                digest_user,
+                spec,
+            },
         )
         .await;
 
@@ -845,6 +929,102 @@ mod tests {
         assert_eq!(result["url"], "http://example.com/file");
     }
 
+    /// Regression: the CLI sent these keys but `handle_add_uri` never read them,
+    /// so every one of these flags was a silent no-op in daemon mode.
+    #[tokio::test]
+    async fn test_add_uri_honors_previously_dropped_flags() {
+        let (mgr, stx) = test_setup();
+        let params = json!({
+            "url": "http://example.com/file",
+            "filename": "/tmp/test-dropped",
+            "end_game": false,
+            "throttle_reprobe": false,
+            "retry": 9,
+            "retry_wait": 1234,
+            "connect_timeout": 77,
+            "max_time": 88,
+            "user_agent": "MyAgent/9",
+            "content_disposition": false,
+            "method": "POST",
+            "body": "hello=1",
+            "body_content_type": "text/x-test",
+        });
+        let req = make_req("zing.addUri", Some(params));
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let id = resp.result.unwrap()["id"].as_u64().unwrap();
+
+        let info = mgr.get_task(id).await.expect("task should exist");
+        assert!(!info.end_game, "end_game was dropped");
+        assert!(!info.throttle_reprobe, "throttle_reprobe was dropped");
+        assert_eq!(info.opts.retry_count, 9, "retry was dropped");
+        assert_eq!(info.opts.retry_wait_ms, 1234, "retry_wait was dropped");
+        assert_eq!(
+            info.opts.connect_timeout_secs, 77,
+            "connect_timeout was dropped"
+        );
+        assert_eq!(info.opts.max_time_secs, 88, "max_time was dropped");
+        assert_eq!(
+            info.opts.user_agent.as_deref(),
+            Some("MyAgent/9"),
+            "user_agent was dropped"
+        );
+        assert!(!info.opts.use_cd, "content_disposition was dropped");
+        assert_eq!(info.opts.spec.method.as_str(), "POST", "method was dropped");
+        assert_eq!(
+            info.opts.spec.body.as_ref().map(|b| b.bytes()),
+            Some(&b"hello=1"[..]),
+            "body was dropped"
+        );
+        assert_eq!(
+            info.opts.spec.content_type.as_deref(),
+            Some("text/x-test"),
+            "body_content_type was dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_uri_rejects_invalid_method() {
+        let (mgr, stx) = test_setup();
+        let params = json!({
+            "url": "http://example.com/file",
+            "filename": "/tmp/test-badmethod",
+            "method": "BAD METHOD",
+        });
+        let req = make_req("zing.addUri", Some(params));
+        let resp = handle_request(req, TEST_TOKEN, &mgr, &stx).await;
+        assert!(
+            resp.error.is_some(),
+            "an invalid method token must be rejected, not silently ignored"
+        );
+    }
+
+    /// Session files written before these fields existed must still load.
+    #[tokio::test]
+    async fn test_session_entry_backwards_compatible() {
+        let legacy = json!({
+            "id": 7,
+            "url": "http://example.com/file",
+            "filename": "/tmp/legacy",
+            "is_auto_name": false,
+            "insecure": false,
+            "max_download_rate": 0,
+            "mirrors": [],
+            "headers": [],
+            "max_filesize": 0,
+            "low_speed_limit": 0,
+            "low_speed_time": 30,
+            "save_interval_secs": 5,
+        });
+        let entry: crate::task_manager::SessionEntry = serde_json::from_value(legacy).unwrap();
+        assert_eq!(entry.id, 7);
+        let opts = crate::task_manager::opts_from_entry(&entry);
+        assert_eq!(opts.retry_count, 5);
+        assert_eq!(opts.max_time_secs, 300);
+        assert!(opts.use_cd);
+        assert!(opts.spec.method.is_get());
+    }
+
     #[tokio::test]
     async fn test_handle_add_uri_missing_url() {
         let (mgr, stx) = test_setup();
@@ -987,6 +1167,7 @@ mod tests {
             false,
             false,
             "",
+            &Default::default(),
         )
         .await;
 
@@ -1025,6 +1206,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 
@@ -1074,6 +1256,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 
@@ -1112,6 +1295,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 

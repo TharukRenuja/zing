@@ -10,11 +10,43 @@ keywords: zing, download, engine, segmented, probing, adaptive, end-game, retry,
 
 The download engine (`zing-core`) handles the core logic of fetching files over HTTP. It supports segmented concurrent downloads, server probing, adaptive connection tuning, and resume.
 
+## HTTP methods
+
+`-X/--method` accepts any valid RFC 9110 token — there is no fixed allowlist, so newly
+standardized methods work without a code change. The method determines how much machinery
+the engine may apply:
+
+| Property | Methods | Effect |
+|----------|---------|--------|
+| Range-compatible | `GET`, `HEAD`, `QUERY` | May be segmented with concurrent ranged requests. `QUERY` qualifies per RFC 10008 §2.8, which defines its Range semantics as identical to GET. |
+| Probeable | `GET`, `HEAD` | The engine may issue a separate probe request first. |
+| Idempotent | `GET`, `HEAD`, `QUERY`, `PUT`, `DELETE`, `OPTIONS`, `TRACE` | Eligible for automatic retry and mirror failover. |
+| Safe | `GET`, `HEAD`, `QUERY`, `OPTIONS`, `TRACE` | No intended state change (RFC 9110 §9.2.1). |
+
+Anything outside the probeable and range-compatible sets runs as **exactly one streaming
+request**: no probe, no mirror probing, no segmentation, no resume control file, and no
+retry. Probing a `DELETE` would be a second execution of the request, and segmenting a
+`POST` would re-submit it, so both are avoided rather than merely deprioritized.
+
+A request body (`-T` or `--data`) also forces single-connection mode, because replaying the
+body across ranged requests would re-submit it.
+
+Two consequences worth knowing:
+
+- `-S/--max-filesize` and `-C/--content-disposition` depend on probe metadata, so they do
+  not apply to non-probeable methods.
+- A non-idempotent method fails immediately on a network error rather than retrying.
+
 ## How a download works
 
 ```
-1. Probe the server
-   ├── HEAD/GET Range: bytes=0-65535
+0. Choose a request shape
+   ├── GET/HEAD with no body → probe, possibly segmented
+   ├── Any other method (POST, PUT, DELETE, QUERY, ...) → single streaming request
+   └── Any request with a body → single streaming request
+
+1. Probe the server  (GET/HEAD with no body only)
+   ├── GET Range: bytes=0-65535, or HEAD with no Range
    ├── Detect protocol (HTTP/1.1, HTTP/2, HTTP/3)
    ├── Measure RTT and bandwidth
    ├── Check range support and total file size

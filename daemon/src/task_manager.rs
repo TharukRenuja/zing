@@ -45,6 +45,111 @@ pub struct SessionEntry {
     pub paused: bool,
     #[serde(default)]
     pub category: String,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    #[serde(default)]
+    pub retry_count: Option<u32>,
+    #[serde(default)]
+    pub retry_wait_ms: Option<u64>,
+    #[serde(default)]
+    pub connect_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub max_time_secs: Option<u64>,
+    #[serde(default = "default_true_opt")]
+    pub use_cd: Option<bool>,
+    #[serde(default)]
+    pub cert_path: Option<String>,
+    #[serde(default)]
+    pub cert_key_path: Option<String>,
+    #[serde(default)]
+    pub load_cookies: Option<String>,
+    #[serde(default)]
+    pub save_cookies: Option<String>,
+    #[serde(default)]
+    pub digest: bool,
+    #[serde(default)]
+    pub digest_user: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub body_content_type: Option<String>,
+}
+
+/// Per-task request options that used to be hardcoded in `spawn_worker` and
+/// silently ignored the CLI flags that set them.
+#[derive(Debug, Clone)]
+pub struct RequestOptions {
+    pub user_agent: Option<String>,
+    pub retry_count: u32,
+    pub retry_wait_ms: u64,
+    pub connect_timeout_secs: u64,
+    pub max_time_secs: u64,
+    pub use_cd: bool,
+    pub cert_path: Option<String>,
+    pub cert_key_path: Option<String>,
+    pub load_cookies: Option<String>,
+    pub save_cookies: Option<String>,
+    pub digest: bool,
+    pub digest_user: Option<String>,
+    pub spec: zing_core::http_method::RequestSpec,
+}
+
+impl Default for RequestOptions {
+    /// Mirrors the values the daemon used to hardcode in `spawn_worker`, so an
+    /// unset flag behaves exactly as before.
+    fn default() -> Self {
+        Self {
+            user_agent: None,
+            retry_count: 5,
+            retry_wait_ms: 500,
+            connect_timeout_secs: 30,
+            max_time_secs: 300,
+            use_cd: true,
+            cert_path: None,
+            cert_key_path: None,
+            load_cookies: None,
+            save_cookies: None,
+            digest: false,
+            digest_user: None,
+            spec: zing_core::http_method::RequestSpec::get(),
+        }
+    }
+}
+
+fn default_true_opt() -> Option<bool> {
+    Some(true)
+}
+
+/// Rebuild request options from a persisted session entry. Older session files
+/// have no such fields, so every value falls back to the old daemon default.
+pub fn opts_from_entry(entry: &SessionEntry) -> RequestOptions {
+    let method = entry
+        .method
+        .as_deref()
+        .and_then(|m| zing_core::http_method::HttpMethod::parse(m).ok())
+        .unwrap_or_else(zing_core::http_method::HttpMethod::get);
+    let body = entry.body.as_ref().map(|b| b.as_bytes().to_vec());
+    RequestOptions {
+        user_agent: entry.user_agent.clone(),
+        retry_count: entry.retry_count.unwrap_or(5),
+        retry_wait_ms: entry.retry_wait_ms.unwrap_or(500),
+        connect_timeout_secs: entry.connect_timeout_secs.unwrap_or(30),
+        max_time_secs: entry.max_time_secs.unwrap_or(300),
+        use_cd: entry.use_cd.unwrap_or(true),
+        cert_path: entry.cert_path.clone(),
+        cert_key_path: entry.cert_key_path.clone(),
+        load_cookies: entry.load_cookies.clone(),
+        save_cookies: entry.save_cookies.clone(),
+        digest: entry.digest,
+        digest_user: entry.digest_user.clone(),
+        spec: zing_core::http_method::RequestSpec::with_body(
+            method,
+            body,
+            entry.body_content_type.clone(),
+        ),
+    }
 }
 
 fn default_true() -> bool {
@@ -85,6 +190,8 @@ pub struct TaskInfo {
     pub completed_blocks: u32,
     pub total_blocks: u32,
     pub category: String,
+    /// Request options previously hardcoded in `spawn_worker`.
+    pub opts: RequestOptions,
 }
 
 /// Serializable snapshot of a single active connection for the TUI's
@@ -202,6 +309,26 @@ impl TaskManager {
                 allow_overwrite: t.allow_overwrite,
                 paused: matches!(t.status, TaskStatus::Paused),
                 category: t.category.clone(),
+                user_agent: t.opts.user_agent.clone(),
+                retry_count: Some(t.opts.retry_count),
+                retry_wait_ms: Some(t.opts.retry_wait_ms),
+                connect_timeout_secs: Some(t.opts.connect_timeout_secs),
+                max_time_secs: Some(t.opts.max_time_secs),
+                use_cd: Some(t.opts.use_cd),
+                cert_path: t.opts.cert_path.clone(),
+                cert_key_path: t.opts.cert_key_path.clone(),
+                load_cookies: t.opts.load_cookies.clone(),
+                save_cookies: t.opts.save_cookies.clone(),
+                digest: t.opts.digest,
+                digest_user: t.opts.digest_user.clone(),
+                method: Some(t.opts.spec.method.as_str().to_string()),
+                body: t
+                    .opts
+                    .spec
+                    .body
+                    .as_ref()
+                    .map(|b| String::from_utf8_lossy(b.bytes()).to_string()),
+                body_content_type: t.opts.spec.content_type.clone(),
             })
             .collect();
         if let Ok(json) = serde_json::to_string_pretty(&entries) {
@@ -262,8 +389,10 @@ impl TaskManager {
         allow_overwrite: bool,
         paused: bool,
         category: &str,
+        opts: &RequestOptions,
     ) -> TaskId {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let opts = opts.clone();
 
         let info = TaskInfo {
             id,
@@ -302,6 +431,7 @@ impl TaskManager {
             completed_blocks: 0,
             total_blocks: 0,
             category: category.to_string(),
+            opts,
         };
 
         self.insert_info(info).await;
@@ -362,6 +492,7 @@ impl TaskManager {
             completed_blocks: 0,
             total_blocks: 0,
             category: entry.category.clone(),
+            opts: opts_from_entry(&entry),
         };
 
         self.insert_info(info).await;
@@ -422,6 +553,7 @@ impl TaskManager {
         let allow_overwrite = info.allow_overwrite;
         let hook_complete = info.on_download_complete.clone();
         let hook_error = info.on_download_error.clone();
+        let opts = info.opts.clone();
 
         let handles_arc = Arc::clone(&self.worker_handles);
 
@@ -468,6 +600,19 @@ impl TaskManager {
                 return;
             }
 
+            let cookie_jar = match opts.load_cookies.as_deref() {
+                Some(path) => {
+                    match zing_core::cookie_store::ZingCookieStore::from_netscape_file(path) {
+                        Ok(store) => Some(Arc::new(store)),
+                        Err(e) => {
+                            tracing::warn!("Failed to load cookies from '{path}': {e}");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+
             let task = Arc::new(DownloadTask::new(
                 id,
                 &url,
@@ -483,25 +628,35 @@ impl TaskManager {
                 bw_schedule.clone(),
                 headers.clone(),
                 max_filesize,
-                5,   // retry_count
-                500, // retry_wait_ms
-                30,  // connect_timeout_secs
-                300, // max_time_secs
-                None,
-                true, // use_cd
-                None,
-                None,
+                opts.retry_count,
+                opts.retry_wait_ms,
+                opts.connect_timeout_secs,
+                opts.max_time_secs,
+                opts.user_agent.clone(),
+                opts.use_cd,
+                cookie_jar,
+                opts.save_cookies.clone(),
                 low_speed_limit,
                 low_speed_time,
                 save_interval_secs,
-                None,  // chunk_hashes — not supported in daemon mode
-                None,  // cert_path
-                None,  // cert_key_path
-                false, // digest_auth
+                None, // chunk_hashes — not supported in daemon mode
+                opts.cert_path.clone(),
+                opts.cert_key_path.clone(),
+                opts.digest,
                 end_game,
                 throttle_reprobe,
-                zing_core::http_method::RequestSpec::get(),
+                opts.spec.clone(),
             ));
+            if opts.digest {
+                if let Some(creds) = opts
+                    .digest_user
+                    .as_deref()
+                    .or(opts.user_agent.as_deref())
+                    .and_then(|c| c.split_once(':'))
+                {
+                    task.set_auth_credentials(creds.0, creds.1).await;
+                }
+            }
             task.set_conflict_policy(if allow_overwrite {
                 ConflictPolicy::Overwrite
             } else if auto_file_renaming {
@@ -919,6 +1074,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 
@@ -981,6 +1137,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 
@@ -1029,6 +1186,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 
@@ -1066,6 +1224,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
         let id2 = mgr
@@ -1093,6 +1252,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 
@@ -1130,6 +1290,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
         let id2 = mgr
@@ -1157,6 +1318,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
         assert!(id2 > id1, "task IDs should increment");
@@ -1197,6 +1359,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 
@@ -1257,6 +1420,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 
@@ -1321,6 +1485,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
         let id2 = mgr
@@ -1348,6 +1513,7 @@ mod tests {
                 false,
                 false,
                 "",
+                &Default::default(),
             )
             .await;
 

@@ -259,6 +259,7 @@ impl Scheduler {
                             false, // allow_overwrite
                             false, // paused
                             "",    // category
+                            &Default::default(),
                         )
                         .await;
                 }

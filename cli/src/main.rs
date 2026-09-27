@@ -29,6 +29,7 @@ use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use zing_core::cookie_store::ZingCookieStore;
 use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::{EngineEvent, EventBus};
+use zing_core::http_method::{HttpMethod, RequestSpec};
 use zing_ext::checksum;
 use zing_ext::filename;
 
@@ -93,6 +94,76 @@ fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Resolve a `--flag` / `--no-flag` pair against a config-file default.
+///
+/// Both flags being set is a user error rather than something to silently pick
+/// a winner for, and in daemon mode a dropped flag would otherwise look like it
+/// worked.
+fn resolve_bool_flag(
+    enable: bool,
+    disable: bool,
+    from_cfg: Option<bool>,
+    name: &str,
+) -> Result<bool> {
+    if enable && disable {
+        bail!("--{name} and --no-{name} are mutually exclusive; pass only one");
+    }
+    if enable {
+        Ok(true)
+    } else if disable {
+        Ok(false)
+    } else {
+        Ok(from_cfg.unwrap_or(true))
+    }
+}
+
+/// Build the request spec (method + body) from the HTTP-related flags.
+///
+/// Any method is accepted, since `-X` is not restricted to a fixed list. A body
+/// forces single-connection mode, because replaying a body across range
+/// requests would re-submit it.
+fn build_request_spec(args: &Args) -> Result<RequestSpec> {
+    let method = match &args.method {
+        Some(m) => HttpMethod::parse(m).map_err(|e| color_eyre::eyre::eyre!("{e}"))?,
+        None => HttpMethod::get(),
+    };
+
+    if args.data.is_some() && args.upload_file.is_some() {
+        bail!("--data and --upload-file are mutually exclusive");
+    }
+
+    let (body, default_ct) = if let Some(raw) = &args.data {
+        let bytes = match raw.strip_prefix('@') {
+            Some(path) => std::fs::read(path)
+                .map_err(|e| color_eyre::eyre::eyre!("Cannot read --data file '{path}': {e}"))?,
+            None => raw.clone().into_bytes(),
+        };
+        (Some(bytes), "text/plain")
+    } else if let Some(path) = &args.upload_file {
+        let bytes = std::fs::read(path)
+            .map_err(|e| color_eyre::eyre::eyre!("Cannot read --upload-file '{path}': {e}"))?;
+        (Some(bytes), "application/octet-stream")
+    } else {
+        (None, "")
+    };
+
+    if body.is_some() && method.supports_ranges() {
+        tracing::warn!(
+            "Request body with {method}: forcing single-connection mode (no ranged/segmented download)"
+        );
+    }
+
+    let content_type = args.content_type.clone().or_else(|| {
+        if body.is_some() {
+            Some(default_ct.to_string())
+        } else {
+            None
+        }
+    });
+
+    Ok(RequestSpec::with_body(method, body, content_type))
+}
+
 fn build_headers(args: &Args) -> Vec<(String, String)> {
     let mut headers = parse_headers(&args.header);
     if let Some(referer) = &args.referer {
@@ -140,7 +211,8 @@ fn conflict_policy_from_args(args: &Args) -> zing_core::downloader::ConflictPoli
     }
 }
 
-fn parse_netrc_for_url(url: &str, headers: &mut Vec<(String, String)>) {
+/// Resolve credentials for `url` from `~/.netrc` and append a Basic auth header.
+pub fn parse_netrc_for_url(url: &str, headers: &mut Vec<(String, String)>) {
     let netrc_path = dirs::home_dir()
         .map(|p| p.join(".netrc"))
         .unwrap_or_else(|| std::path::PathBuf::from(".netrc"));
@@ -880,6 +952,14 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                             "content_disposition": use_cd,
                             "auto_file_renaming": true,
                             "allow_overwrite": allow_overwrite,
+                            "end_game": end_game,
+                            "throttle_reprobe": throttle_reprobe,
+                            "user_agent": user_agent,
+                            "retry": retry,
+                            "retry_wait": retry_wait,
+                            "connect_timeout": connect_timeout,
+                            "max_time": max_time,
+                            "digest": digest,
                         })
                     };
 
@@ -1195,10 +1275,26 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let download_dir_str = download_dir.to_string_lossy().to_string();
 
         let mut handles = Vec::new();
-        let daemon_headers: Vec<String> = build_headers(&args)
+        let mut effective_headers = build_headers(&args);
+        for url_str in &urls {
+            if args.netrc {
+                parse_netrc_for_url(url_str, &mut effective_headers);
+            }
+        }
+        let daemon_headers: Vec<String> = effective_headers
             .into_iter()
             .map(|(k, v)| format!("{k}: {v}"))
             .collect();
+        let spec = build_request_spec(&args)?;
+        let use_cd = args.content_disposition || !args.no_content_disposition;
+        let end_game =
+            resolve_bool_flag(args.end_game, args.no_end_game, cfg.end_game, "end_game")?;
+        let throttle_reprobe = resolve_bool_flag(
+            args.throttle_reprobe,
+            args.no_throttle_reprobe,
+            cfg.throttle_reprobe,
+            "throttle_reprobe",
+        )?;
         let mp = Arc::new(indicatif::MultiProgress::new());
         if args.max_concurrent > 0 {
             let _ = daemon_client::set_max_concurrent(args.max_concurrent).await;
@@ -1225,6 +1321,23 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 "on_download_error": args.on_download_error,
                 "auto_file_renaming": args.auto_file_renaming,
                 "allow_overwrite": args.allow_overwrite,
+                "end_game": end_game,
+                "throttle_reprobe": throttle_reprobe,
+                "method": spec.method.as_str(),
+                "body": spec.body.as_ref().map(|b| String::from_utf8_lossy(b.bytes()).to_string()),
+                "body_content_type": spec.content_type,
+                "user_agent": args.user_agent,
+                "digest": args.digest,
+                "netrc": args.netrc,
+                "retry": args.retry,
+                "retry_wait": args.retry_wait,
+                "connect_timeout": args.connect_timeout,
+                "max_time": args.max_time,
+                "cert": args.cert,
+                "cert_key": args.cert_key,
+                "load_cookies": args.load_cookies,
+                "save_cookies": args.save_cookies,
+                "content_disposition": use_cd,
             });
             match daemon_client::send_request("zing.addUri", Some(params)).await {
                 Ok(resp) => {
@@ -1512,8 +1625,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let cert_key_path = args.cert_key.clone();
         let digest = args.digest;
         let user_creds = args.user.clone();
-        // Wired up in commit 2; GET for now.
-        let spec = std::sync::Arc::new(zing_core::http_method::RequestSpec::get());
+        let spec = std::sync::Arc::new(build_request_spec(&args)?);
 
         let endgame_enabled = if args.end_game {
             true

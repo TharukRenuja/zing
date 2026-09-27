@@ -119,8 +119,10 @@ When no subcommand is given, `zing` downloads the provided URLs directly (standa
 | `--header` | `-H` | Custom HTTP header (repeatable) |
 | `-k, --insecure` | | Skip TLS verification |
 | `-e, --referer` | | Referer header |
-| `-X, --method` | | HTTP method |
-| `-T, --upload-file` | | Upload file as request body |
+| `-X, --method` | | HTTP method (any RFC 9110 token) |
+| `-T, --upload-file` | | Send a file as the request body |
+| `--data` | | Request body inline (`@path` reads from a file) |
+| `--content-type` | | Content-Type for the request body |
 
 ### Input
 
