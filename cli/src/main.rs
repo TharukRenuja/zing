@@ -261,6 +261,67 @@ fn build_headers(args: &Args) -> Vec<(String, String)> {
     headers
 }
 
+/// Registry for the active progress display.
+///
+/// Interactive prompts (such as the overwrite/rename/cancel question) must
+/// suspend the progress bars first: `MultiProgress` redraws on a timer, so any
+/// text written straight to stderr is erased within a frame, leaving the user
+/// blocked on a question they cannot see.
+static PROGRESS_DISPLAY: std::sync::OnceLock<
+    std::sync::Mutex<Option<Arc<indicatif::MultiProgress>>>,
+> = std::sync::OnceLock::new();
+
+fn progress_display() -> &'static std::sync::Mutex<Option<Arc<indicatif::MultiProgress>>> {
+    PROGRESS_DISPLAY.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Run `f` with the progress bars suspended so its output stays visible.
+fn without_progress<T>(f: impl FnOnce() -> T) -> T {
+    let display = progress_display().lock().ok().and_then(|g| g.clone());
+    match display {
+        Some(mp) => mp.suspend(f),
+        None => f(),
+    }
+}
+
+/// Ask the user how to resolve a filename conflict.
+///
+/// Returns `None` when there is no way to ask (no interactive terminal), so the
+/// caller can fail with a clear message instead of blocking forever on a
+/// question the user cannot see.
+fn ask_conflict(filename: &str) -> Option<zing_core::downloader::ConflictDecision> {
+    use std::io::{IsTerminal, Write};
+    use zing_core::downloader::ConflictDecision;
+
+    if !std::io::stdin().is_terminal() {
+        // No way to ask: fail with actionable advice rather than blocking on a
+        // prompt nobody can see or answer.
+        tracing::warn!(
+            "File already exists: {filename} (no terminal to ask on). \
+             Use --allow-overwrite to replace it or --auto-file-renaming to save a new copy."
+        );
+        return None;
+    }
+
+    let name = filename.to_string();
+    Some(without_progress(move || {
+        eprintln!("\nFile already exists: {name}");
+        eprint!("  Overwrite, Rename, or Cancel? [o/r/C] ");
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        let read = std::io::stdin().read_line(&mut answer).unwrap_or(0);
+        // EOF or empty input: treat as cancel rather than overwriting.
+        if read == 0 {
+            return ConflictDecision::Cancel;
+        }
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "o" | "overwrite" | "y" | "yes" => ConflictDecision::Overwrite,
+            "r" | "rename" => ConflictDecision::Rename,
+            _ => ConflictDecision::Cancel,
+        }
+    }))
+}
+
 fn conflict_policy_from_args(args: &Args) -> zing_core::downloader::ConflictPolicy {
     use zing_core::downloader::{ConflictDecision, ConflictPolicy};
     if args.allow_overwrite {
@@ -270,21 +331,7 @@ fn conflict_policy_from_args(args: &Args) -> zing_core::downloader::ConflictPoli
     } else {
         ConflictPolicy::Ask(Arc::new(|filename: &str| {
             let filename = filename.to_string();
-            Box::pin(async move {
-                let mut answer = String::new();
-                eprintln!("\nFile already exists: {filename}");
-                eprint!("  [O]verwrite, [R]ename, or [C]ancel? ");
-                use std::io::Write;
-                let _ = std::io::stderr().flush();
-                match std::io::stdin().read_line(&mut answer) {
-                    Ok(_) => match answer.trim().to_ascii_lowercase().as_str() {
-                        "o" | "overwrite" | "y" | "yes" => ConflictDecision::Overwrite,
-                        "r" | "rename" => ConflictDecision::Rename,
-                        _ => ConflictDecision::Cancel,
-                    },
-                    Err(_) => ConflictDecision::Cancel,
-                }
-            })
+            Box::pin(async move { ask_conflict(&filename).unwrap_or(ConflictDecision::Cancel) })
         }))
     }
 }
@@ -2790,7 +2837,11 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
     use std::collections::HashMap;
     use tokio::sync::broadcast::error::RecvError;
 
-    let mp = MultiProgress::new();
+    let mp = Arc::new(MultiProgress::new());
+    // Publish it so interactive prompts can suspend the bars.
+    if let Ok(mut slot) = progress_display().lock() {
+        *slot = Some(Arc::clone(&mp));
+    }
     let mut bars: HashMap<u64, ProgressBar> = HashMap::new();
     let mut known_totals: HashMap<u64, u64> = HashMap::new();
 
@@ -2982,5 +3033,23 @@ mod curl_compat_tests {
                 "expected {v:?} to be rejected"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod conflict_prompt_tests {
+    use super::*;
+
+    /// Under `cargo test` there is no interactive terminal, so the prompt must
+    /// decline rather than block on a read that can never be answered.
+    #[test]
+    fn no_terminal_means_no_prompt() {
+        assert!(ask_conflict("/tmp/does-not-matter").is_none());
+    }
+
+    /// The progress-display registry must be usable even before any bar exists.
+    #[test]
+    fn without_progress_works_with_no_display() {
+        assert_eq!(without_progress(|| 42), 42);
     }
 }
