@@ -41,21 +41,19 @@ Note that `-d` is now `--data`; the output directory is `-W/--output-dir` (with
 
 ## File downloads vs HTTP requests
 
-zing behaves in one of two modes, chosen automatically.
-
-**File download** — writes to disk, shows a progress bar, resumes from a `.zing`
-control file, and asks before replacing an existing file. You get this when you
-ask for a destination (`-o` or `-W`) or when the URL names a file:
+zing is a downloader by default. `zing URL` fetches a file: it writes to disk,
+shows a progress bar, resumes from a `.zing` control file, and asks before
+replacing an existing file. That holds for any URL, with or without a file
+extension and with or without a query string.
 
 ```bash
-zing https://example.com/ubuntu.iso          # /ubuntu.iso has an extension
-zing -W ~/Downloads https://example.com/get?id=42
-zing -o report.json https://api.example.com/report
+zing https://speed.cloudflare.com/__down?bytes=52428800   # saved to disk
+zing https://example.com/ubuntu.iso                        # saved to disk
+zing -W ~/Movies https://example.com/video                 # saved to disk
 ```
 
-**HTTP request** — the response goes to stdout. No file is created, no progress
-bar, no resume, and no prompt. This is the default for API endpoints and for
-every non-GET method:
+Using a method-shaping flag means you are describing a *request* rather than
+naming a file, so the response is printed to stdout and nothing is written:
 
 ```bash
 zing -G -d 'q=hello' https://api.synclrc.dev/search
@@ -63,10 +61,12 @@ zing -X DELETE https://api.example.com/tokens/abc
 zing -X POST --data @query.sql --content-type application/sql https://api.example.com/db
 ```
 
-A URL counts as naming a file when its last path segment has an extension. Query
-strings are ignored for this test, because signed download URLs carry them
-(`ubuntu.iso?X-Amz-Signature=...`) while API endpoints generally do not. If a
-server would send `Content-Disposition`, pass `-o` or `-W` to save the response.
+The flags that switch to printing are `-X`, `-d`, `-T`, `-G` and `-I`. An explicit
+destination overrides that, so a method flag plus `-o` or `-W` still saves:
+
+```bash
+zing -X POST --data @body.json -o response.json https://api.example.com/submit
+```
 
 ## Commands
 

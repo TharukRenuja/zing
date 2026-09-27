@@ -122,59 +122,18 @@ fn resolve_bool_flag(
 /// Any method is accepted, since `-X` is not restricted to a fixed list. A body
 /// forces single-connection mode, because replaying a body across range
 /// requests would re-submit it.
-/// Whether the last path segment of `url` looks like a named file (`x.iso`).
+/// Whether the user described a *request* rather than naming a file to fetch.
 ///
-/// Only the path is considered: query strings are ignored on purpose, because
-/// real download URLs routinely carry signed query parameters
-/// (`ubuntu.iso?X-Amz-Signature=...`) while API endpoints rarely carry a file
-/// extension.
-fn url_names_a_file(url: &str) -> bool {
-    // Drop scheme and authority first, so a bare `https://example.com/` is not
-    // mistaken for a file called "example.com".
-    let after_scheme = match url.find("://") {
-        Some(pos) => {
-            let rest = &url[pos + 3..];
-            match rest.find('/') {
-                Some(p) => &rest[p + 1..],
-                None => "",
-            }
-        }
-        None => url,
-    };
-    let path = after_scheme.split(['?', '#']).next().unwrap_or("");
-    let segment = path.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
-    match segment.rsplit_once('.') {
-        Some((stem, ext)) => !stem.is_empty() && !ext.is_empty() && ext != segment,
-        None => false,
-    }
-}
-
-/// Whether this request should be treated as a file download.
-///
-/// A file download writes to disk, resumes, tracks a `.zing` control file and
-/// shows a progress bar. Anything else is treated as an HTTP client call: the
-/// response goes to stdout with no progress reporting and no file artifacts.
-///
-/// You get a file when you ask for one (`-o`, `-W`) or when the URL itself names
-/// one. Everything else — API endpoints, search queries, POST/PUT/DELETE/QUERY —
-/// is an HTTP call.
-fn wants_file_on_disk(args: &Args, url: &str) -> bool {
-    if args.pipe.is_some() {
-        return false;
-    }
-    if args.output.as_deref() == Some(std::path::Path::new("-")) {
-        return false;
-    }
-    // An explicit destination always wins.
-    if args.output.is_some() || args.dir.is_some() {
-        return true;
-    }
-    url_names_a_file(url)
-}
-
-/// Whether the whole batch should be streamed to stdout rather than saved.
-fn streams_to_stdout(args: &Args, urls: &[String]) -> bool {
-    urls.iter().any(|u| !wants_file_on_disk(args, u))
+/// `./zing URL` downloads a file. Passing any of the method-shaping flags
+/// (`-X`, `-d`, `-T`, `-G`, `-I`) means "do this HTTP request", so the response
+/// is printed to stdout instead of being saved under a name derived from the
+/// URL path.
+fn uses_explicit_method(args: &Args) -> bool {
+    args.method.is_some()
+        || !args.data.is_empty()
+        || args.upload_file.is_some()
+        || args.get
+        || args.head
 }
 
 fn build_request_spec(args: &Args) -> Result<RequestSpec> {
@@ -1410,17 +1369,18 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     let mut urls = urls;
     apply_get_to_urls(&args, &mut urls)?;
 
-    // Only genuine file downloads write to disk, resume, and show a progress
-    // bar. API-style requests stream their response to stdout instead, so they
-    // leave no file behind and never prompt about overwriting one.
+    // A plain `zing URL` is a file download: disk, progress bar, resume, and a
+    // conflict prompt if the target exists. Using any method-shaping flag means
+    // "do this HTTP request", so the response is printed to stdout instead.
+    // An explicit destination always wins.
     let explicit_stdout =
         args.pipe.is_some() || args.output.as_deref() == Some(std::path::Path::new("-"));
-    let to_stdout = explicit_stdout || streams_to_stdout(&args, &urls);
+    let explicit_file = args.output.is_some() || args.dir.is_some();
+    let to_stdout = explicit_stdout || (!explicit_file && uses_explicit_method(&args));
 
     if to_stdout && !explicit_stdout {
         tracing::info!(
-            "HTTP request mode: writing response to stdout (not a file download). \
-             Use -o to save it or -W to choose a directory."
+            "HTTP request: printing response to stdout. Use -o to save it or -W to pick a directory."
         );
     }
 
@@ -3131,88 +3091,48 @@ mod output_target_tests {
         Args::parse_from(full)
     }
 
-    #[test]
-    fn extensionless_path_is_not_a_file() {
-        assert!(!url_names_a_file("https://api.synclrc.dev/search"));
-        assert!(!url_names_a_file("https://api.example.com/v1/items"));
-        assert!(!url_names_a_file("https://example.com/"));
+    fn streams(v: &[&str]) -> bool {
+        let args = args_of(v);
+        let explicit_stdout =
+            args.pipe.is_some() || args.output.as_deref() == Some(std::path::Path::new("-"));
+        let explicit_file = args.output.is_some() || args.dir.is_some();
+        explicit_stdout || (!explicit_file && uses_explicit_method(&args))
     }
 
-    /// Signed download URLs carry query strings, so the query must be ignored.
+    /// The regression: a plain URL is a file download even when its path has no
+    /// extension and the query string carries the size.
     #[test]
-    fn query_string_does_not_hide_a_file_name() {
-        assert!(url_names_a_file(
-            "https://cdn.example.com/ubuntu.iso?X-Amz-Signature=abc&Expires=1"
-        ));
-        assert!(url_names_a_file("https://example.com/a/b/c.zip"));
-        assert!(!url_names_a_file("https://example.com/search?q=a.b"));
+    fn plain_url_is_always_a_file_download() {
+        assert!(!streams(&[]));
+        assert!(!uses_explicit_method(&args_of(&[])));
     }
 
+    /// Any method-shaping flag means "HTTP request", so print it.
     #[test]
-    fn trailing_dot_is_not_an_extension() {
-        assert!(!url_names_a_file("https://example.com/weird."));
-        assert!(!url_names_a_file("https://example.com/.hidden"));
+    fn method_flags_print_to_stdout() {
+        for v in [
+            vec!["-X", "POST"],
+            vec!["-X", "DELETE"],
+            vec!["-d", "x=1"],
+            vec!["-T", "/etc/hostname"],
+            vec!["-G", "-d", "q=1"],
+            vec!["-I"],
+        ] {
+            assert!(streams(&v), "{v:?} should print to stdout");
+        }
     }
 
-    /// An API call is an HTTP request, not a file download.
+    /// An explicit destination beats the method flags.
     #[test]
-    fn api_endpoints_stream_to_stdout() {
-        let a = args_of(&[]);
-        assert!(streams_to_stdout(
-            &a,
-            &["https://api.synclrc.dev/search".into()]
-        ));
+    fn explicit_destination_wins() {
+        assert!(!streams(&["-X", "POST", "-d", "x=1", "-o", "out.json"]));
+        assert!(!streams(&["-d", "x=1", "-W", "/tmp"]));
     }
 
-    /// A URL naming a file is a download, so it goes to disk.
+    /// `-o -` is an explicit request for stdout.
     #[test]
-    fn file_urls_are_downloaded() {
-        let a = args_of(&[]);
-        assert!(!streams_to_stdout(
-            &a,
-            &["https://example.com/ubuntu.iso".into()]
-        ));
-    }
-
-    /// An explicit destination overrides the heuristic in both directions.
-    #[test]
-    fn explicit_output_wins() {
-        let a = args_of(&["-o", "out.json"]);
-        assert!(!streams_to_stdout(
-            &a,
-            &["https://api.synclrc.dev/search".into()]
-        ));
-
-        let a = args_of(&["-o", "-"]);
-        assert!(streams_to_stdout(
-            &a,
-            &["https://example.com/ubuntu.iso".into()]
-        ));
-
-        let a = args_of(&["-W", "/tmp"]);
-        assert!(!streams_to_stdout(
-            &a,
-            &["https://api.synclrc.dev/search".into()]
-        ));
-    }
-
-    /// If any URL in the batch is not a file download, the batch streams.
-    #[test]
-    fn mixed_batches_stream() {
-        let a = args_of(&[]);
-        let urls = vec![
-            "https://example.com/ubuntu.iso".to_string(),
-            "https://api.synclrc.dev/search".to_string(),
-        ];
-        assert!(streams_to_stdout(&a, &urls));
-    }
-
-    #[test]
-    fn non_get_methods_are_never_files_without_explicit_output() {
-        let a = args_of(&["-X", "POST", "-d", "x=1"]);
-        assert!(streams_to_stdout(
-            &a,
-            &["https://api.synclrc.dev/v1/items".to_string()]
-        ));
+    fn dash_output_still_streams() {
+        assert!(streams(&["-o", "-"]));
+        assert!(streams(&["-o", "-", "-X", "GET"]));
     }
 }
