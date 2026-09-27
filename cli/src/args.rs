@@ -30,6 +30,7 @@ pub struct Args {
     #[arg(
         long = "output-dir",
         visible_alias = "dir",
+        short = 'W',
         help = "Directory to save files in"
     )]
     pub dir: Option<PathBuf>,
@@ -870,11 +871,16 @@ mod curl_compat_tests {
         assert_eq!(a.data, vec!["x=1".to_string()]);
         assert!(a.dir.is_none(), "-d must not set the output directory");
 
-        // The directory is still reachable by its long form.
-        let a = parse(&["--dir", "/tmp"]);
-        assert_eq!(a.dir.as_deref(), Some(std::path::Path::new("/tmp")));
-        let a = parse(&["--output-dir", "/tmp"]);
-        assert_eq!(a.dir.as_deref(), Some(std::path::Path::new("/tmp")));
+        // The directory is still reachable by its long form and by -W, the
+        // only letter free in both zing and curl.
+        for argv in [["--dir", "/tmp"], ["--output-dir", "/tmp"], ["-W", "/tmp"]] {
+            let a = parse(&argv);
+            assert_eq!(
+                a.dir.as_deref(),
+                Some(std::path::Path::new("/tmp")),
+                "{argv:?} should set the output directory"
+            );
+        }
     }
 
     #[test]

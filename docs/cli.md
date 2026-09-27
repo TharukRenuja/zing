@@ -35,7 +35,7 @@ The method is inferred from what you send, exactly as curl does. `--data` gives
 `application/x-www-form-urlencoded`, repeated `-d` values join with `&`, and `-G`
 moves the data into the URL and drops the body. An explicit `-X` always wins.
 
-Note that `-d` is now `--data`; the output directory is `--output-dir` (with
+Note that `-d` is now `--data`; the output directory is `-W/--output-dir` (with
 `--dir` kept as an alias). zing keeps flags curl has no equivalent for, such as
 `-n/--connections`, `-m/--mirror`, `-c/--checksum`, and `--end-game`.
 
@@ -85,7 +85,7 @@ Note that `-d` is now `--data`; the output directory is `--output-dir` (with
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--output` | `-o` | Output filename |
-| `--output-dir` | | Directory to save files in (alias: `--dir`) |
+| `-W, --output-dir` | | Directory to save files in (alias: `--dir`) |
 | `--auto-file-renaming` | | Auto-rename if file exists (`file-1.ext`, `file-2.ext`, ...) |
 | `--allow-overwrite` | | Overwrite existing files without prompting |
 | `-C, --content-disposition` | | Use server-provided filename from Content-Disposition (on by default) |
