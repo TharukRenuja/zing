@@ -85,6 +85,11 @@ impl BlockBitfield {
         self.bits.iter().map(|&b| b.count_ones()).sum()
     }
 
+    /// Number of fully downloaded blocks, for the progress display.
+    pub fn completed_blocks(&self) -> u32 {
+        self.count_set_bits()
+    }
+
     pub fn progress_pct(&self) -> f64 {
         if self.total_size == 0 {
             return 0.0;

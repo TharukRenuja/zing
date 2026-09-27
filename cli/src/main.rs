@@ -2774,22 +2774,97 @@ fn pad_visible(s: &str, width: usize) -> String {
     }
 }
 
-fn bar_style_unknown_size() -> indicatif::ProgressStyle {
-    indicatif::ProgressStyle::default_bar()
-        .template("{prefix:.dim} [{elapsed_precise}] {bytes} ({bytes_per_sec}) {msg}")
-        .unwrap()
+/// How much of the layout fits in the current terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarLayout {
+    /// Two full lines with every field.
+    Wide,
+    /// Two lines, smaller sizes and no block count.
+    Medium,
+    /// One line with the essentials only.
+    Narrow,
 }
 
-fn bar_style_sized(show_eta: bool) -> indicatif::ProgressStyle {
-    let template = if show_eta {
-        "{prefix:.dim} [{elapsed_precise}] [{wide_bar:.cyan}] {percent}% {bytes}/{total_bytes}  {bytes_per_sec}  {eta}  {msg}"
-    } else {
-        "{prefix:.dim} [{elapsed_precise}] [{wide_bar:.cyan}] {percent}% {bytes}/{total_bytes}  {bytes_per_sec}  {msg}"
+impl BarLayout {
+    fn for_width(width: usize) -> Self {
+        match width {
+            0..=59 => Self::Narrow,
+            60..=95 => Self::Medium,
+            _ => Self::Wide,
+        }
+    }
+}
+
+/// Right-hand status text for the first line: block count, connections, and
+/// the end-game marker. Fields that do not apply are dropped so the line stays
+/// readable instead of showing `0/0 blocks`.
+fn status_text(
+    connections: usize,
+    completed_blocks: u32,
+    total_blocks: u32,
+    endgame: bool,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if total_blocks > 0 {
+        parts.push(format!("{completed_blocks}/{total_blocks} blocks"));
+    }
+    if connections > 0 {
+        parts.push(if connections == 1 {
+            "1 conn".to_string()
+        } else {
+            format!("{connections} conns")
+        });
+    }
+    if endgame {
+        parts.push("endgame".to_string());
+    }
+    parts.join("  ·  ")
+}
+
+/// Progress bar styles. The first is the default; the others are one line of
+/// config away in [`bar_style_for`].
+const BAR_GLYPHS: [(&str, &str, &str); 4] = [
+    ("=", ">", "."), // classic: [========>......]
+    ("█", "█", "░"), // solid blocks
+    ("━", "━", "╌"), // rounded
+    ("▰", "▰", "▱"), // thin blocks
+];
+
+/// Build the two-line style for a layout tier and glyph set.
+fn bar_style_for(layout: BarLayout, glyphs: (&str, &str, &str)) -> indicatif::ProgressStyle {
+    let (fill, head, empty) = glyphs;
+    let line1 = match layout {
+        BarLayout::Narrow => "{prefix:.dim} {wide_msg:>}",
+        _ => "{prefix:.dim}{wide_msg:>}",
+    };
+    let line2 = match layout {
+        BarLayout::Wide => {
+            "  [{wide_bar:.cyan}] {percent:>3}%  {bytes}/{total_bytes}  \
+             {bytes_per_sec}  eta {eta}  ⏱ {elapsed}"
+        }
+        BarLayout::Medium => {
+            "  [{wide_bar:.cyan}] {percent:>3}%  {bytes}/{total_bytes}  \
+             {bytes_per_sec}  {eta}"
+        }
+        BarLayout::Narrow => "  [{wide_bar:.cyan}] {percent:>3}%  {bytes_per_sec}",
     };
     indicatif::ProgressStyle::default_bar()
-        .template(template)
-        .unwrap()
-        .progress_chars("=>-")
+        .template(&format!("{line1}\n{line2}"))
+        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
+        .progress_chars(&format!("{fill}{head}{empty}"))
+}
+
+/// The style for downloads whose total size is unknown.
+fn bar_style_unknown(layout: BarLayout) -> indicatif::ProgressStyle {
+    let line1 = "{prefix:.dim}{wide_msg:>}";
+    let line2 = match layout {
+        BarLayout::Narrow => "  [{wide_bar:.cyan}] {bytes}  {bytes_per_sec}",
+        _ => "  [{wide_bar:.cyan}] {bytes}  {bytes_per_sec}  ⏱ {elapsed}",
+    };
+    indicatif::ProgressStyle::default_bar()
+        .template(&format!("{line1}\n{line2}"))
+        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
+        .progress_chars("=>.")
 }
 
 #[cfg(unix)]
@@ -2863,55 +2938,106 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
     use std::collections::HashMap;
     use tokio::sync::broadcast::error::RecvError;
 
+    /// Per-task render state.
+    struct Entry {
+        bar: ProgressBar,
+        total: Option<u64>,
+        layout: BarLayout,
+        status: String,
+    }
+
     let mp = Arc::new(MultiProgress::new());
     // Publish it so interactive prompts can suspend the bars.
     if let Ok(mut slot) = progress_display().lock() {
         *slot = Some(Arc::clone(&mp));
     }
-    let mut bars: HashMap<u64, ProgressBar> = HashMap::new();
-    let mut known_totals: HashMap<u64, u64> = HashMap::new();
+    let mut bars: HashMap<u64, Entry> = HashMap::new();
+    let glyphs = BAR_GLYPHS[0];
+    // Re-read the width every tick so a terminal resize is picked up live.
+    let mut width = terminal_width();
+    let mut layout = BarLayout::for_width(width);
 
     loop {
         match rx.recv().await {
             Ok(EngineEvent::TaskCreated { id, url }) => {
                 let display_name = filename::from_url(&url);
                 let bar = mp.add(ProgressBar::new(0));
-                bar.set_prefix(display_name);
-                bar.set_style(bar_style_unknown_size());
+                bar.set_prefix(format!(" {display_name}"));
+                bar.set_style(bar_style_unknown(layout));
                 bar.enable_steady_tick(std::time::Duration::from_millis(100));
-                bars.insert(id, bar);
-                known_totals.remove(&id);
+                bars.insert(
+                    id,
+                    Entry {
+                        bar,
+                        total: None,
+                        layout,
+                        status: String::new(),
+                    },
+                );
             }
             Ok(EngineEvent::TaskProgress(p)) => {
-                if let Some(bar) = bars.get(&p.id) {
-                    bar.set_position(p.bytes_downloaded);
-                    if !known_totals.contains_key(&p.id) && p.total_bytes.is_some_and(|t| t > 0) {
-                        known_totals.insert(p.id, p.total_bytes.unwrap());
-                        bar.set_length(p.total_bytes.unwrap());
+                if let Some(entry) = bars.get_mut(&p.id) {
+                    let now_width = terminal_width();
+                    if now_width != width {
+                        width = now_width;
+                        layout = BarLayout::for_width(width);
                     }
-                    if known_totals.contains_key(&p.id) {
-                        bar.set_style(bar_style_sized(p.speed_bytes_per_sec >= 1.0));
+
+                    let status =
+                        status_text(p.connections, p.completed_blocks, p.total_blocks, p.endgame);
+
+                    // Re-apply the style when the tier changes or the total
+                    // size first becomes known.
+                    let became_sized =
+                        entry.total.is_none() && p.total_bytes.is_some_and(|t| t > 0);
+                    if became_sized {
+                        entry.total = p.total_bytes;
+                        // Without this the bar length stays 0 and indicatif
+                        // reports 100% at every position.
+                        if let Some(t) = entry.total {
+                            entry.bar.set_length(t);
+                        }
+                    } else if entry.total.is_none() {
+                        entry.total = p.total_bytes.filter(|t| *t > 0);
+                    }
+
+                    let next_layout = if layout == BarLayout::Narrow {
+                        BarLayout::Narrow
+                    } else {
+                        layout
+                    };
+                    let style_changed = entry.layout != next_layout || became_sized;
+
+                    entry.bar.set_position(p.bytes_downloaded);
+                    entry.bar.set_message(status.clone());
+                    entry.status = status;
+
+                    if style_changed {
+                        entry.layout = next_layout;
+                        entry.bar.set_style(match entry.total {
+                            Some(_) => bar_style_for(next_layout, glyphs),
+                            None => bar_style_unknown(next_layout),
+                        });
                     }
                 }
             }
             Ok(EngineEvent::TaskCompleted { id, .. }) => {
-                if let Some(bar) = bars.remove(&id) {
-                    bar.set_message("done");
-                    bar.finish();
+                if let Some(entry) = bars.remove(&id) {
+                    entry.bar.set_message("done".to_string());
+                    entry.bar.finish();
                 }
-                known_totals.remove(&id);
             }
             Ok(EngineEvent::Paused { id, .. }) => {
-                if let Some(bar) = bars.remove(&id) {
-                    bar.finish_with_message("PAUSED");
+                if let Some(entry) = bars.remove(&id) {
+                    entry.bar.set_message("paused".to_string());
+                    entry.bar.finish();
                 }
-                known_totals.remove(&id);
             }
             Ok(EngineEvent::TaskFailed { id, error, .. }) => {
-                if let Some(bar) = bars.remove(&id) {
-                    bar.finish_with_message("Failed");
+                if let Some(entry) = bars.remove(&id) {
+                    entry.bar.set_message("failed".to_string());
+                    entry.bar.finish();
                 }
-                known_totals.remove(&id);
                 tracing::error!("{error}");
             }
             Ok(_) => {}
@@ -2920,8 +3046,8 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
         }
     }
     // Clear remaining bars
-    for (_, bar) in bars.drain() {
-        bar.finish_and_clear();
+    for (_, entry) in bars.drain() {
+        entry.bar.finish_and_clear();
     }
     Ok(())
 }
@@ -3134,5 +3260,52 @@ mod output_target_tests {
     fn dash_output_still_streams() {
         assert!(streams(&["-o", "-"]));
         assert!(streams(&["-o", "-", "-X", "GET"]));
+    }
+}
+
+#[cfg(test)]
+mod bar_layout_tests {
+    use super::*;
+
+    #[test]
+    fn width_picks_layout_tier() {
+        assert_eq!(BarLayout::for_width(0), BarLayout::Narrow);
+        assert_eq!(BarLayout::for_width(40), BarLayout::Narrow);
+        assert_eq!(BarLayout::for_width(59), BarLayout::Narrow);
+        assert_eq!(BarLayout::for_width(60), BarLayout::Medium);
+        assert_eq!(BarLayout::for_width(95), BarLayout::Medium);
+        assert_eq!(BarLayout::for_width(96), BarLayout::Wide);
+        assert_eq!(BarLayout::for_width(200), BarLayout::Wide);
+    }
+
+    #[test]
+    fn status_hides_fields_that_do_not_apply() {
+        // Streaming has no block map: blocks are omitted, not shown as 0/0.
+        assert_eq!(status_text(1, 0, 0, false), "1 conn");
+        assert_eq!(
+            status_text(4, 846, 3200, false),
+            "846/3200 blocks  ·  4 conns"
+        );
+        assert_eq!(
+            status_text(4, 3199, 3200, true),
+            "3199/3200 blocks  ·  4 conns  ·  endgame"
+        );
+    }
+
+    #[test]
+    fn status_pluralises_connections() {
+        assert_eq!(status_text(1, 0, 0, false), "1 conn");
+        assert_eq!(status_text(2, 0, 0, false), "2 conns");
+    }
+
+    #[test]
+    fn every_layout_builds_all_four_glyph_sets() {
+        for layout in [BarLayout::Wide, BarLayout::Medium, BarLayout::Narrow] {
+            for glyphs in BAR_GLYPHS {
+                // Building must not panic or fall back for any combination.
+                let _ = bar_style_for(layout, glyphs);
+                let _ = bar_style_unknown(layout);
+            }
+        }
     }
 }

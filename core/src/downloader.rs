@@ -863,11 +863,16 @@ impl DownloadTask {
                         drop(mgr);
                         state_mon.done.store(true, Ordering::Release);
                         let final_downloaded = state_mon.total_downloaded.load(Ordering::Relaxed);
+                        let counters = progress_counters(&state_mon).await;
                         state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                             id: state_mon.id,
                             bytes_downloaded: final_downloaded,
                             total_bytes: total_size,
                             speed_bytes_per_sec: 0.0,
+                            connections: counters.0,
+                            completed_blocks: counters.1,
+                            total_blocks: counters.2,
+                            endgame: counters.3,
                         }));
                         return;
                     }
@@ -928,11 +933,16 @@ impl DownloadTask {
                 // (speed reads 0 while paused). Emit progress so the TUI stays
                 // fresh, but don't touch connections.
                 if state_mon.paused.load(Ordering::Acquire) {
+                    let counters = progress_counters(&state_mon).await;
                     state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                         id: state_mon.id,
                         bytes_downloaded: downloaded,
                         total_bytes: total,
                         speed_bytes_per_sec: 0.0,
+                        connections: counters.0,
+                        completed_blocks: counters.1,
+                        total_blocks: counters.2,
+                        endgame: counters.3,
                     }));
                     tokio::time::sleep(std::time::Duration::from_millis(
                         constants::MONITOR_TICK_MS,
@@ -986,11 +996,16 @@ impl DownloadTask {
                 }
 
                 // Emit progress event
+                let counters = progress_counters(&state_mon).await;
                 state_mon.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                     id: state_mon.id,
                     bytes_downloaded: downloaded,
                     total_bytes: total,
                     speed_bytes_per_sec: speed,
+                    connections: counters.0,
+                    completed_blocks: counters.1,
+                    total_blocks: counters.2,
+                    endgame: counters.3,
                 }));
 
                 if state_mon.done.load(Ordering::Acquire) {
@@ -1066,11 +1081,16 @@ impl DownloadTask {
 
         let total = self.state.total_downloaded.load(Ordering::Relaxed);
 
+        let counters = progress_counters(&self.state).await;
         self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
             id: self.state.id,
             bytes_downloaded: total,
             total_bytes: Some(total_size),
             speed_bytes_per_sec: 0.0,
+            connections: counters.0,
+            completed_blocks: counters.1,
+            total_blocks: counters.2,
+            endgame: counters.3,
         }));
 
         let completed = self.state.segment_mgr.lock().await.is_all_complete();
@@ -1112,6 +1132,13 @@ impl DownloadTask {
             .await?;
         if !resp.status().is_success() {
             bail!("HTTP {}", resp.status());
+        }
+
+        // Streaming has no segment map, but the response still tells us the
+        // total, so the bar can show a percentage and an ETA.
+        let content_length = resp.content_length().filter(|n| *n > 0);
+        if content_length.is_none() {
+            tracing::debug!("Streaming mode (unknown size)");
         }
 
         use futures::StreamExt;
@@ -1180,22 +1207,32 @@ impl DownloadTask {
                 0.0
             };
 
+            let counters = progress_counters(&self.state).await;
             self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                 id: self.state.id,
                 bytes_downloaded: downloaded,
-                total_bytes: None,
+                total_bytes: content_length,
                 speed_bytes_per_sec: speed,
+                connections: counters.0.max(1),
+                completed_blocks: counters.1,
+                total_blocks: counters.2,
+                endgame: counters.3,
             }));
         }
 
         if let Some(mut f) = file {
             f.flush().await?;
         }
+        let counters = progress_counters(&self.state).await;
         self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
             id: self.state.id,
             bytes_downloaded: downloaded,
             total_bytes: None,
             speed_bytes_per_sec: 0.0,
+            connections: counters.0,
+            completed_blocks: counters.1,
+            total_blocks: counters.2,
+            endgame: counters.3,
         }));
         Ok(())
     }
@@ -1216,6 +1253,7 @@ impl DownloadTask {
         if !resp.status().is_success() {
             bail!("HTTP {}", resp.status());
         }
+        let content_length = resp.content_length().filter(|n| *n > 0);
 
         use futures::StreamExt;
         let mut stdout = tokio::io::stdout();
@@ -1271,23 +1309,52 @@ impl DownloadTask {
             } else {
                 0.0
             };
+            let counters = progress_counters(&self.state).await;
             self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
                 id: self.state.id,
                 bytes_downloaded: downloaded,
-                total_bytes: None,
+                total_bytes: content_length,
                 speed_bytes_per_sec: speed,
+                connections: counters.0.max(1),
+                completed_blocks: counters.1,
+                total_blocks: counters.2,
+                endgame: counters.3,
             }));
         }
 
         stdout.flush().await?;
+        let counters = progress_counters(&self.state).await;
         self.state.bus.emit(EngineEvent::TaskProgress(TaskProgress {
             id: self.state.id,
             bytes_downloaded: downloaded,
             total_bytes: None,
             speed_bytes_per_sec: 0.0,
+            connections: counters.0,
+            completed_blocks: counters.1,
+            total_blocks: counters.2,
+            endgame: counters.3,
         }));
         Ok(())
     }
+}
+
+/// Live counters the progress display needs: connection count, block
+/// completion, and whether end-game has engaged.
+///
+/// Streaming and stdout transfers have no block map, so they report zeros and
+/// the renderer hides the field.
+async fn progress_counters(state: &SharedState) -> (usize, u32, u32, bool) {
+    let connections = state.segment_mgr.lock().await.active_connection_count();
+    let (completed, total) = {
+        let bf = state.block_bitfield.lock().await;
+        (bf.completed_blocks(), bf.num_blocks)
+    };
+    (
+        connections,
+        completed,
+        total,
+        state.endgame.load(Ordering::Acquire),
+    )
 }
 
 fn is_retryable_error(e: &anyhow::Error) -> bool {

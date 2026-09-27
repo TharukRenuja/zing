@@ -9,6 +9,13 @@ pub struct TaskProgress {
     pub bytes_downloaded: u64,
     pub total_bytes: Option<u64>,
     pub speed_bytes_per_sec: f64,
+    /// Live connection count, for the progress display.
+    pub connections: usize,
+    /// Completed / total block counts, for the progress display.
+    pub completed_blocks: u32,
+    pub total_blocks: u32,
+    /// Whether the task has entered end-game mode.
+    pub endgame: bool,
 }
 
 #[derive(Clone, Debug)]
