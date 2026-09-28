@@ -1743,10 +1743,25 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     // rows the bar left behind, and indicatif's own clear is off by one for a
     // two-line bar, so the first row survives.
     let (final_tx, final_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<String>)>();
-    let bar_handle = match progress_type {
-        ProgressType::Bar => Some(tokio::spawn(progress_bar_listener(rx, final_rx))),
-        ProgressType::Json => Some(tokio::spawn(progress_json_writer(rx))),
-        ProgressType::None => None,
+    // Only the bar display can position a line correctly under itself, so it
+    // takes the final lines. The other modes have no display, so their lines are
+    // printed directly afterwards — onto stderr, because in those modes stdout
+    // carries the response body or the progress JSON and must stay clean.
+    let (bar_handle, unclaimed_finals) = match progress_type {
+        ProgressType::Bar => (
+            Some(tokio::spawn(progress_bar_listener(rx, final_rx))),
+            None,
+        ),
+        other => {
+            let _ = other;
+            (
+                match progress_type {
+                    ProgressType::Json => Some(tokio::spawn(progress_json_writer(rx))),
+                    _ => None,
+                },
+                Some(final_rx),
+            )
+        }
     };
 
     let cfg = Config::load(None);
@@ -1981,9 +1996,20 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     if let Some(ref cmd) = on_error {
                         run_hook(cmd, &name);
                     }
-                    return Ok(msg.map(TaskOutcome::Cancelled).or_else(|| {
-                        tracing::error!("{name}: {e}");
-                        None
+                    // A decline is a decision, not a failure, so it exits 0.
+                    // Anything else is a real error and must not.
+                    return Ok(Some(match msg {
+                        Some(msg) => TaskOutcome::Cancelled { id: task_id, msg },
+                        None => {
+                            // A request-mode failure has no file to point at, so
+                            // naming the path the URL implied would be noise.
+                            let line = if to_stdout {
+                                format!("{e}")
+                            } else {
+                                format!("{name}: {e}")
+                            };
+                            TaskOutcome::Failed(line)
+                        }
                     }));
                 }
             }
@@ -2056,12 +2082,21 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     // Collect summaries; they are printed only after the bar display has
     // released its lines, otherwise the display erases them.
     let mut outcomes: Vec<TaskOutcome> = Vec::new();
+    // A transfer that ends in an error must be visible to a script, so it
+    // counts towards the exit status rather than only being printed.
+    let mut failed = 0usize;
     while let Some(result) = join_set.join_next().await {
-        match result {
-            Ok(Ok(Some(outcome))) => outcomes.push(outcome),
-            Ok(Ok(None)) => {}
-            Ok(Err(e)) => tracing::error!("Download task failed: {e}"),
-            Err(e) => tracing::error!("Download task failed: {e}"),
+        let outcome = match result {
+            Ok(Ok(Some(outcome))) => Some(outcome),
+            Ok(Ok(None)) => None,
+            Ok(Err(e)) => Some(TaskOutcome::Failed(format!("{e}"))),
+            Err(e) => Some(TaskOutcome::Failed(format!("{e}"))),
+        };
+        if let Some(outcome) = outcome {
+            if matches!(outcome, TaskOutcome::Failed(_)) {
+                failed += 1;
+            }
+            outcomes.push(outcome);
         }
     }
 
@@ -2073,7 +2108,8 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 s.id,
                 download_summary_line(&s.filename, s.elapsed, s.checksum_ok),
             ),
-            TaskOutcome::Cancelled(msg) => (0, vec![msg.clone()]),
+            TaskOutcome::Cancelled { id, msg } => (*id, vec![msg.clone()]),
+            TaskOutcome::Failed(msg) => (0, vec![format!("\x1b[31mERROR\x1b[0m {msg}")]),
             TaskOutcome::Paused {
                 id,
                 filename,
@@ -2088,6 +2124,23 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     drop(bus);
     if let Some(h) = bar_handle {
         h.await??;
+    }
+    if let Some(mut rx) = unclaimed_finals {
+        while let Some((_, lines)) = rx.recv().await {
+            for line in lines {
+                eprintln!("{line}");
+            }
+        }
+    }
+
+    if failed > 0 {
+        // Every failure has already been reported, so exit here rather than
+        // returning an error the top level would print a second time. Exiting
+        // skips destructors, hence the explicit flush.
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        std::process::exit(1);
     }
     Ok(())
 }
@@ -2973,7 +3026,12 @@ fn paused_line(filename: &str, bytes: u64, total: Option<u64>) -> String {
 enum TaskOutcome {
     Completed(Summary),
     /// The user declined a filename conflict; carries the line to print.
-    Cancelled(String),
+    Cancelled {
+        id: u64,
+        msg: String,
+    },
+    /// A real error, already worded for the user. Counts towards a non-zero exit.
+    Failed(String),
     /// An interrupted transfer, with how far it got.
     Paused {
         id: u64,
@@ -3304,7 +3362,7 @@ mod short_flag_consistency_tests {
     }
 
     #[test]
-    fn schedule_keeps_e_for_end_and_uses_R_for_referer() {
+    fn schedule_keeps_e_for_end_time_and_r_for_referer() {
         let s = sub("schedule");
         let mut s = s;
         let add = s
