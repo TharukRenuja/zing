@@ -2,7 +2,7 @@ use crate::connection::happy_eyeballs::resolve_host;
 use crate::connection::ConnectionPool;
 use crate::constants;
 use crate::cookie_store::ZingCookieStore;
-use crate::engine::event::{EngineEvent, EventBus, TaskId, TaskProgress};
+use crate::engine::event::{EngineEvent, EventBus, TaskId, TaskPhase, TaskProgress};
 use crate::http_method::RequestSpec;
 use crate::probe;
 use crate::ratelimit::{SharedRateLimiter, TokenBucket};
@@ -120,14 +120,14 @@ impl SharedState {
             }
             let mirror = mirrors[next - 1].clone();
             drop(mirrors);
-            tracing::info!("Failing over to mirror: {mirror}");
+            tracing::debug!("Failing over to mirror: {mirror}");
             *self.url.lock().await = mirror;
             return true;
         }
         // current URL is primary (not in mirrors list)
         if let Some(first) = mirrors.first().cloned() {
             drop(mirrors);
-            tracing::info!("Failing over to mirror: {first}");
+            tracing::debug!("Failing over to mirror: {first}");
             *self.url.lock().await = first;
             true
         } else {
@@ -360,6 +360,15 @@ impl DownloadTask {
         &self.state.bus
     }
 
+    /// Tell observers what pre-transfer work is happening, so a progress display
+    /// is not left at 0 B looking hung.
+    fn emit_phase(&self, phase: TaskPhase) {
+        self.state.bus.emit(EngineEvent::TaskPhase {
+            id: self.state.id,
+            phase,
+        });
+    }
+
     pub async fn snapshot(&self) -> TaskSnapshot {
         let seg_mgr = self.state.segment_mgr.lock().await;
         let conns = seg_mgr.connections.clone();
@@ -481,6 +490,7 @@ impl DownloadTask {
             return self.run_streaming().await;
         }
 
+        self.emit_phase(TaskPhase::Probing);
         let profile = probe::probe(
             &self.state.pool,
             &current_url,
@@ -508,6 +518,7 @@ impl DownloadTask {
                 let mut all_urls = vec![current_url.clone()];
                 all_urls.extend(mirrors_guard.clone());
                 drop(mirrors_guard);
+                self.emit_phase(TaskPhase::CheckingMirrors);
                 let sorted = crate::probe::probe_mirrors(&self.state.pool, &all_urls).await;
                 if sorted.len() > 1 {
                     *self.state.url.lock().await = sorted[0].clone();
@@ -550,6 +561,9 @@ impl DownloadTask {
 
         let filename = self.state.filename.lock().await.clone();
         let control_path = ControlFile::control_path(Path::new(&filename));
+        if control_path.exists() {
+            self.emit_phase(TaskPhase::Resuming);
+        }
         let resume = ControlFile::load(&control_path).await.ok();
 
         // Existing-file conflict handling: only for fresh downloads (no control file).
@@ -570,6 +584,7 @@ impl DownloadTask {
 
         if let Some(ref cf) = resume {
             // Verify the download file still exists and hasn't been truncated/corrupted
+            self.emit_phase(TaskPhase::Verifying);
             let file_ok = match tokio::fs::metadata(&filename).await {
                 Ok(m) => m.len() >= cf.bitfield.total_downloaded(),
                 Err(_) => false,
@@ -644,6 +659,7 @@ impl DownloadTask {
         total_size: u64,
     ) -> Result<()> {
         tracing::debug!("Segmented: {} bytes", total_size);
+        self.emit_phase(TaskPhase::Starting);
         self.state.endgame.store(false, Ordering::Release);
         self.state.endgame_cursor.store(0, Ordering::Release);
         let mut filename = self.state.filename.lock().await.clone();
@@ -731,13 +747,14 @@ impl DownloadTask {
         }));
 
         if is_small_file {
-            tracing::info!(
+            tracing::debug!(
                 "Small file ({} bytes < {} threshold): 1 connection, no measurement",
                 total_size,
                 constants::SMALL_FILE_THRESHOLD,
             );
         } else {
             // Large file: measure real speed of connection 0, then decide optimal count
+            self.emit_phase(TaskPhase::Measuring);
             tokio::time::sleep(std::time::Duration::from_secs(
                 constants::MEASURE_DURATION_SECS,
             ))

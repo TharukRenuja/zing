@@ -79,6 +79,36 @@ impl<'w> tracing_subscriber::fmt::MakeWriter<'w> for TeeWriter {
     }
 }
 
+/// A writer that suspends the progress display around each write.
+///
+/// indicatif draws the progress bar to stderr, the same stream tracing uses. A
+/// log line landing between two redraws makes `MultiProgress` re-emit its block
+/// below the line, so the bar appears to be duplicated. Suspending first keeps
+/// the log text and the bar from interleaving.
+struct SuspendWriter {
+    inner: std::io::Stderr,
+}
+
+impl std::io::Write for SuspendWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        without_progress(|| self.inner.write(buf))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        without_progress(|| self.inner.flush())
+    }
+}
+
+impl<'w> tracing_subscriber::fmt::MakeWriter<'w> for SuspendWriter {
+    type Writer = SuspendWriter;
+
+    fn make_writer(&'w self) -> Self::Writer {
+        SuspendWriter {
+            inner: std::io::stderr(),
+        }
+    }
+}
+
 fn parse_headers(raw: &[String]) -> Vec<(String, String)> {
     raw.iter()
         .filter_map(|s| {
@@ -291,7 +321,9 @@ fn progress_display() -> &'static std::sync::Mutex<Option<Arc<indicatif::MultiPr
 
 /// Run `f` with the progress bars suspended so its output stays visible.
 fn without_progress<T>(f: impl FnOnce() -> T) -> T {
-    let display = progress_display().lock().ok().and_then(|g| g.clone());
+    // `try_lock` so a write that races the listener registering its display can
+    // never deadlock against it.
+    let display = progress_display().try_lock().ok().and_then(|g| g.clone());
     match display {
         Some(mp) => mp.suspend(f),
         None => f(),
@@ -843,7 +875,11 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        BoxMakeWriter::new(std::io::stderr)
+        // Suspend the progress bar around log writes so they cannot interleave
+        // with it and make the bar look duplicated.
+        BoxMakeWriter::new(SuspendWriter {
+            inner: std::io::stderr(),
+        })
     };
 
     tracing_subscriber::fmt()
@@ -1042,7 +1078,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 };
 
                 if daemon_ok {
-                    tracing::info!("zing daemon detected, TUI driving daemon tasks");
+                    tracing::debug!("zing daemon detected, TUI driving daemon tasks");
 
                     let cfg = Config::load(None);
                     let download_dir = dir.clone().unwrap_or_else(|| cfg.download_dir());
@@ -1166,7 +1202,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 }
 
                 if standalone {
-                    tracing::info!("Forced standalone TUI mode");
+                    tracing::debug!("Forced standalone TUI mode");
                 }
 
                 let cfg = Config::load(None);
@@ -1197,7 +1233,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 let cookie_jar: Option<Arc<ZingCookieStore>> = match &load_cookies {
                     Some(path) => match ZingCookieStore::from_netscape_file(path) {
                         Ok(store) => {
-                            tracing::info!("Loaded cookies from {}", path);
+                            tracing::debug!("Loaded cookies from {}", path);
                             Some(Arc::new(store))
                         }
                         Err(e) => {
@@ -1423,7 +1459,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     };
 
     if daemon_ok {
-        tracing::info!("zing daemon detected, proxying commands");
+        tracing::debug!("zing daemon detected, proxying commands");
 
         let cfg = Config::load(None);
         let download_dir = args.dir.clone().unwrap_or_else(|| cfg.download_dir());
@@ -1501,7 +1537,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     if progress_type == ProgressType::Bar {
                         tracing::debug!("Downloading: {name}");
                     } else {
-                        tracing::info!("Downloading: {name}");
+                        tracing::debug!("Downloading: {name}");
                     }
                     let pt = progress_type;
                     let mp = mp.clone();
@@ -1520,11 +1556,11 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     }
 
     if args.standalone {
-        tracing::info!("Forced standalone mode, running directly");
+        tracing::debug!("Forced standalone mode, running directly");
     } else if can_proxy && !daemon_ok {
-        tracing::info!("Daemon incompatible, running standalone");
+        tracing::debug!("Daemon incompatible, running standalone");
     } else {
-        tracing::info!("No daemon found, running standalone");
+        tracing::debug!("No daemon found, running standalone");
     }
 
     // Pipe mode dispatch (non-raw modes)
@@ -1924,6 +1960,12 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 let mut checksum_ok = None;
                 if !to_stdout {
                     if let Some(ref chk) = effective_checksum {
+                        // verify_file is synchronous and can hash gigabytes, so
+                        // announce it instead of freezing the bar at 100%.
+                        bus.emit(EngineEvent::TaskPhase {
+                            id: task_id,
+                            phase: zing_core::engine::event::TaskPhase::VerifyingChecksum,
+                        });
                         let path = Path::new(&filename);
                         match checksum::verify_file(path, chk) {
                             Ok(true) => checksum_ok = Some(true),
@@ -2836,8 +2878,8 @@ const BAR_GLYPHS: [(&str, &str, &str); 4] = [
 fn bar_style_for(layout: BarLayout, glyphs: (&str, &str, &str)) -> indicatif::ProgressStyle {
     let (fill, head, empty) = glyphs;
     let line1 = match layout {
-        BarLayout::Narrow => "{prefix:.dim} {wide_msg:>}",
-        _ => "{prefix:.dim}{wide_msg:>}",
+        BarLayout::Narrow => "{prefix:.bold.yellow} {wide_msg:>}",
+        _ => "{prefix:.bold.yellow}{wide_msg:>}",
     };
     let line2 = match layout {
         BarLayout::Wide => {
@@ -2858,7 +2900,7 @@ fn bar_style_for(layout: BarLayout, glyphs: (&str, &str, &str)) -> indicatif::Pr
 
 /// The style for downloads whose total size is unknown.
 fn bar_style_unknown(layout: BarLayout) -> indicatif::ProgressStyle {
-    let line1 = "{prefix:.dim}{wide_msg:>}";
+    let line1 = "{prefix:.bold.yellow}{wide_msg:>}";
     let line2 = match layout {
         BarLayout::Narrow => "  [{wide_bar:.cyan}] {bytes}  {bytes_per_sec}",
         _ => "  [{wide_bar:.cyan}] {bytes}  {bytes_per_sec}  ⏱ {elapsed}",
@@ -2914,7 +2956,7 @@ fn print_download_summary(
         None => format!("{green}✓{reset} {bold}{filename}{reset}"),
     };
 
-    println!(
+    let line = format!(
         "{status} {dim}({size} · {elapsed} · {speed}){reset}",
         size = zing_ext::human::human_bytes(size),
         elapsed = {
@@ -2927,11 +2969,28 @@ fn print_download_summary(
         },
         speed = zing_ext::human::human_speed(avg_speed),
     );
+    print_below_bars(&line);
 
     match checksum_ok {
-        Some(true) => println!("{green}  Checksum: OK{reset}"),
-        Some(false) => println!("{red}  Checksum: MISMATCH{reset}"),
+        Some(true) => print_below_bars(&format!("{green}  Checksum: OK{reset}")),
+        Some(false) => print_below_bars(&format!("{red}  Checksum: MISMATCH{reset}")),
         None => {}
+    }
+}
+
+/// Print a line beneath the progress bars, clearing their region first.
+///
+/// A finished bar is two lines tall, so a bare `println!` would land on top of
+/// or below a leftover bar and read as a second progress bar. `MultiProgress`
+/// does the cursor arithmetic under its own lock, which also avoids racing the
+/// bar renderer.
+fn print_below_bars(line: &str) {
+    let display = progress_display().try_lock().ok().and_then(|g| g.clone());
+    match display {
+        Some(mp) => {
+            let _ = mp.println(line);
+        }
+        None => println!("{line}"),
     }
 }
 
@@ -2946,6 +3005,10 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
         total: Option<u64>,
         layout: BarLayout,
         status: String,
+        /// Set while frozen by a pause, so the tick can be restarted on resume.
+        paused: bool,
+        /// Most recent pre-transfer stage, shown until real progress arrives.
+        phase: Option<zing_core::engine::event::TaskPhase>,
     }
 
     let mp = Arc::new(MultiProgress::new());
@@ -2963,19 +3026,38 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
         match rx.recv().await {
             Ok(EngineEvent::TaskCreated { id, url }) => {
                 let display_name = filename::from_url(&url);
-                let bar = mp.add(ProgressBar::new(0));
-                bar.set_prefix(format!(" {display_name}"));
-                bar.set_style(bar_style_unknown(layout));
-                bar.enable_steady_tick(std::time::Duration::from_millis(100));
-                bars.insert(
-                    id,
+                // TaskCreated is re-emitted on each resume cycle. Adding a
+                // second bar would orphan the first: it stays registered with
+                // the MultiProgress and keeps rendering, so the task appears to
+                // have two progress bars. Reuse the existing one instead.
+                let entry = bars.entry(id).or_insert_with(|| {
+                    let bar = mp.add(ProgressBar::new(0));
+                    bar.enable_steady_tick(std::time::Duration::from_millis(100));
                     Entry {
                         bar,
                         total: None,
                         layout,
                         status: String::new(),
-                    },
-                );
+                        paused: false,
+                        phase: None,
+                    }
+                });
+                entry.bar.set_prefix(format!(" {display_name}"));
+                entry.bar.set_style(bar_style_unknown(entry.layout));
+                entry.bar.set_length(0);
+                entry
+                    .bar
+                    .enable_steady_tick(std::time::Duration::from_millis(100));
+                entry.total = None;
+                entry.status.clear();
+                entry.paused = false;
+                entry.phase = None;
+            }
+            Ok(EngineEvent::TaskPhase { id, phase }) => {
+                if let Some(entry) = bars.get_mut(&id) {
+                    entry.phase = Some(phase);
+                    entry.bar.set_message(format!("{phase}…"));
+                }
             }
             Ok(EngineEvent::TaskProgress(p)) => {
                 if let Some(entry) = bars.get_mut(&p.id) {
@@ -2985,8 +3067,19 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                         layout = BarLayout::for_width(width);
                     }
 
-                    let status =
+                    let stats =
                         status_text(p.connections, p.completed_blocks, p.total_blocks, p.endgame);
+                    // Before any bytes move there is nothing to report, so show
+                    // the current stage instead of an empty right-hand side.
+                    let status = if entry.total.is_none() && p.bytes_downloaded == 0 {
+                        match entry.phase {
+                            Some(phase) => format!("{phase}…"),
+                            None => stats,
+                        }
+                    } else {
+                        stats
+                    };
+                    entry.phase = None;
 
                     // Re-apply the style when the tier changes or the total
                     // size first becomes known.
@@ -3010,6 +3103,12 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                     };
                     let style_changed = entry.layout != next_layout || became_sized;
 
+                    if entry.paused {
+                        entry
+                            .bar
+                            .enable_steady_tick(std::time::Duration::from_millis(100));
+                        entry.paused = false;
+                    }
                     entry.bar.set_position(p.bytes_downloaded);
                     entry.bar.set_message(status.clone());
                     entry.status = status;
@@ -3024,15 +3123,21 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
                 }
             }
             Ok(EngineEvent::TaskCompleted { id, .. }) => {
+                // Clear rather than finish: finish() leaves the bar on screen,
+                // and a two-line leftover reads as a duplicate progress bar.
+                // The per-file summary line is printed by the CLI instead.
                 if let Some(entry) = bars.remove(&id) {
-                    entry.bar.set_message("done".to_string());
-                    entry.bar.finish();
+                    entry.bar.finish_and_clear();
                 }
             }
             Ok(EngineEvent::Paused { id, .. }) => {
-                if let Some(entry) = bars.remove(&id) {
+                // Do NOT call finish(): indicatif's finish() forces the position
+                // to the bar length, which would render an interrupted download
+                // as 100%. Freeze where it actually stopped.
+                if let Some(entry) = bars.get_mut(&id) {
                     entry.bar.set_message("paused".to_string());
-                    entry.bar.finish();
+                    entry.bar.disable_steady_tick();
+                    entry.paused = true;
                 }
             }
             Ok(EngineEvent::TaskFailed { id, error, .. }) => {
@@ -3309,5 +3414,40 @@ mod bar_layout_tests {
                 let _ = bar_style_unknown(layout);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod phase_display_tests {
+    use super::*;
+    use zing_core::engine::event::TaskPhase;
+
+    #[test]
+    fn every_phase_has_a_human_label() {
+        // The label is what the user sees next to the filename, so it must not
+        // fall back to a debug name.
+        for phase in [
+            TaskPhase::Connecting,
+            TaskPhase::Probing,
+            TaskPhase::CheckingMirrors,
+            TaskPhase::Resuming,
+            TaskPhase::Verifying,
+            TaskPhase::Measuring,
+            TaskPhase::VerifyingChecksum,
+            TaskPhase::Starting,
+        ] {
+            let label = phase.to_string();
+            assert!(!label.is_empty());
+            assert!(
+                !label.chars().any(|c| c.is_ascii_uppercase() || c == '_'),
+                "{label:?} looks like a debug variant name"
+            );
+        }
+    }
+
+    #[test]
+    fn printed_summary_falls_back_to_plain_output() {
+        // No progress display registered: must not panic.
+        print_below_bars("summary line");
     }
 }

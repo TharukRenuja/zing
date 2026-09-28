@@ -26,6 +26,44 @@ pub struct SegmentInfo {
     pub downloaded: u64,
 }
 
+/// A stage of pre-transfer work, so a progress display can say what it is
+/// doing instead of sitting at 0 B looking hung.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskPhase {
+    /// Establishing a connection / resolving DNS.
+    Connecting,
+    /// The single range request that learns size and range support.
+    Probing,
+    /// Probing each mirror for RTT before picking the fastest.
+    CheckingMirrors,
+    /// Loading a `.zing` control file for a partial download.
+    Resuming,
+    /// Checking the control file's bitfield against the bytes on disk.
+    Verifying,
+    /// The short window used to size the connection count for large files.
+    Measuring,
+    /// Hashing the finished file.
+    VerifyingChecksum,
+    /// Handing work to the connection workers.
+    Starting,
+}
+
+impl fmt::Display for TaskPhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Connecting => "connecting",
+            Self::Probing => "probing server",
+            Self::CheckingMirrors => "checking mirrors",
+            Self::Resuming => "resuming",
+            Self::Verifying => "verifying partial download",
+            Self::Measuring => "measuring speed",
+            Self::VerifyingChecksum => "verifying checksum",
+            Self::Starting => "starting",
+        };
+        f.write_str(s)
+    }
+}
+
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum EngineEvent {
@@ -34,6 +72,11 @@ pub enum EngineEvent {
         url: String,
     },
     TaskProgress(TaskProgress),
+    /// A pre-transfer stage, so the UI can report what it is waiting for.
+    TaskPhase {
+        id: TaskId,
+        phase: TaskPhase,
+    },
     SegmentAllocated {
         task_id: TaskId,
         segment: SegmentInfo,
@@ -93,6 +136,9 @@ impl fmt::Display for EngineEvent {
         match self {
             EngineEvent::TaskCreated { id, url } => {
                 write!(f, "Task({id}) created: {url}")
+            }
+            EngineEvent::TaskPhase { id, phase } => {
+                write!(f, "Task({id}) phase: {phase}")
             }
             EngineEvent::TaskProgress(p) => {
                 let pct = p
