@@ -29,15 +29,24 @@ carries over:
 | Put data in the query string | `-G -d 'x=1'` | `-G -d 'x=1'` |
 | Headers only | `-I` | `-I` |
 | Pick a method explicitly | `-X DELETE` | `-X DELETE` |
-| Choose the method | `-o FILE`, `-H`, `-u`, `-A`, `-e`, `-x`, `-k` | same |
+| Choose the method | `-o FILE`, `-H`, `-u`, `-A`, `-R`, `-x`, `-k` | same, except referer is `-e` in curl |
 
 The method is inferred from what you send, exactly as curl does. `--data` gives
 `application/x-www-form-urlencoded`, repeated `-d` values join with `&`, and `-G`
 moves the data into the URL and drops the body. An explicit `-X` always wins.
 
-Note that `-d` is now `--data`; the output directory is `-W/--output-dir` (with
-`--dir` kept as an alias). zing keeps flags curl has no equivalent for, such as
-`-n/--connections`, `-m/--mirror`, `-c/--checksum`, and `--end-game`.
+Referer is `-R`, not curl's `-e`: zing spends `-e` on the schedule end time
+where that flag already had a job, and `-e` then means one thing everywhere.
+
+A short letter means one thing across the whole tool, or nothing at all. `-d` is
+`--data` everywhere, and the output directory is `-W/--output-dir` (with `--dir`
+kept as an alias) — including in `tui` and `schedule add`, which previously
+took `-d` for the directory while the root took it for the body. zing also keeps
+flags curl has no equivalent for, such as `-n/--connections`, `-m/--mirror`,
+`-c/--checksum`, and `--end-game`.
+
+For a full mapping, including the letters that mean something different here,
+see [Coming from curl](curl-guide.md).
 
 ## File downloads vs HTTP requests
 
@@ -66,6 +75,16 @@ destination overrides that, so a method flag plus `-o` or `-W` still saves:
 
 ```bash
 zing -X POST --data @body.json -o response.json https://api.example.com/submit
+```
+
+A non-2xx response is an error in either mode: zing writes nothing to stdout,
+puts a one-line explanation on stderr, and exits 1. In request mode the message
+names no file, because none is involved.
+
+```bash
+if zing -X GET "https://api.example.com/tokens/abc" > token.json; then
+  echo "ok"
+fi
 ```
 
 If you are porting commands from curl, see [Coming from curl](curl-guide.md)
@@ -173,7 +192,7 @@ here, and the behaviours that differ.
 | `--user-agent` | `-A` | Custom User-Agent header |
 | `--header` | `-H` | Custom HTTP header (repeatable) |
 | `-k, --insecure` | | Skip TLS verification |
-| `-e, --referer` | | Referer header |
+| `-R, --referer` | | Referer header |
 | `-X, --method` | | HTTP method (any RFC 9110 token) |
 | `-d, --data` | | Request body; repeatable, `@path` reads a file. Implies POST |
 | `-G, --get` | | Move `--data` into the query string, use GET |
@@ -231,9 +250,18 @@ zing https://example.com/a.zip https://example.com/b.zip
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success |
-| 1 | General error (download failed, bad args, etc.) |
-| 2 | Partial success (some URLs failed in batch mode) |
+| 0 | Success. A declined filename conflict also exits 0 — that is a decision, not a failure. |
+| 1 | Any transfer failed, or the arguments were unusable. |
+
+In batch mode every URL is still attempted; zing exits 1 if *any* of them
+failed. A request that returns a non-2xx status counts as a failure: nothing is
+written to stdout and the status is not swallowed, so `set -e` and `&&` chains
+behave as expected. The error text goes to stderr, which keeps stdout to the
+response body alone.
+
+The only distinction available is pass or fail. curl's separate exit codes
+(`22` for `--fail`, `7` for a connection refusal) are not reproduced, so read
+stderr if you need to tell those apart.
 
 ## Examples
 

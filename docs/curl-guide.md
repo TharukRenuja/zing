@@ -167,9 +167,15 @@ are the most common source of silently wrong commands:
 | `-s` | `--silent` | `--save-cookies` |
 | `-N` | `--no-buffer` | `--netrc` |
 | `-C` | `--continue-at` | `--content-disposition` |
-| `-e` | `--referer` | `--referer` *(same)* |
+| `-e` | `--referer` | the schedule end time, in `zing schedule add` only |
+| `-R` | — | `--referer` (curl's `-e` has no free equivalent) |
 | `-o` | `--output` | `--output` *(same)* |
 | `-d` | `--data` | `--data` *(same)* |
+
+A letter means one thing across the whole tool, or nothing: `-d` is `--data`
+everywhere, and simply does not exist in `tui` and `schedule add`, which have no
+request to make. There `-W/--output-dir` spells the output directory, the same as
+at the root.
 
 The safe habit is to spell long flags out when porting a command, or to re-read
 `zing --help` for any letter you are unsure of.
@@ -180,29 +186,28 @@ The safe habit is to spell long flags out when porting a command, or to re-read
 curl does not follow them unless you pass `-L`, so dropping `-L` during a port
 can silently change where you end up.
 
-**A non-2xx response in request mode is an error and the body is dropped.** zing
-prints `ERROR <path>: HTTP 404 Not Found` to stderr, writes nothing to stdout,
-and — this is the part that matters for scripts — **still exits 0**. There is no
-`--fail` flag and no way to make it non-zero, so neither `set -e` nor an `&&`
-chain will notice that the call failed. curl exits 22 for the same situation if
-you pass `--fail`, and exposes `%{http_code}` through `-w`.
+**A non-2xx response in request mode is an error, and zing exits non-zero.** It
+prints `ERROR HTTP 404 Not Found` to stderr, writes nothing to stdout, and
+exits 1, so `set -e`, an `&&` chain, and a `curl ... || echo failed` all behave
+the way you expect. There is no `--fail` flag because it would have nothing to
+turn on. The one place zing is stricter than bare curl is that it never writes
+the error body anywhere, so if you need a 4xx or 5xx payload, use `curl -sS`.
 
-If you need to branch on the result, check stderr rather than the exit status:
+Branch on the exit status, which is what a shell would do anyway:
 
 ```bash
-out=$(zing -X GET -H "X-Api-Key: $KEY" "$URL" 2>&1 >/dev/null) || true
-case "$out" in
-  *HTTP\ 2*) echo "ok" ;;
-  *)         echo "failed: $out" ;;
-esac
+if body=$(zing -X GET -H "X-Api-Key: $KEY" "$URL" 2>/dev/null); then
+  echo "$body" | jq .
+else
+  echo "request failed" >&2
+fi
 ```
 
-Passing `-o` does not rescue the body either: a failed request leaves the output
-file empty. Reach for curl when you need the error body, the status code, or a
-meaningful exit code.
+Note that a declined filename conflict — a user answering `c` at the overwrite
+prompt — is a decision, not a failure, and exits 0.
 
 **You cannot see the status line or response headers.** There is no `-i`,
-`-v`, or `-w`. Request mode writes the body and nothing else, so debugging an
+`-v`, or `-w` yet. Request mode writes the body and nothing else, so debugging an
 API means looking at the server logs or using `curl`.
 
 **Redirect, form, and encoding helpers are absent.** There is no `-F` for
