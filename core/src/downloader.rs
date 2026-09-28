@@ -195,6 +195,15 @@ impl DownloadTask {
         self.state.paused.load(Ordering::Acquire)
     }
 
+    /// The filename the engine settled on.
+    ///
+    /// Conflict renames and `Content-Disposition` are resolved inside the
+    /// engine, so the name a caller passed in may no longer be current. Callers
+    /// reporting results must use this instead.
+    pub async fn filename(&self) -> String {
+        self.state.filename.lock().await.clone()
+    }
+
     /// Clone the pause receiver for use in connection loops.
     pub fn pause_rx(&self) -> tokio::sync::watch::Receiver<bool> {
         self.state.pause_rx.clone()
@@ -1117,6 +1126,7 @@ impl DownloadTask {
                 id: self.state.id,
                 total_bytes: total,
                 duration: self.state.start_time.lock().await.elapsed(),
+                filename: self.state.filename.lock().await.clone(),
             });
             periodic_save.abort();
             let _ = tokio::fs::remove_file(&control_path).await;
@@ -1199,6 +1209,7 @@ impl DownloadTask {
                                 id: self.state.id,
                                 total_bytes: downloaded,
                                 duration: start.elapsed(),
+                                filename: self.state.filename.lock().await.clone(),
                             });
                             self.state.save_cookies().await;
                             return Ok(());
@@ -1313,6 +1324,7 @@ impl DownloadTask {
                                 id: self.state.id,
                                 total_bytes: downloaded,
                                 duration: start.elapsed(),
+                                filename: self.state.filename.lock().await.clone(),
                             });
                             self.state.save_cookies().await;
                             return Ok(());

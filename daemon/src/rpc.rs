@@ -139,16 +139,27 @@ fn event_to_json(event: &EngineEvent) -> Value {
             "bytes_downloaded": p.bytes_downloaded,
             "total_bytes": p.total_bytes,
             "speed_bytes_per_sec": p.speed_bytes_per_sec,
+            "connections": p.connections,
+            "completed_blocks": p.completed_blocks,
+            "total_block_count": p.total_blocks,
+            "endgame": p.endgame,
+        }),
+        TaskPhase { id, phase } => serde_json::json!({
+            "event": "TaskPhase",
+            "id": id,
+            "phase": phase.to_string(),
         }),
         TaskCompleted {
             id,
             total_bytes,
             duration,
+            filename,
         } => serde_json::json!({
             "event": "TaskCompleted",
             "id": id,
             "total_bytes": total_bytes,
             "duration_secs": duration.as_secs_f64(),
+            "filename": filename,
         }),
         TaskFailed { id, error, .. } => serde_json::json!({
             "event": "TaskFailed",

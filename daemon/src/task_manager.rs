@@ -756,6 +756,7 @@ impl TaskManager {
                                             id,
                                             total_bytes: t.downloaded,
                                             duration: std::time::Duration::ZERO,
+                                            filename: t.filename.clone(),
                                         });
                                         true
                                     }

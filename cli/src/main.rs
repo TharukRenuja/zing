@@ -1,8 +1,12 @@
+use crate::progress::{
+    print_below_bars, terminal_width, without_progress, BarDisplay, ProgressView,
+};
 mod args;
 mod config;
 mod daemon_client;
 mod extension;
 mod native_host;
+mod progress;
 mod remote_task;
 mod update;
 
@@ -16,7 +20,6 @@ use clap_complete::generate;
 use color_eyre::eyre::bail;
 use color_eyre::Result;
 use config::Config;
-use indicatif::ProgressBar;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -311,30 +314,6 @@ fn build_headers(args: &Args) -> Vec<(String, String)> {
 /// suspend the progress bars first: `MultiProgress` redraws on a timer, so any
 /// text written straight to stderr is erased within a frame, leaving the user
 /// blocked on a question they cannot see.
-static PROGRESS_DISPLAY: std::sync::OnceLock<
-    std::sync::Mutex<Option<Arc<indicatif::MultiProgress>>>,
-> = std::sync::OnceLock::new();
-
-fn progress_display() -> &'static std::sync::Mutex<Option<Arc<indicatif::MultiProgress>>> {
-    PROGRESS_DISPLAY.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-/// Run `f` with the progress bars suspended so its output stays visible.
-fn without_progress<T>(f: impl FnOnce() -> T) -> T {
-    // `try_lock` so a write that races the listener registering its display can
-    // never deadlock against it.
-    let display = progress_display().try_lock().ok().and_then(|g| g.clone());
-    match display {
-        Some(mp) => mp.suspend(f),
-        None => f(),
-    }
-}
-
-/// Ask the user how to resolve a filename conflict.
-///
-/// Returns `None` when there is no way to ask (no interactive terminal), so the
-/// caller can fail with a clear message instead of blocking forever on a
-/// question the user cannot see.
 fn ask_conflict(filename: &str) -> Option<zing_core::downloader::ConflictDecision> {
     use std::io::{IsTerminal, Write};
     use zing_core::downloader::ConflictDecision;
@@ -1486,10 +1465,15 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             cfg.throttle_reprobe,
             "throttle_reprobe",
         )?;
-        let mp = Arc::new(indicatif::MultiProgress::new());
+        let display = Arc::new(std::sync::Mutex::new(BarDisplay::new()));
+        tracing::info!(
+            "Downloading via the zing daemon ({} URL(s)). The transfer keeps running if you Ctrl+C.",
+            urls.len()
+        );
         if args.max_concurrent > 0 {
             let _ = daemon_client::set_max_concurrent(args.max_concurrent).await;
         }
+        let mut daemon_ids: Vec<u64> = Vec::new();
         for url_str in &urls {
             let params = serde_json::json!({
                 "url": url_str,
@@ -1530,24 +1514,54 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 "save_cookies": args.save_cookies,
                 "content_disposition": use_cd,
             });
+            // Subscribe before adding the task: the daemon starts it
+            // immediately, so opening the stream afterwards loses TaskCreated
+            // and the opening phase events.
+            let stream = match zing_core::rpc::open_subscribe().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Cannot subscribe to daemon events: {e}");
+                    continue;
+                }
+            };
             match daemon_client::send_request("zing.addUri", Some(params)).await {
                 Ok(resp) => {
                     let id = resp.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                    daemon_ids.push(id);
                     let name = zing_ext::filename::from_url(url_str);
-                    if progress_type == ProgressType::Bar {
-                        tracing::debug!("Downloading: {name}");
-                    } else {
-                        tracing::debug!("Downloading: {name}");
-                    }
                     let pt = progress_type;
-                    let mp = mp.clone();
+                    let display = Arc::clone(&display);
                     handles.push(tokio::spawn(async move {
-                        daemon_client::subscribe_and_show_progress(id, pt, mp).await;
+                        let done = daemon_client::subscribe_and_show_progress(
+                            stream, id, pt, &display, name,
+                        )
+                        .await;
+                        if let Some(done) = done {
+                            print_daemon_summary(&done);
+                        }
                     }));
                 }
                 Err(e) => tracing::error!("Daemon error: {e}"),
             }
         }
+        // Ctrl+C in daemon mode detaches: the transfer deliberately outlives
+        // this process, so say so rather than exiting silently like a crash.
+        {
+            let ids: Vec<u64> = daemon_ids.clone();
+            tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    progress::print_below_bars(&format!(
+                        "Detached — still downloading in the daemon ({}).\n  zing list     check progress\n  zing remove <id>  stop it",
+                        ids.iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                std::process::exit(0);
+            });
+        }
+
         // Wait for all progress listeners so the CLI doesn't exit before showing results
         for h in handles {
             let _ = h.await;
@@ -1897,7 +1911,10 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 return Ok(());
             }
 
-            // Normal completion
+            // Normal completion. Use the name the engine actually settled on: a
+            // conflict rename or Content-Disposition may have changed it, and
+            // the summary and the completion hook must both name the real file.
+            let final_name = task.filename().await;
             let mut checksum_ok = None;
             if !to_stdout {
                 if let Some(ref chk) = effective_checksum {
@@ -1907,7 +1924,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         id: task_id,
                         phase: zing_core::engine::event::TaskPhase::VerifyingChecksum,
                     });
-                    let path = Path::new(&filename);
+                    let path = Path::new(&final_name);
                     match checksum::verify_file(path, chk) {
                         Ok(true) => checksum_ok = Some(true),
                         Ok(false) => checksum_ok = Some(false),
@@ -1917,10 +1934,10 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         }
                     }
                 }
-                print_download_summary(&filename, started_at, checksum_ok);
+                print_download_summary(&final_name, started_at, checksum_ok);
             }
             if let Some(ref cmd) = on_complete {
-                run_hook(cmd, &filename);
+                run_hook(cmd, &final_name);
             }
 
             Ok::<(), color_eyre::Report>(())
@@ -2757,117 +2774,34 @@ fn pad_visible(s: &str, width: usize) -> String {
     }
 }
 
-/// How much of the layout fits in the current terminal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BarLayout {
-    /// Two full lines with every field.
-    Wide,
-    /// Two lines, smaller sizes and no block count.
-    Medium,
-    /// One line with the essentials only.
-    Narrow,
-}
-
-impl BarLayout {
-    fn for_width(width: usize) -> Self {
-        match width {
-            0..=59 => Self::Narrow,
-            60..=95 => Self::Medium,
-            _ => Self::Wide,
-        }
+/// The completion line for a task driven by the daemon. Same shape as the
+/// standalone summary, sourced from the daemon's `TaskCompleted` event.
+fn format_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs_f64();
+    if secs < 60.0 {
+        format!("{secs:.1}s")
+    } else {
+        format!("{}m{:02}s", (secs as u64) / 60, (secs as u64) % 60)
     }
 }
 
-/// Right-hand status text for the first line: block count, connections, and
-/// the end-game marker. Fields that do not apply are dropped so the line stays
-/// readable instead of showing `0/0 blocks`.
-fn status_text(
-    connections: usize,
-    completed_blocks: u32,
-    total_blocks: u32,
-    endgame: bool,
-) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if total_blocks > 0 {
-        parts.push(format!("{completed_blocks}/{total_blocks} blocks"));
-    }
-    if connections > 0 {
-        parts.push(if connections == 1 {
-            "1 conn".to_string()
-        } else {
-            format!("{connections} conns")
-        });
-    }
-    if endgame {
-        parts.push("endgame".to_string());
-    }
-    parts.join("  ·  ")
-}
-
-/// Progress bar styles. The first is the default; the others are one line of
-/// config away in [`bar_style_for`].
-const BAR_GLYPHS: [(&str, &str, &str); 4] = [
-    ("=", ">", "."), // classic: [========>......]
-    ("█", "█", "░"), // solid blocks
-    ("━", "━", "╌"), // rounded
-    ("▰", "▰", "▱"), // thin blocks
-];
-
-/// Build the two-line style for a layout tier and glyph set.
-fn bar_style_for(layout: BarLayout, glyphs: (&str, &str, &str)) -> indicatif::ProgressStyle {
-    let (fill, head, empty) = glyphs;
-    let line1 = match layout {
-        BarLayout::Narrow => "{prefix:.bold.yellow} {wide_msg:>}",
-        _ => "{prefix:.bold.yellow}{wide_msg:>}",
+fn print_daemon_summary(done: &daemon_client::Completion) {
+    let green = "\x1b[32m";
+    let dim = "\x1b[2m";
+    let reset = "\x1b[0m";
+    let elapsed = format_duration(std::time::Duration::from_secs_f64(done.duration_secs));
+    let speed = if done.duration_secs > 0.0 {
+        (done.total_bytes as f64 / done.duration_secs) as u64
+    } else {
+        0
     };
-    let line2 = match layout {
-        BarLayout::Wide => {
-            "  [{wide_bar:.cyan}] {percent:>3}%  {bytes}/{total_bytes}  \
-             {bytes_per_sec}  eta {eta}  ⏱ {elapsed}"
-        }
-        BarLayout::Medium => {
-            "  [{wide_bar:.cyan}] {percent:>3}%  {bytes}/{total_bytes}  \
-             {bytes_per_sec}  {eta}"
-        }
-        BarLayout::Narrow => "  [{wide_bar:.cyan}] {percent:>3}%  {bytes_per_sec}",
-    };
-    indicatif::ProgressStyle::default_bar()
-        .template(&format!("{line1}\n{line2}"))
-        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
-        .progress_chars(&format!("{fill}{head}{empty}"))
-}
-
-/// The style for downloads whose total size is unknown.
-fn bar_style_unknown(layout: BarLayout) -> indicatif::ProgressStyle {
-    let line1 = "{prefix:.bold.yellow}{wide_msg:>}";
-    let line2 = match layout {
-        BarLayout::Narrow => "  [{wide_bar:.cyan}] {bytes}  {bytes_per_sec}",
-        _ => "  [{wide_bar:.cyan}] {bytes}  {bytes_per_sec}  ⏱ {elapsed}",
-    };
-    indicatif::ProgressStyle::default_bar()
-        .template(&format!("{line1}\n{line2}"))
-        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
-        .progress_chars("=>.")
-}
-
-#[cfg(unix)]
-fn terminal_width() -> usize {
-    use std::os::fd::AsRawFd;
-    unsafe {
-        let mut ws: libc::winsize = std::mem::zeroed();
-        if libc::ioctl(std::io::stderr().as_raw_fd(), libc::TIOCGWINSZ, &mut ws) == 0
-            && ws.ws_col > 0
-        {
-            ws.ws_col as usize
-        } else {
-            80
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn terminal_width() -> usize {
-    80
+    print_below_bars(&format!(
+        "{green}\u{2713}{reset} \u{1b}[1m{}\u{1b}[0m {dim}({} · {} · {}){reset}",
+        done.filename,
+        zing_ext::human::human_bytes(done.total_bytes),
+        elapsed,
+        zing_ext::human::human_speed(speed),
+    ));
 }
 
 fn print_download_summary(
@@ -2917,184 +2851,43 @@ fn print_download_summary(
     }
 }
 
-/// Print a line beneath the progress bars, clearing their region first.
-///
-/// A finished bar is two lines tall, so a bare `println!` would land on top of
-/// or below a leftover bar and read as a second progress bar. `MultiProgress`
-/// does the cursor arithmetic under its own lock, which also avoids racing the
-/// bar renderer.
-fn print_below_bars(line: &str) {
-    let display = progress_display().try_lock().ok().and_then(|g| g.clone());
-    match display {
-        Some(mp) => {
-            let _ = mp.println(line);
-        }
-        None => println!("{line}"),
-    }
-}
-
+/// Drive the shared bar display from in-process engine events.
 async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Result<()> {
-    use indicatif::MultiProgress;
-    use std::collections::HashMap;
     use tokio::sync::broadcast::error::RecvError;
 
-    /// Per-task render state.
-    struct Entry {
-        bar: ProgressBar,
-        total: Option<u64>,
-        layout: BarLayout,
-        status: String,
-        /// Set while frozen by a pause, so the tick can be restarted on resume.
-        paused: bool,
-        /// Most recent pre-transfer stage, shown until real progress arrives.
-        phase: Option<zing_core::engine::event::TaskPhase>,
-    }
-
-    let mp = Arc::new(MultiProgress::new());
-    // Publish it so interactive prompts can suspend the bars.
-    if let Ok(mut slot) = progress_display().lock() {
-        *slot = Some(Arc::clone(&mp));
-    }
-    let mut bars: HashMap<u64, Entry> = HashMap::new();
-    let glyphs = BAR_GLYPHS[0];
-    // Re-read the width every tick so a terminal resize is picked up live.
-    let mut width = terminal_width();
-    let mut layout = BarLayout::for_width(width);
-
+    let mut display = BarDisplay::new();
     loop {
         match rx.recv().await {
             Ok(EngineEvent::TaskCreated { id, url }) => {
-                let display_name = filename::from_url(&url);
-                // TaskCreated is re-emitted on each resume cycle. Adding a
-                // second bar would orphan the first: it stays registered with
-                // the MultiProgress and keeps rendering, so the task appears to
-                // have two progress bars. Reuse the existing one instead.
-                let entry = bars.entry(id).or_insert_with(|| {
-                    let bar = mp.add(ProgressBar::new(0));
-                    bar.enable_steady_tick(std::time::Duration::from_millis(100));
-                    Entry {
-                        bar,
-                        total: None,
-                        layout,
-                        status: String::new(),
-                        paused: false,
-                        phase: None,
-                    }
-                });
-                entry.bar.set_prefix(format!(" {display_name}"));
-                entry.bar.set_style(bar_style_unknown(entry.layout));
-                entry.bar.set_length(0);
-                entry
-                    .bar
-                    .enable_steady_tick(std::time::Duration::from_millis(100));
-                entry.total = None;
-                entry.status.clear();
-                entry.paused = false;
-                entry.phase = None;
+                display.on_created(id, &filename::from_url(&url));
             }
             Ok(EngineEvent::TaskPhase { id, phase }) => {
-                if let Some(entry) = bars.get_mut(&id) {
-                    entry.phase = Some(phase);
-                    entry.bar.set_message(format!("{phase}…"));
-                }
+                display.on_phase(id, &phase.to_string());
             }
             Ok(EngineEvent::TaskProgress(p)) => {
-                if let Some(entry) = bars.get_mut(&p.id) {
-                    let now_width = terminal_width();
-                    if now_width != width {
-                        width = now_width;
-                        layout = BarLayout::for_width(width);
-                    }
-
-                    let stats =
-                        status_text(p.connections, p.completed_blocks, p.total_blocks, p.endgame);
-                    // Before any bytes move there is nothing to report, so show
-                    // the current stage instead of an empty right-hand side.
-                    let status = if entry.total.is_none() && p.bytes_downloaded == 0 {
-                        match entry.phase {
-                            Some(phase) => format!("{phase}…"),
-                            None => stats,
-                        }
-                    } else {
-                        stats
-                    };
-                    entry.phase = None;
-
-                    // Re-apply the style when the tier changes or the total
-                    // size first becomes known.
-                    let became_sized =
-                        entry.total.is_none() && p.total_bytes.is_some_and(|t| t > 0);
-                    if became_sized {
-                        entry.total = p.total_bytes;
-                        // Without this the bar length stays 0 and indicatif
-                        // reports 100% at every position.
-                        if let Some(t) = entry.total {
-                            entry.bar.set_length(t);
-                        }
-                    } else if entry.total.is_none() {
-                        entry.total = p.total_bytes.filter(|t| *t > 0);
-                    }
-
-                    let next_layout = if layout == BarLayout::Narrow {
-                        BarLayout::Narrow
-                    } else {
-                        layout
-                    };
-                    let style_changed = entry.layout != next_layout || became_sized;
-
-                    if entry.paused {
-                        entry
-                            .bar
-                            .enable_steady_tick(std::time::Duration::from_millis(100));
-                        entry.paused = false;
-                    }
-                    entry.bar.set_position(p.bytes_downloaded);
-                    entry.bar.set_message(status.clone());
-                    entry.status = status;
-
-                    if style_changed {
-                        entry.layout = next_layout;
-                        entry.bar.set_style(match entry.total {
-                            Some(_) => bar_style_for(next_layout, glyphs),
-                            None => bar_style_unknown(next_layout),
-                        });
-                    }
-                }
+                display.on_progress(
+                    p.id,
+                    None,
+                    &ProgressView {
+                        bytes_downloaded: p.bytes_downloaded,
+                        total_bytes: p.total_bytes,
+                        speed_bytes_per_sec: p.speed_bytes_per_sec,
+                        connections: p.connections,
+                        completed_blocks: p.completed_blocks,
+                        total_blocks: p.total_blocks,
+                        endgame: p.endgame,
+                    },
+                );
             }
-            Ok(EngineEvent::TaskCompleted { id, .. }) => {
-                // Clear rather than finish: finish() leaves the bar on screen,
-                // and a two-line leftover reads as a duplicate progress bar.
-                // The per-file summary line is printed by the CLI instead.
-                if let Some(entry) = bars.remove(&id) {
-                    entry.bar.finish_and_clear();
-                }
-            }
-            Ok(EngineEvent::Paused { id, .. }) => {
-                // Do NOT call finish(): indicatif's finish() forces the position
-                // to the bar length, which would render an interrupted download
-                // as 100%. Freeze where it actually stopped.
-                if let Some(entry) = bars.get_mut(&id) {
-                    entry.bar.set_message("paused".to_string());
-                    entry.bar.disable_steady_tick();
-                    entry.paused = true;
-                }
-            }
-            Ok(EngineEvent::TaskFailed { id, error, .. }) => {
-                if let Some(entry) = bars.remove(&id) {
-                    entry.bar.set_message("failed".to_string());
-                    entry.bar.finish();
-                }
-                tracing::error!("{error}");
-            }
+            Ok(EngineEvent::TaskCompleted { id, .. }) => display.on_completed(id),
+            Ok(EngineEvent::Paused { id, .. }) => display.on_paused(id),
+            Ok(EngineEvent::TaskFailed { id, .. }) => display.on_failed(id),
             Ok(_) => {}
             Err(RecvError::Closed) => break,
             Err(RecvError::Lagged(n)) => tracing::warn!("Bus lagged by {n}"),
         }
     }
-    // Clear remaining bars
-    for (_, entry) in bars.drain() {
-        entry.bar.finish_and_clear();
-    }
+    display.finish_all();
     Ok(())
 }
 
@@ -3114,10 +2907,12 @@ fn event_to_json_line(event: &EngineEvent) -> Option<String> {
             id,
             total_bytes,
             duration,
+            filename,
         } => serde_json::json!({
             "event": "TaskCompleted", "id": id,
             "total_bytes": total_bytes,
-            "duration_secs": duration.as_secs_f64()
+            "duration_secs": duration.as_secs_f64(),
+            "filename": filename
         }),
         TaskFailed { id, error } => serde_json::json!({
             "event": "TaskFailed", "id": id, "error": error
@@ -3237,6 +3032,7 @@ mod curl_compat_tests {
 #[cfg(test)]
 mod conflict_prompt_tests {
     use super::*;
+    use crate::progress::{print_below_bars, without_progress};
 
     /// Under `cargo test` there is no interactive terminal, so the prompt must
     /// decline rather than block on a read that can never be answered.
@@ -3306,87 +3102,5 @@ mod output_target_tests {
     fn dash_output_still_streams() {
         assert!(streams(&["-o", "-"]));
         assert!(streams(&["-o", "-", "-X", "GET"]));
-    }
-}
-
-#[cfg(test)]
-mod bar_layout_tests {
-    use super::*;
-
-    #[test]
-    fn width_picks_layout_tier() {
-        assert_eq!(BarLayout::for_width(0), BarLayout::Narrow);
-        assert_eq!(BarLayout::for_width(40), BarLayout::Narrow);
-        assert_eq!(BarLayout::for_width(59), BarLayout::Narrow);
-        assert_eq!(BarLayout::for_width(60), BarLayout::Medium);
-        assert_eq!(BarLayout::for_width(95), BarLayout::Medium);
-        assert_eq!(BarLayout::for_width(96), BarLayout::Wide);
-        assert_eq!(BarLayout::for_width(200), BarLayout::Wide);
-    }
-
-    #[test]
-    fn status_hides_fields_that_do_not_apply() {
-        // Streaming has no block map: blocks are omitted, not shown as 0/0.
-        assert_eq!(status_text(1, 0, 0, false), "1 conn");
-        assert_eq!(
-            status_text(4, 846, 3200, false),
-            "846/3200 blocks  ·  4 conns"
-        );
-        assert_eq!(
-            status_text(4, 3199, 3200, true),
-            "3199/3200 blocks  ·  4 conns  ·  endgame"
-        );
-    }
-
-    #[test]
-    fn status_pluralises_connections() {
-        assert_eq!(status_text(1, 0, 0, false), "1 conn");
-        assert_eq!(status_text(2, 0, 0, false), "2 conns");
-    }
-
-    #[test]
-    fn every_layout_builds_all_four_glyph_sets() {
-        for layout in [BarLayout::Wide, BarLayout::Medium, BarLayout::Narrow] {
-            for glyphs in BAR_GLYPHS {
-                // Building must not panic or fall back for any combination.
-                let _ = bar_style_for(layout, glyphs);
-                let _ = bar_style_unknown(layout);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod phase_display_tests {
-    use super::*;
-    use zing_core::engine::event::TaskPhase;
-
-    #[test]
-    fn every_phase_has_a_human_label() {
-        // The label is what the user sees next to the filename, so it must not
-        // fall back to a debug name.
-        for phase in [
-            TaskPhase::Connecting,
-            TaskPhase::Probing,
-            TaskPhase::CheckingMirrors,
-            TaskPhase::Resuming,
-            TaskPhase::Verifying,
-            TaskPhase::Measuring,
-            TaskPhase::VerifyingChecksum,
-            TaskPhase::Starting,
-        ] {
-            let label = phase.to_string();
-            assert!(!label.is_empty());
-            assert!(
-                !label.chars().any(|c| c.is_ascii_uppercase() || c == '_'),
-                "{label:?} looks like a debug variant name"
-            );
-        }
-    }
-
-    #[test]
-    fn printed_summary_falls_back_to_plain_output() {
-        // No progress display registered: must not panic.
-        print_below_bars("summary line");
     }
 }

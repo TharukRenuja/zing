@@ -107,6 +107,10 @@ pub enum EngineEvent {
         id: TaskId,
         total_bytes: u64,
         duration: std::time::Duration,
+        /// The filename the engine actually settled on. Conflict renames and
+        /// Content-Disposition happen inside core, so the caller cannot know it
+        /// otherwise and would report the pre-rename path.
+        filename: String,
     },
     TaskFailed {
         id: TaskId,
@@ -188,9 +192,10 @@ impl fmt::Display for EngineEvent {
                 id,
                 total_bytes,
                 duration,
+                filename,
             } => write!(
                 f,
-                "Task({id}) completed: {} in {duration:.2?}",
+                "Task({id}) completed: {} in {duration:.2?} -> {filename}",
                 bytesize(*total_bytes),
             ),
             EngineEvent::TaskFailed { id, error } => {
