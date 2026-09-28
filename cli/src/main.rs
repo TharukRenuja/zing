@@ -204,9 +204,13 @@ fn build_request_spec(args: &Args) -> Result<RequestSpec> {
         bail!("-I/--head and -X/--method are mutually exclusive");
     }
 
+    let include_headers = args.include;
+
     // -G moves the body into the query string, so the request carries no body.
     if args.get {
-        return Ok(RequestSpec::with_body(method, None, None));
+        return Ok(
+            RequestSpec::with_body(method, None, None).with_response_headers(include_headers)
+        );
     }
 
     let (body, default_ct) = if has_data {
@@ -251,7 +255,7 @@ fn build_request_spec(args: &Args) -> Result<RequestSpec> {
         }
     });
 
-    Ok(RequestSpec::with_body(method, body, content_type))
+    Ok(RequestSpec::with_body(method, body, content_type).with_response_headers(include_headers))
 }
 
 /// Apply `-G/--get`: move the request data into the URL query string.
@@ -305,7 +309,113 @@ fn build_headers(args: &Args) -> Vec<(String, String)> {
             headers.push(("Authorization".into(), format!("Basic {encoded}")));
         }
     }
+    // Cookies are one header, not several: RFC 6265 joins them with "; ", so
+    // each `--cookie` is folded into any Cookie header already present instead
+    // of adding another, which some servers read as a duplicate.
+    for raw in &args.cookie {
+        let Some((name, value)) = raw.split_once('=') else {
+            tracing::warn!("ignoring cookie without '=': {raw:?}");
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() {
+            tracing::warn!("ignoring cookie without a name: {raw:?}");
+            continue;
+        }
+        let pair = format!("{name}={value}");
+        match headers
+            .iter_mut()
+            .find(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+        {
+            Some((_, existing)) => {
+                existing.push_str("; ");
+                existing.push_str(&pair);
+            }
+            None => headers.push(("Cookie".into(), pair)),
+        }
+    }
     headers
+}
+
+/// What a finished transfer can be asked about, for `--write-out`.
+struct TransferFacts {
+    url: String,
+    filename: String,
+    status: Option<u16>,
+    bytes: u64,
+    elapsed: std::time::Duration,
+    connections: usize,
+}
+
+/// Expand a `--write-out` format string.
+///
+/// curl's `%{name}` syntax is kept so a ported command reads the same, but the
+/// set is deliberately small — only what a script actually branches on. An
+/// unknown variable is left as written rather than blanked, so a typo is
+/// visible instead of silently producing an empty field.
+fn expand_write_out(fmt: &str, f: &TransferFacts) -> String {
+    let secs = f.elapsed.as_secs_f64();
+    let speed = if secs > 0.0 {
+        f.bytes as f64 / secs
+    } else {
+        0.0
+    };
+    let map: [(&str, String); 7] = [
+        (
+            "http_code",
+            f.status.map(|c| c.to_string()).unwrap_or_default(),
+        ),
+        ("size_download", f.bytes.to_string()),
+        ("time_total", format!("{secs:.2}")),
+        ("speed_download", format!("{speed:.0}")),
+        ("url_effective", f.url.clone()),
+        ("filename_effective", f.filename.clone()),
+        ("num_connections", f.connections.to_string()),
+    ];
+    let mut out = fmt.to_string();
+    for (name, value) in map {
+        out = out.replace(&format!("%{{{name}}}"), &value);
+    }
+    // Curl writes `\n` and friends as escapes; without this a format copied
+    // from a curl script would print a literal backslash-n.
+    out.replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace("\\r", "\r")
+}
+
+/// Build the `--write-out` line for a finished transfer, if one was asked for.
+async fn write_out_line(
+    task: &zing_core::downloader::DownloadTask,
+    url: &str,
+    filename: &str,
+    started_at: std::time::Instant,
+    format: Option<&String>,
+) -> Option<String> {
+    let fmt = format?;
+    let snap = task.snapshot().await;
+    let status = task.status();
+    // A streaming or request transfer never registers with the segment manager,
+    // but it did use exactly one connection, so report one rather than zero.
+    let connections = if status.is_some() {
+        snap.connections.len().max(1)
+    } else {
+        0
+    };
+    let facts = TransferFacts {
+        url: url.to_string(),
+        filename: filename.to_string(),
+        status,
+        bytes: snap.bytes_downloaded,
+        elapsed: started_at.elapsed(),
+        connections,
+    };
+    // The line is printed with a newline of its own, so a format that already
+    // ends in one would otherwise leave a blank line behind.
+    let line = expand_write_out(fmt, &facts);
+    Some(match line.strip_suffix('\n') {
+        Some(trimmed) => trimmed.to_string(),
+        None => line,
+    })
 }
 
 /// Registry for the active progress display.
@@ -873,8 +983,15 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // -v stands in for curl's verbose flag. zing's tracing is far more detailed
+    // than a wire dump, so the flag raises the level rather than adding its own
+    // trace format. RUST_LOG still wins, since the filter reads it first.
     let default_level = if args.quiet || args.pipe.is_some() {
         "error"
+    } else if args.verbose >= 2 {
+        "trace"
+    } else if args.verbose == 1 {
+        "debug"
     } else {
         "info"
     };
@@ -1436,6 +1553,17 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         }
     }
 
+    // Reject a non-URL argument here rather than letting the transport fail
+    // later, which surfaced as a bare "builder error" naming a file that was
+    // never going to exist.
+    for arg in &args.urls {
+        if url::Url::parse(arg).map(|u| u.has_host()).unwrap_or(false) {
+            continue;
+        }
+        eprintln!("error: '{arg}' is not a URL. Expected something like https://example.com/file");
+        std::process::exit(2);
+    }
+
     // Load URLs from input file if provided
     let urls = if let Some(ref path) = args.input_file {
         let content = tokio::fs::read_to_string(path)
@@ -1475,6 +1603,14 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     if to_stdout && !explicit_stdout {
         tracing::info!(
             "HTTP request: printing response to stdout. Use -o to save it or -W to pick a directory."
+        );
+    }
+
+    if args.include && !to_stdout {
+        // -i writes to stdout, so honouring it would corrupt a file or the
+        // progress stream. Say so rather than dropping the flag in silence.
+        tracing::warn!(
+            "-i/--include only applies when the response goes to stdout; add -X/-d/-T/-G/-I to make this a request. Ignoring it."
         );
     }
 
@@ -1580,6 +1716,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 "method": spec.method.as_str(),
                 "body": spec.body.as_ref().map(|b| String::from_utf8_lossy(b.bytes()).to_string()),
                 "body_content_type": spec.content_type,
+                "include_response_headers": spec.include_response_headers,
                 "user_agent": args.user_agent,
                 "digest": args.digest,
                 "netrc": args.netrc,
@@ -1829,9 +1966,15 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         n => Some(Arc::new(tokio::sync::Semaphore::new(n.max(1)))),
     };
 
+    // Cloned before the spawn loop: the first task moves `args` away, and every
+    // task needs the format string.
+    let write_out_fmt = args.write_out.clone();
     let mut join_set = tokio::task::JoinSet::new();
 
     for (i, url) in urls.into_iter().enumerate() {
+        // Cloned per iteration, outside the task: the task's `async move` takes
+        // ownership of anything it uses, and the loop has to keep its copy.
+        let args_w = write_out_fmt.clone();
         let is_auto_name =
             args.output.is_none() && metalink.is_none_or(|m| i == 0 && m.is_auto_name);
 
@@ -1911,7 +2054,6 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         } else {
             cfg.throttle_reprobe.unwrap_or(true)
         };
-
         join_set.spawn(async move {
             let _permit = if let Some(ref s) = sem {
                 Some(s.acquire().await.expect("semaphore"))
@@ -2067,6 +2209,14 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 }
                 return Ok(Some(TaskOutcome::Completed(Summary {
                     id: task_id,
+                    write_out: write_out_line(
+                        &task,
+                        &url,
+                        &final_name,
+                        started_at,
+                        args_w.as_ref(),
+                    )
+                    .await,
                     filename: final_name,
                     elapsed: started_at.elapsed(),
                     checksum_ok,
@@ -2075,7 +2225,11 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             if let Some(ref cmd) = on_complete {
                 run_hook(cmd, &final_name);
             }
-            Ok::<Option<TaskOutcome>, color_eyre::Report>(None)
+            // Request mode has no file and no summary, but -w still applies.
+            Ok::<Option<TaskOutcome>, color_eyre::Report>(Some(TaskOutcome::Request {
+                id: task_id,
+                line: write_out_line(&task, &url, &final_name, started_at, args_w.as_ref()).await,
+            }))
         });
     }
 
@@ -2103,21 +2257,27 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     // Hand the outcome lines to the display before closing the bus, so they are
     // printed while it still owns the terminal.
     for outcome in &outcomes {
-        let (id, lines) = match outcome {
-            TaskOutcome::Completed(s) => (
-                s.id,
-                download_summary_line(&s.filename, s.elapsed, s.checksum_ok),
-            ),
-            TaskOutcome::Cancelled { id, msg } => (*id, vec![msg.clone()]),
-            TaskOutcome::Failed(msg) => (0, vec![format!("\x1b[31mERROR\x1b[0m {msg}")]),
+        // None means the task has nothing to report, which is the normal case
+        // for a request with no --write-out.
+        let printed = match outcome {
+            TaskOutcome::Completed(s) => {
+                let mut lines = download_summary_line(&s.filename, s.elapsed, s.checksum_ok);
+                lines.extend(s.write_out.clone());
+                Some((s.id, lines))
+            }
+            TaskOutcome::Cancelled { id, msg } => Some((*id, vec![msg.clone()])),
+            TaskOutcome::Failed(msg) => Some((0, vec![format!("\x1b[31mERROR\x1b[0m {msg}")])),
+            TaskOutcome::Request { id, line } => line.clone().map(|l| (*id, vec![l])),
             TaskOutcome::Paused {
                 id,
                 filename,
                 bytes,
                 total,
-            } => (*id, vec![paused_line(filename, *bytes, *total)]),
+            } => Some((*id, vec![paused_line(filename, *bytes, *total)])),
         };
-        let _ = final_tx.send((id, lines));
+        if let Some((id, lines)) = printed {
+            let _ = final_tx.send((id, lines));
+        }
     }
     drop(final_tx);
 
@@ -3032,6 +3192,11 @@ enum TaskOutcome {
     },
     /// A real error, already worded for the user. Counts towards a non-zero exit.
     Failed(String),
+    /// A request-mode completion: no file, so at most the -w line.
+    Request {
+        id: u64,
+        line: Option<String>,
+    },
     /// An interrupted transfer, with how far it got.
     Paused {
         id: u64,
@@ -3047,6 +3212,7 @@ struct Summary {
     filename: String,
     elapsed: std::time::Duration,
     checksum_ok: Option<bool>,
+    write_out: Option<String>,
 }
 
 fn download_summary_line(
@@ -3248,6 +3414,89 @@ mod curl_compat_tests {
         );
     }
 
+    /// `-i` must reach core, or `curl -i` does nothing and the user finds out
+    /// only from the missing status line.
+    #[test]
+    fn include_reaches_the_request_spec() {
+        assert!(!spec(&["-X", "GET"]).include_response_headers);
+        assert!(spec(&["-X", "GET", "-i"]).include_response_headers);
+        assert!(spec(&["-d", "x=1", "--include"]).include_response_headers);
+        // -G returns early, so it must set the flag there too.
+        assert!(spec(&["-G", "-d", "x=1", "-i"]).include_response_headers);
+    }
+
+    #[test]
+    fn write_out_expands_the_documented_variables() {
+        let f = TransferFacts {
+            url: "https://example.com/a.bin".into(),
+            filename: "/tmp/a.bin".into(),
+            status: Some(206),
+            bytes: 2048,
+            elapsed: std::time::Duration::from_millis(500),
+            connections: 4,
+        };
+        assert_eq!(
+            expand_write_out(
+                "%{http_code} %{size_download} %{time_total} %{speed_download} \
+                 %{url_effective} %{filename_effective} %{num_connections}",
+                &f
+            ),
+            "206 2048 0.50 4096 https://example.com/a.bin /tmp/a.bin 4"
+        );
+        // Curl-style escapes, so a copied format works.
+        assert_eq!(
+            expand_write_out("a\nb", &f),
+            "a
+b"
+        );
+        // An unknown variable is left visible rather than silently blanked.
+        assert_eq!(expand_write_out("%{nope}", &f), "%{nope}");
+        // A status we never saw renders empty, not a bogus zero.
+        let none = TransferFacts { status: None, ..f };
+        assert_eq!(expand_write_out("[%{http_code}]", &none), "[]");
+    }
+
+    /// Cookies are one header, so repeated flags and an existing Cookie header
+    /// have to combine rather than each sending their own.
+    #[test]
+    fn cookies_merge_into_one_header() {
+        let cookie_header = |v: &[&str]| {
+            Args::parse_from({
+                let mut a = vec!["zing", "--standalone"];
+                for c in v {
+                    a.push("--cookie");
+                    a.push(c);
+                }
+                a.push("https://example.com/x");
+                a
+            })
+        };
+        let one = build_headers(&cookie_header(&["sid=abc"]));
+        assert_eq!(one, vec![("Cookie".to_string(), "sid=abc".to_string())]);
+
+        let many = build_headers(&cookie_header(&["a=1", "b=2"]));
+        assert_eq!(many.len(), 1, "one Cookie header, not two");
+        assert_eq!(many[0].1, "a=1; b=2");
+
+        // An existing -H Cookie must be extended, not replaced.
+        let args = Args::parse_from(vec![
+            "zing",
+            "--standalone",
+            "-H",
+            "Cookie: first=1",
+            "--cookie",
+            "second=2",
+            "https://example.com/x",
+        ]);
+        let merged = build_headers(&args);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].1, "first=1; second=2");
+
+        // A value with no '=' is not a cookie and is dropped, not sent broken.
+        let bad = build_headers(&cookie_header(&["novalue", "ok=1"]));
+        assert_eq!(bad, vec![("Cookie".to_string(), "ok=1".to_string())]);
+    }
+
     #[test]
     fn data_content_type_defaults_to_form_encoding() {
         let s = spec(&["-d", "x=1"]);
@@ -3345,6 +3594,14 @@ mod short_flag_consistency_tests {
         assert_eq!(find(&r, 'R').as_deref(), Some("referer"));
         // -e belonged to --referer, which moved to -R; it must not creep back.
         assert_eq!(find(&r, 'e'), None);
+        // -n/-N follow curl: netrc takes -n, connections takes -N.
+        assert_eq!(find(&r, 'n').as_deref(), Some("netrc"));
+        assert_eq!(find(&r, 'N').as_deref(), Some("connections"));
+        // -i is curl's --include now, and the URL list moved to -F.
+        assert_eq!(find(&r, 'i').as_deref(), Some("include"));
+        assert_eq!(find(&r, 'F').as_deref(), Some("input-file"));
+        assert_eq!(find(&r, 'w').as_deref(), Some("write-out"));
+        assert_eq!(find(&r, 'v').as_deref(), Some("verbose"));
     }
 
     #[test]
@@ -3373,6 +3630,7 @@ mod short_flag_consistency_tests {
         assert_eq!(find(&add, 'e').as_deref(), Some("end"));
         assert_eq!(find(&add, 'R').as_deref(), Some("referer"));
         assert_eq!(find(&add, 'W').as_deref(), Some("output-dir"));
+        assert_eq!(find(&add, 'N').as_deref(), Some("connections"));
         assert!(!shorts(&add).contains(&'d'));
     }
 

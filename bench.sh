@@ -77,7 +77,7 @@ done
 run_zing()    { echo $$ > "$PIDFILE"; exec "$ZING_BIN" "$1" -o "$2/$OUTFILE" \
                     --progress none --allow-overwrite --standalone; }
 run_zing1()   { echo $$ > "$PIDFILE"; exec "$ZING_BIN" "$1" -o "$2/$OUTFILE" \
-                    -n 1 --progress none --allow-overwrite --standalone; }
+                    -N 1 --progress none --allow-overwrite --standalone; }
 run_aria2c()  { echo $$ > "$PIDFILE"; exec aria2c -x "$CONNECTIONS" -s "$CONNECTIONS" \
                     -d "$2" -o "$OUTFILE" --file-allocation=none \
                     --allow-overwrite=true --auto-file-renaming=false \

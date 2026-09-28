@@ -110,6 +110,88 @@ fn a_failed_request_does_not_name_a_file() {
 }
 
 #[test]
+fn include_prints_the_status_line_and_headers() {
+    // `curl -i`: without this there is no way to see the status of a request
+    // that succeeded, which is the whole point of making a request.
+    let port = serve_once("200 OK", r#"{"ok":true}"#);
+    let r = zing(&[
+        "-q",
+        "-X",
+        "GET",
+        "-i",
+        &format!("http://127.0.0.1:{port}/lyrics"),
+    ]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    assert!(
+        r.stdout.starts_with("HTTP/1.1 200 OK\r\n"),
+        "expected a status line first, got {:?}",
+        r.stdout
+    );
+    // Header names arrive lowercased: HTTP/1.1 names are case-insensitive and
+    // the HTTP stack normalises them, so the assertion is case-insensitive too.
+    assert!(
+        r.stdout
+            .to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "expected headers, got {:?}",
+        r.stdout
+    );
+    // The body still comes last, so a parser reading to the blank line gets it.
+    assert!(
+        r.stdout.trim_end().ends_with(r#"{"ok":true}"#),
+        "{:?}",
+        r.stdout
+    );
+}
+
+#[test]
+fn without_include_only_the_body_is_printed() {
+    let port = serve_once("200 OK", r#"{"ok":true}"#);
+    let r = zing(&[
+        "-q",
+        "-X",
+        "GET",
+        &format!("http://127.0.0.1:{port}/lyrics"),
+    ]);
+    assert_eq!(r.stdout, r#"{"ok":true}"#);
+}
+
+#[test]
+fn write_out_reports_the_transfer() {
+    let port = serve_once("200 OK", r#"{"ok":true}"#);
+    let r = zing(&[
+        "-q",
+        "-X",
+        "GET",
+        "-w",
+        "status=%{http_code} size=%{size_download}",
+        &format!("http://127.0.0.1:{port}/lyrics"),
+    ]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    // The body is on stdout; -w goes to stderr so a piped body stays clean.
+    assert_eq!(r.stdout, r#"{"ok":true}"#);
+    assert!(
+        r.stderr.contains("status=200"),
+        "-w should report the status, got {:?}",
+        r.stderr
+    );
+    assert!(r.stderr.contains("size=11"), "stderr: {:?}", r.stderr); // {"ok":true}
+}
+
+#[test]
+fn a_non_url_argument_is_a_usage_error() {
+    // Not a transfer failure: the command line is wrong, so this is distinct
+    // from exit 1 and names the offending argument.
+    let r = zing(&["-q", "definitely-not-a-url"]);
+    assert_eq!(r.code, 2, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("definitely-not-a-url"),
+        "the message should name the argument: {:?}",
+        r.stderr
+    );
+}
+
+#[test]
 fn a_connection_failure_also_exits_non_zero() {
     // Port 1 on loopback refuses connections, which is the other common way an
     // API call goes wrong.

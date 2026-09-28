@@ -177,6 +177,10 @@ pub struct RequestSpec {
     pub body: Option<RequestBody>,
     /// Content-Type for the body. Sent only when a body is present.
     pub content_type: Option<String>,
+    /// Print the status line and response headers ahead of the body, the way
+    /// `curl -i` does. Only meaningful when the body goes to stdout, since a
+    /// file on disk has nowhere to put them.
+    pub include_response_headers: bool,
 }
 
 impl RequestSpec {
@@ -185,6 +189,7 @@ impl RequestSpec {
             method: HttpMethod::get(),
             body: None,
             content_type: None,
+            include_response_headers: false,
         }
     }
 
@@ -198,7 +203,14 @@ impl RequestSpec {
             method,
             body: body.map(RequestBody::new),
             content_type,
+            include_response_headers: false,
         }
+    }
+
+    /// Ask for the response headers to be printed before the body.
+    pub fn with_response_headers(mut self, include: bool) -> Self {
+        self.include_response_headers = include;
+        self
     }
 
     pub fn has_body(&self) -> bool {

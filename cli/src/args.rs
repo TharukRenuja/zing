@@ -37,7 +37,7 @@ pub struct Args {
 
     #[arg(
         long = "connections",
-        short = 'n',
+        short = 'N',
         help = "Max parallel connections (default: adaptive, capped at 8)"
     )]
     pub connections: Option<usize>,
@@ -184,10 +184,42 @@ pub struct Args {
 
     #[arg(
         long = "input-file",
-        short = 'i',
+        short = 'F',
         help = "Read URLs from file (one per line, # for comments)"
     )]
     pub input_file: Option<String>,
+
+    #[arg(
+        long = "include",
+        short = 'i',
+        help = "Print the response status line and headers before the body (request mode)"
+    )]
+    pub include: bool,
+
+    #[arg(
+        long = "write-out",
+        short = 'w',
+        value_name = "FORMAT",
+        help = "Print a summary after the transfer. Variables: %{http_code}, %{size_download}, \
+                %{time_total}, %{speed_download}, %{url_effective}, %{filename_effective}, \
+                %{num_connections}"
+    )]
+    pub write_out: Option<String>,
+
+    #[arg(
+        long = "cookie",
+        value_name = "NAME=VALUE",
+        help = "Send a cookie with the request, repeatable. Merged with any -H 'Cookie:' header."
+    )]
+    pub cookie: Vec<String>,
+
+    #[arg(
+        long = "verbose",
+        short = 'v',
+        action = clap::ArgAction::Count,
+        help = "Log more detail. -v for debug, -vv for trace"
+    )]
+    pub verbose: u8,
 
     #[arg(
         long = "method",
@@ -323,7 +355,7 @@ pub struct Args {
 
     #[arg(
         long = "netrc",
-        short = 'N',
+        short = 'n',
         help = "Use .netrc file for authentication"
     )]
     pub netrc: bool,
@@ -439,7 +471,7 @@ pub enum Commands {
 
         #[arg(
             long = "connections",
-            short = 'n',
+            short = 'N',
             help = "Max parallel connections per download (default: unlimited)"
         )]
         connections: Option<usize>,
@@ -706,7 +738,7 @@ pub enum ScheduleAction {
 
         #[arg(
             long,
-            short = 'n',
+            short = 'N',
             help = "Max parallel connections (default: unlimited)"
         )]
         connections: Option<usize>,

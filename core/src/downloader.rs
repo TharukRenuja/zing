@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
@@ -83,6 +83,9 @@ struct SharedState {
     pub peak_speed: AtomicU64,
     pub bandwidth_estimate: AtomicU64,
     pub probe_bandwidth_estimate: AtomicU64,
+    /// Status code of the last response seen. A caller reporting a result with
+    /// curl's -w needs it, and by then the response is long gone.
+    pub last_status: AtomicU16,
     pub max_filesize: u64,
     pub use_cd: bool,
     pub cookie_jar: Option<Arc<ZingCookieStore>>,
@@ -202,6 +205,18 @@ impl DownloadTask {
     /// reporting results must use this instead.
     pub async fn filename(&self) -> String {
         self.state.filename.lock().await.clone()
+    }
+
+    /// The status code of the last response, if one has been seen.
+    pub fn status(&self) -> Option<u16> {
+        match self
+            .state
+            .last_status
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            code => Some(code),
+        }
     }
 
     /// Clone the pause receiver for use in connection loops.
@@ -354,6 +369,7 @@ impl DownloadTask {
                 peak_speed: AtomicU64::new(0),
                 bandwidth_estimate: AtomicU64::new(0),
                 probe_bandwidth_estimate: AtomicU64::new(0),
+                last_status: AtomicU16::new(0),
                 max_filesize,
                 use_cd,
                 cookie_jar,
@@ -1183,6 +1199,9 @@ impl DownloadTask {
                 self.state.id,
             )
             .await?;
+        self.state
+            .last_status
+            .store(resp.status().as_u16(), std::sync::atomic::Ordering::Relaxed);
         if !resp.status().is_success() {
             bail!("HTTP {}", resp.status());
         }
@@ -1258,6 +1277,12 @@ impl DownloadTask {
             let f = file.as_mut().expect("file created above");
             f.write_all(&data).await?;
             downloaded += data.len() as u64;
+            // Streaming never goes through the segment manager that normally
+            // maintains this counter, so record it here for callers that report
+            // the result afterwards.
+            self.state
+                .total_downloaded
+                .store(downloaded, std::sync::atomic::Ordering::Relaxed);
 
             let elapsed = start.elapsed().as_secs_f64();
             let speed = if elapsed > 0.0 {
@@ -1309,6 +1334,9 @@ impl DownloadTask {
                 self.state.id,
             )
             .await?;
+        self.state
+            .last_status
+            .store(resp.status().as_u16(), std::sync::atomic::Ordering::Relaxed);
         if !resp.status().is_success() {
             bail!("HTTP {}", resp.status());
         }
@@ -1316,6 +1344,25 @@ impl DownloadTask {
 
         use futures::StreamExt;
         let mut stdout = tokio::io::stdout();
+        if self.state.spec.include_response_headers {
+            // curl -i: the status line and headers, then the body, all on
+            // stdout. Written before the body is touched so a large response
+            // still shows its headers immediately.
+            let status = resp.status();
+            let mut head = format!(
+                "HTTP/1.1 {} {}\r\n",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("")
+            );
+            for (name, value) in resp.headers() {
+                head.push_str(name.as_str());
+                head.push_str(": ");
+                head.push_str(value.to_str().unwrap_or("<binary>"));
+                head.push_str("\r\n");
+            }
+            head.push_str("\r\n");
+            stdout.write_all(head.as_bytes()).await?;
+        }
         let mut stream = resp.into_inner().bytes_stream();
         let mut downloaded: u64 = 0;
         let start = Instant::now();
@@ -1368,6 +1415,12 @@ impl DownloadTask {
             }
             stdout.write_all(&data).await?;
             downloaded += data.len() as u64;
+            // Kept current per chunk: the loop can also return early when the
+            // stream ends, and a caller reporting the result must still see
+            // how much came through.
+            self.state
+                .total_downloaded
+                .store(downloaded, std::sync::atomic::Ordering::Relaxed);
             let elapsed = start.elapsed().as_secs_f64();
             let speed = if elapsed > 0.0 {
                 downloaded as f64 / elapsed
@@ -1656,6 +1709,9 @@ async fn download_range(
     }
 
     let status = resp.status();
+    state
+        .last_status
+        .store(status.as_u16(), std::sync::atomic::Ordering::Relaxed);
     if status == 416 {
         return Ok(0);
     }
@@ -2105,6 +2161,9 @@ async fn download_endgame_block(
         .await?;
 
     let status = resp.status();
+    state
+        .last_status
+        .store(status.as_u16(), std::sync::atomic::Ordering::Relaxed);
     if status == 416 {
         return Ok(0);
     }

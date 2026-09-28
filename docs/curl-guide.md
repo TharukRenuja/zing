@@ -106,6 +106,7 @@ accepted by `-X`.
 | `curl -x http://proxy:8080 URL` | `zing -x http://proxy:8080 URL` |
 | `curl --cert c.pem --key k.pem URL` | `zing --cert c.pem --cert-key k.pem URL` |
 | `curl -b cookies.txt URL` | `zing -L cookies.txt URL` |
+| `curl -b 'sid=abc' URL` | `zing --cookie 'sid=abc' URL` |
 | `curl -c cookies.txt URL` | `zing -s cookies.txt URL` |
 | `curl -b 'name=value' URL` | *(not supported — use `-H` or a cookie file)* |
 | `curl -L URL` *(follow redirects)* | *(not needed — see below)* |
@@ -121,6 +122,9 @@ accepted by `-X`.
 | `curl --limit-rate 2M URL` | `zing -r 2MB URL` |
 | `curl --max-filesize 500M URL` | `zing -S 500MB URL` |
 | `curl -# URL` | `zing URL` *(the bar is the default)* |
+| `curl -v URL` | `zing -v URL` *(raises the log level)* |
+| `curl -i URL` | `zing -i URL` *(request mode)* |
+| `curl -w '...' URL` | `zing -w '...' URL` |
 
 ## A worked example
 
@@ -161,11 +165,11 @@ are the most common source of silently wrong commands:
 | `-m` | `--max-time` | `--mirror` (a mirror URL) |
 | `-r` | `--range` | `--max-download-rate` |
 | `-c` | `--cookie-jar` | `--checksum` |
-| `-n` | `--netrc` | `--connections` |
+| `-n` | `--netrc` | `--netrc` *(same)* |
 | `-b` | `--cookie` | `--bwlimit` (bandwidth schedule) |
 | `-L` | `--location` (follow redirects) | `--load-cookies` |
 | `-s` | `--silent` | `--save-cookies` |
-| `-N` | `--no-buffer` | `--netrc` |
+| `-N` | `--no-buffer` | `--connections` |
 | `-C` | `--continue-at` | `--content-disposition` |
 | `-e` | `--referer` | the schedule end time, in `zing schedule add` only |
 | `-R` | — | `--referer` (curl's `-e` has no free equivalent) |
@@ -206,9 +210,10 @@ fi
 Note that a declined filename conflict — a user answering `c` at the overwrite
 prompt — is a decision, not a failure, and exits 0.
 
-**You cannot see the status line or response headers.** There is no `-i`,
-`-v`, or `-w` yet. Request mode writes the body and nothing else, so debugging an
-API means looking at the server logs or using `curl`.
+**Response header names are lowercased.** `-i` prints them as the HTTP stack
+normalised them, so `Content-Type:` appears as `content-type:`. HTTP/1.1 header
+names are case-insensitive, but a strict `grep` against a curl transcript can
+miss.
 
 **Redirect, form, and encoding helpers are absent.** There is no `-F` for
 multipart forms and no `--data-urlencode`. zing's `-G -d` sends
@@ -220,11 +225,66 @@ supports ranges falls back to a single connection and prints a warning, since
 there is nothing to segment. Use `-o` when you want the multi-connection
 behaviour for a file.
 
+## Seeing what a request did
+
+Three flags exist because a request that returns only a body leaves you blind
+to whether it worked.
+
+`-i` prints the status line and headers ahead of the body, exactly like curl:
+
+```bash
+zing -q -X GET -i https://api.example.com/items
+# HTTP/1.1 200 OK
+# content-type: application/json
+# ...
+#
+# {"items":[]}
+```
+
+`-w` prints a summary afterwards. The variables are the curl names, so a
+`-w` copied from a curl script reads the same:
+
+| Variable | Value |
+|---|---|
+| `%{http_code}` | Response status, empty if none was seen |
+| `%{size_download}` | Bytes received |
+| `%{time_total}` | Seconds elapsed |
+| `%{speed_download}` | Bytes per second |
+| `%{url_effective}` | The URL requested |
+| `%{filename_effective}` | Where the file landed |
+| `%{num_connections}` | Connections used |
+
+`\n`, `\t` and `\r` are interpreted as escapes, and an unknown `%{name}` is
+left as written so a typo is visible rather than blank.
+
+```bash
+zing -q -X GET -w 'status=%{http_code} bytes=%{size_download}\n' https://api.example.com/items
+```
+
+The `-w` line goes to **stderr**, not stdout, so piping the body to a file or
+`jq` still works. Note the same for errors: stdout only ever carries the
+response body.
+
+`--cookie name=value` sends a cookie, and repeats:
+
+```bash
+zing -q -X GET --cookie 'sid=abc' --cookie 'theme=dark' https://example.com/
+# Cookie: sid=abc; theme=dark
+```
+
+Repeated `--cookie` flags, and any `-H 'Cookie: ...'`, are folded into a single
+`Cookie` header separated by `; `, since that is how cookies are actually
+carried. A value with no `=` is ignored with a warning.
+
+`-v` raises the log level: `-v` for debug, `-vv` for trace. It is not a wire
+trace — `RUST_LOG` gives the same detail and more control, and `-q` overrides
+`-v` if both are given.
+
 ## Things curl cannot do
 
 | zing flag | What it does |
 |-----------|--------------|
-| `-n`, `--connections N` | Max parallel connections. Default is adaptive, capped at 8. |
+| `-N`, `--connections N` | Max parallel connections. Default is adaptive, capped at 8. |
 | `--max-concurrent N` | Run several downloads at once (default 3). |
 | `-r`, `--max-download-rate 2MB` | Cap throughput. |
 | `-b`, `--bwlimit '08:00,500KB 18:00,2MB'` | Bandwidth schedule over the day. |

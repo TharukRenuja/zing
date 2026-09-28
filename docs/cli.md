@@ -42,7 +42,7 @@ A short letter means one thing across the whole tool, or nothing at all. `-d` is
 `--data` everywhere, and the output directory is `-W/--output-dir` (with `--dir`
 kept as an alias) — including in `tui` and `schedule add`, which previously
 took `-d` for the directory while the root took it for the body. zing also keeps
-flags curl has no equivalent for, such as `-n/--connections`, `-m/--mirror`,
+flags curl has no equivalent for, such as `-N/--connections`, `-m/--mirror`,
 `-c/--checksum`, and `--end-game`.
 
 For a full mapping, including the letters that mean something different here,
@@ -147,7 +147,7 @@ here, and the behaviours that differ.
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--connections` | `-n` | adaptive, max 8 | Max parallel connections per download |
+| `--connections` | `-N` | adaptive, max 8 | Max parallel connections per download |
 | `--max-concurrent` | | 3 | Max concurrent downloads (0 = unlimited) |
 | `--connect-timeout` | | 30 | Connection timeout in seconds |
 | `--max-time` | | 300 | Maximum total transfer time in seconds |
@@ -179,11 +179,12 @@ here, and the behaviours that differ.
 |------|-------|-------------|
 | `--user` | `-u` | HTTP basic auth `username:password` or `token` |
 | `--digest` | | Use HTTP Digest auth (requires `--user`) |
-| `-N, --netrc` | | Use `.netrc` for auth |
+| `-n, --netrc` | | Use `.netrc` for auth |
 | `--cert` | | TLS client certificate (PEM) |
 | `--cert-key` | | TLS private key (PEM) |
 | `-L, --load-cookies` | | Load cookies from Netscape-format file |
 | `-s, --save-cookies` | | Save cookies to file after download |
+| `--cookie` | | Send a cookie, `name=value`. Repeatable; merged with any `-H 'Cookie:'` |
 
 ### HTTP
 
@@ -198,13 +199,16 @@ here, and the behaviours that differ.
 | `-G, --get` | | Move `--data` into the query string, use GET |
 | `-I, --head` | | Show document info only (HEAD request) |
 | `-T, --upload-file` | | Send a file as the request body. Implies PUT |
+| `-i, --include` | | Print the status line and response headers before the body (request mode) |
+| `-w, --write-out` | | Print a summary afterwards: `%{http_code}`, `%{size_download}`, `%{time_total}`, `%{speed_download}`, `%{url_effective}`, `%{filename_effective}`, `%{num_connections}` |
+| `-v, --verbose` | | Log more: `-v` for debug, `-vv` for trace. `-q` wins if both are given |
 | `--content-type` | | Content-Type for the request body |
 
 ### Input
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `-i, --input-file` | | Read URLs from file (one per line) |
+| `-F, --input-file` | | Read URLs from file (one per line) |
 | `-M, --metalink` | | Use Metalink (.meta4) file for mirrors + checksums |
 | `-c, --checksum` | | Verify checksum after download (auto-detects algorithm by length) |
 
@@ -232,7 +236,7 @@ See [Pipe Mode](pipe-mode.md) for details.
 zing https://example.com/file.zip
 
 # From file (one URL per line)
-zing -i urls.txt
+zing -F urls.txt
 
 # Multiple URLs
 zing https://example.com/a.zip https://example.com/b.zip
@@ -251,7 +255,8 @@ zing https://example.com/a.zip https://example.com/b.zip
 | Code | Meaning |
 |------|---------|
 | 0 | Success. A declined filename conflict also exits 0 — that is a decision, not a failure. |
-| 1 | Any transfer failed, or the arguments were unusable. |
+| 1 | A transfer failed. |
+| 2 | The command line was wrong: an unknown flag, a bad value, or an argument that is not a URL. |
 
 In batch mode every URL is still attempted; zing exits 1 if *any* of them
 failed. A request that returns a non-2xx status counts as a failure: nothing is
@@ -259,9 +264,9 @@ written to stdout and the status is not swallowed, so `set -e` and `&&` chains
 behave as expected. The error text goes to stderr, which keeps stdout to the
 response body alone.
 
-The only distinction available is pass or fail. curl's separate exit codes
-(`22` for `--fail`, `7` for a connection refusal) are not reproduced, so read
-stderr if you need to tell those apart.
+Beyond the pass/fail/usage split there is no further detail. curl's separate
+codes (`22` for `--fail`, `7` for a connection refusal) are not reproduced, so
+read stderr if you need to tell those apart.
 
 ## Examples
 

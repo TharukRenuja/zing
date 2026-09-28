@@ -467,7 +467,12 @@ async fn handle_add_uri(params: Option<Value>, manager: &TaskManager) -> RpcResp
     let body_content_type = map
         .remove("body_content_type")
         .and_then(|v| v.as_str().map(String::from));
-    let spec = zing_core::http_method::RequestSpec::with_body(method, body, body_content_type);
+    let include_response_headers = map
+        .remove("include_response_headers")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let spec = zing_core::http_method::RequestSpec::with_body(method, body, body_content_type)
+        .with_response_headers(include_response_headers);
 
     let id = manager
         .add_task(
