@@ -229,7 +229,7 @@ pub struct Args {
     #[arg(
         long = "content-type",
         value_name = "TYPE",
-        help = "Content-Type for the request body [default: text/plain for --data, application/octet-stream for -T]"
+        help = "Content-Type for the request body [default: application/x-www-form-urlencoded for --data, none sent for -T]"
     )]
     pub content_type: Option<String>,
 

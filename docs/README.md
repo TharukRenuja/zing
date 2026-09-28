@@ -14,6 +14,7 @@ keywords: zing, docs, documentation, index, reference
 |-----|----------------|
 | [Installation](installation.md) | Install from source, pre-built binaries, install script, systemd service |
 | [CLI Reference](cli.md) | All commands, flags, URL/file input, progress modes |
+| [Coming from curl](curl-guide.md) | curl-to-zing command mapping, flag-letter collisions, behavioural differences |
 | [Configuration](config.md) | Config file, all keys, `zing config` commands |
 | [Download Engine](download-engine.md) | Segmented downloads, probing, adaptive connections, end-game, retry, rate limiting, bandwidth scheduling, Metalink, resume |
 | [Daemon](daemon.md) | Background downloads, JSON-RPC, task management, scheduled downloads, systemd, session persistence |

@@ -68,6 +68,10 @@ destination overrides that, so a method flag plus `-o` or `-W` still saves:
 zing -X POST --data @body.json -o response.json https://api.example.com/submit
 ```
 
+If you are porting commands from curl, see [Coming from curl](curl-guide.md)
+for the side-by-side mappings, the flags whose letters mean something different
+here, and the behaviours that differ.
+
 ## Commands
 
 | Command | Aliases | Description |
