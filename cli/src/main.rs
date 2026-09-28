@@ -1997,33 +1997,24 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 }
             }
 
-            if quit_requested.load(Ordering::Acquire) {
-                // Keep the control file: the download stopped cleanly and
-                // re-running the same command resumes from here. Deleting it
-                // here threw away the whole partial download.
-                let (bytes, total) = task.progress().await;
-                return Ok(Some(TaskOutcome::Paused {
-                    // The name the engine settled on: Content-Disposition or a
-                    // conflict rename may have replaced the URL-derived one.
-                    filename: task.filename().await,
-                    bytes,
-                    total,
-                }));
-            }
-
-            // Stopped without finishing and a control file exists: the
-            // download is resumable by re-running the same command. Ctrl+Z
-            // support used to live here; the terminal now handles suspend
-            // itself, so this only reports where the transfer stopped.
+            // Both ways of stopping without finishing land here: an explicit
+            // quit, or a control file left by a clean wind-down. They used to be
+            // separate branches, and the quit one never told the display the
+            // transfer had stopped, so the bar kept rendering its last status as
+            // though the download were still running.
+            //
+            // Keep the control file either way: the download stopped cleanly and
+            // re-running the same command resumes from here. Deleting it here
+            // threw away the whole partial download.
             let control_path =
                 zing_core::storage::control::ControlFile::control_path(Path::new(&filename));
-            if control_path.exists() {
+            if quit_requested.load(Ordering::Acquire) || control_path.exists() {
+                let (bytes, total) = task.progress().await;
                 bus.emit(EngineEvent::Paused {
                     id: task_id,
-                    bytes_downloaded: 0,
-                    total_bytes: 0,
+                    bytes_downloaded: bytes,
+                    total_bytes: total.unwrap_or(0),
                 });
-                let (bytes, total) = task.progress().await;
                 return Ok(Some(TaskOutcome::Paused {
                     // The name the engine settled on: Content-Disposition or a
                     // conflict rename may have replaced the URL-derived one.
