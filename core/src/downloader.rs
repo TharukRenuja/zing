@@ -582,7 +582,7 @@ impl DownloadTask {
                 ConflictDecision::Overwrite => {}
                 ConflictDecision::Rename => {
                     let new_name = pick_rename_name(&filename);
-                    tracing::info!("File exists, renamed to: {new_name}");
+                    tracing::debug!("File exists, renamed to: {new_name}");
                     *self.state.filename.lock().await = new_name;
                 }
                 ConflictDecision::Cancel => {

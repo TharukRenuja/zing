@@ -314,28 +314,69 @@ fn build_headers(args: &Args) -> Vec<(String, String)> {
 /// suspend the progress bars first: `MultiProgress` redraws on a timer, so any
 /// text written straight to stderr is erased within a frame, leaving the user
 /// blocked on a question they cannot see.
-fn ask_conflict(filename: &str) -> Option<zing_core::downloader::ConflictDecision> {
+/// Erase the last `n` lines just written, leaving the cursor at column 0 of
+/// the last one. Used to dismiss a prompt once it has been answered, so the
+/// terminal keeps only results.
+fn erase_lines(n: usize) {
+    use std::io::Write;
+    let mut err = std::io::stderr();
+    let _ = write!(err, "{}", erase_sequence(n));
+    let _ = err.flush();
+}
+
+/// The cursor moves needed to wipe `n` already-printed lines.
+///
+/// Each line is cleared in place (`up`, `carriage return`, `erase line`), and
+/// the cursor steps back down once that line is clean. Leaving the cursor on
+/// the last line keeps whatever the prompt printed from scrolling.
+fn erase_sequence(n: usize) -> String {
+    let mut out = String::new();
+    for i in 0..n {
+        if i > 0 {
+            out.push_str("\x1b[1B");
+        }
+        out.push_str("\x1b[1A\r\x1b[2K");
+    }
+    out.push('\r');
+    out
+}
+
+/// Ask the user how to resolve a filename conflict.
+///
+/// The prompt is transient UI: it is erased once answered, so the terminal is
+/// left holding only the outcome. A cancel is recorded in `cancelled` with the
+/// line to print for it, because a user declining is a decision rather than a
+/// failure and must not be reported as an error.
+fn ask_conflict(
+    filename: &str,
+    cancelled: &Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+) -> zing_core::downloader::ConflictDecision {
     use std::io::{IsTerminal, Write};
     use zing_core::downloader::ConflictDecision;
 
     if !std::io::stdin().is_terminal() {
-        // No way to ask: fail with actionable advice rather than blocking on a
-        // prompt nobody can see or answer.
-        tracing::warn!(
-            "File already exists: {filename} (no terminal to ask on). \
-             Use --allow-overwrite to replace it or --auto-file-renaming to save a new copy."
+        // No way to ask. Say so in one line and name the way out, rather than
+        // blocking on a prompt nobody can see.
+        cancelled.lock().unwrap().insert(
+            filename.to_string(),
+            format!(
+                "{filename} exists \u{2014} cancelled. \
+                 Use --allow-overwrite to replace it or --auto-file-renaming to keep a copy."
+            ),
         );
-        return None;
+        return ConflictDecision::Cancel;
     }
 
     let name = filename.to_string();
-    Some(without_progress(move || {
-        eprintln!("\nFile already exists: {name}");
+    let shown = name.clone();
+    let decision = without_progress(move || {
+        eprintln!("{shown} already exists.");
         eprint!("  Overwrite, Rename, or Cancel? [o/r/C] ");
         let _ = std::io::stderr().flush();
         let mut answer = String::new();
         let read = std::io::stdin().read_line(&mut answer).unwrap_or(0);
-        // EOF or empty input: treat as cancel rather than overwriting.
+        // Dismiss the prompt either way: it has served its purpose.
+        erase_lines(2);
         if read == 0 {
             return ConflictDecision::Cancel;
         }
@@ -344,20 +385,41 @@ fn ask_conflict(filename: &str) -> Option<zing_core::downloader::ConflictDecisio
             "r" | "rename" => ConflictDecision::Rename,
             _ => ConflictDecision::Cancel,
         }
-    }))
+    });
+
+    if matches!(decision, ConflictDecision::Cancel) {
+        cancelled
+            .lock()
+            .unwrap()
+            .insert(name.clone(), format!("Cancelled: {name}"));
+    }
+    decision
 }
 
-fn conflict_policy_from_args(args: &Args) -> zing_core::downloader::ConflictPolicy {
-    use zing_core::downloader::{ConflictDecision, ConflictPolicy};
+fn conflict_policy_from_args(
+    args: &Args,
+) -> (
+    zing_core::downloader::ConflictPolicy,
+    Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+) {
+    use zing_core::downloader::ConflictPolicy;
+    // Paths the user declined, with the line to print for each.
+    let cancelled: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     if args.allow_overwrite {
-        ConflictPolicy::Overwrite
+        (ConflictPolicy::Overwrite, cancelled)
     } else if args.auto_file_renaming {
-        ConflictPolicy::AutoRename
+        (ConflictPolicy::AutoRename, cancelled)
     } else {
-        ConflictPolicy::Ask(Arc::new(|filename: &str| {
-            let filename = filename.to_string();
-            Box::pin(async move { ask_conflict(&filename).unwrap_or(ConflictDecision::Cancel) })
-        }))
+        let registry = Arc::clone(&cancelled);
+        (
+            ConflictPolicy::Ask(Arc::new(move |filename: &str| {
+                let filename = filename.to_string();
+                let registry = Arc::clone(&registry);
+                Box::pin(async move { ask_conflict(&filename, &registry) })
+            })),
+            cancelled,
+        )
     }
 }
 
@@ -1751,7 +1813,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
 
         // Existing-file conflict policy (resolved inside the downloader, after
         // the probe + Content-Disposition rename produce the final filename).
-        let conflict_policy = conflict_policy_from_args(&args);
+        let (conflict_policy, cancelled_paths) = conflict_policy_from_args(&args);
 
         let effective_mirrors = metalink.map_or_else(|| args.mirror.clone(), |m| m.mirrors.clone());
         let effective_checksum = metalink
@@ -1878,11 +1940,18 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             match task.run_with_shutdown(task_shutdown).await {
                 Ok(()) => {}
                 Err(e) => {
-                    tracing::error!("{filename}: {e}");
+                    // A conflict the user declined is a decision, not a
+                    // failure: one clean line, no ERROR styling, and no
+                    // repeated filename. Reported after the progress display is
+                    // done, so it is not erased along with the bars.
+                    let msg = cancelled_paths.lock().unwrap().remove(&filename);
                     if let Some(ref cmd) = on_error {
                         run_hook(cmd, &filename);
                     }
-                    return Ok(());
+                    return Ok(msg.map(TaskOutcome::Cancelled).or_else(|| {
+                        tracing::error!("{filename}: {e}");
+                        None
+                    }));
                 }
             }
 
@@ -1893,7 +1962,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 tracing::info!(
                     "Quit requested. Partial download saved; run the same command to resume."
                 );
-                return Ok(());
+                return Ok(None);
             }
 
             // Stopped without finishing and a control file exists: the
@@ -1908,7 +1977,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     bytes_downloaded: 0,
                     total_bytes: 0,
                 });
-                return Ok(());
+                return Ok(None);
             }
 
             // Normal completion. Use the name the engine actually settled on: a
@@ -1934,26 +2003,42 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         }
                     }
                 }
-                print_download_summary(&final_name, started_at, checksum_ok);
+                return Ok(Some(TaskOutcome::Completed(Summary {
+                    filename: final_name,
+                    elapsed: started_at.elapsed(),
+                    checksum_ok,
+                })));
             }
             if let Some(ref cmd) = on_complete {
                 run_hook(cmd, &final_name);
             }
-
-            Ok::<(), color_eyre::Report>(())
+            Ok::<Option<TaskOutcome>, color_eyre::Report>(None)
         });
     }
 
-    // Wait for all downloads to complete
+    // Collect summaries; they are printed only after the bar display has
+    // released its lines, otherwise the display erases them.
+    let mut outcomes: Vec<TaskOutcome> = Vec::new();
     while let Some(result) = join_set.join_next().await {
-        if let Err(e) = result {
-            tracing::error!("Download task failed: {e}");
+        match result {
+            Ok(Ok(Some(outcome))) => outcomes.push(outcome),
+            Ok(Ok(None)) => {}
+            Ok(Err(e)) => tracing::error!("Download task failed: {e}"),
+            Err(e) => tracing::error!("Download task failed: {e}"),
         }
     }
 
     drop(bus);
     if let Some(h) = bar_handle {
         h.await??;
+    }
+    for outcome in &outcomes {
+        match outcome {
+            TaskOutcome::Completed(s) => {
+                print_download_summary(&s.filename, s.elapsed, s.checksum_ok)
+            }
+            TaskOutcome::Cancelled(msg) => print_below_bars(msg),
+        }
     }
     Ok(())
 }
@@ -2804,12 +2889,21 @@ fn print_daemon_summary(done: &daemon_client::Completion) {
     ));
 }
 
-fn print_download_summary(
-    filename: &str,
-    started_at: std::time::Instant,
+/// How a task ended, reported once the progress display is done.
+enum TaskOutcome {
+    Completed(Summary),
+    /// The user declined a filename conflict; carries the line to print.
+    Cancelled(String),
+}
+
+/// A finished task, reported once the progress display is done.
+struct Summary {
+    filename: String,
+    elapsed: std::time::Duration,
     checksum_ok: Option<bool>,
-) {
-    let elapsed = started_at.elapsed();
+}
+
+fn print_download_summary(filename: &str, elapsed: std::time::Duration, checksum_ok: Option<bool>) {
     let size = std::fs::metadata(filename).map(|m| m.len()).unwrap_or(0);
     let avg_speed = if elapsed.as_secs_f64() > 0.0 {
         (size as f64 / elapsed.as_secs_f64()) as u64
@@ -3032,13 +3126,43 @@ mod curl_compat_tests {
 #[cfg(test)]
 mod conflict_prompt_tests {
     use super::*;
-    use crate::progress::{print_below_bars, without_progress};
+    use crate::progress::without_progress;
 
     /// Under `cargo test` there is no interactive terminal, so the prompt must
-    /// decline rather than block on a read that can never be answered.
+    /// decline rather than block on a read that can never be answered, and it
+    /// must record the one line to print for it.
     #[test]
-    fn no_terminal_means_no_prompt() {
-        assert!(ask_conflict("/tmp/does-not-matter").is_none());
+    fn no_terminal_records_a_clean_cancellation() {
+        use zing_core::downloader::ConflictDecision;
+        let registry = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let path = "/tmp/does-not-matter";
+        assert_eq!(ask_conflict(path, &registry), ConflictDecision::Cancel);
+        let msg = registry
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .unwrap_or_default();
+        assert!(msg.contains("cancelled"), "{msg:?}");
+        assert!(msg.contains("--allow-overwrite"), "{msg:?}");
+        assert_eq!(
+            msg.matches("does-not-matter").count(),
+            1,
+            "the filename must not be repeated: {msg:?}"
+        );
+    }
+
+    /// Wiping a prompt must clear every line it printed and leave the cursor
+    /// back on the last one, so the answer is not left on screen above the
+    /// progress display.
+    #[test]
+    fn erase_sequence_clears_exactly_n_lines() {
+        assert_eq!(erase_sequence(0), "\r");
+        assert_eq!(erase_sequence(1), "\x1b[1A\r\x1b[2K\r");
+        assert_eq!(
+            erase_sequence(3),
+            "\x1b[1A\r\x1b[2K\x1b[1B\x1b[1A\r\x1b[2K\x1b[1B\x1b[1A\r\x1b[2K\r"
+        );
     }
 
     /// The progress-display registry must be usable even before any bar exists.

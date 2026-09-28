@@ -361,6 +361,19 @@ impl Default for BarDisplay {
     }
 }
 
+impl Drop for BarDisplay {
+    fn drop(&mut self) {
+        // Unregister, and release the lines the draw target still owns, so
+        // anything printed afterwards lands in a clean terminal. Without this a
+        // summary written while the bars are up gets erased when the display
+        // drops.
+        if let Ok(mut slot) = progress_display().lock() {
+            *slot = None;
+        }
+        let _ = self.mp.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
