@@ -37,6 +37,11 @@ pub async fn subscribe_and_show_progress(
             }
             ProgressType::Bar => match event_type {
                 "TaskCreated" => lock(display).on_created(id, &filename),
+                "TaskRenamed" => {
+                    if let Some(name) = event.get("filename").and_then(|v| v.as_str()) {
+                        lock(display).on_renamed(id, name);
+                    }
+                }
                 "TaskPhase" => {
                     if let Some(phase) = event.get("phase").and_then(|v| v.as_str()) {
                         lock(display).on_phase(id, phase);

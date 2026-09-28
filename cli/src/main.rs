@@ -343,10 +343,11 @@ fn erase_sequence(n: usize) -> String {
 
 /// Ask the user how to resolve a filename conflict.
 ///
-/// The prompt is transient UI: it is erased once answered, so the terminal is
-/// left holding only the outcome. A cancel is recorded in `cancelled` with the
-/// line to print for it, because a user declining is a decision rather than a
-/// failure and must not be reported as an error.
+/// The prompt itself is transient UI and is erased once answered; the
+/// "already exists" line above it stays, since that is where the filename is
+/// named. A cancel is recorded in `cancelled` with the line to print for it,
+/// because a user declining is a decision rather than a failure and must not
+/// be reported as an error.
 fn ask_conflict(
     filename: &str,
     cancelled: &Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
@@ -375,8 +376,10 @@ fn ask_conflict(
         let _ = std::io::stderr().flush();
         let mut answer = String::new();
         let read = std::io::stdin().read_line(&mut answer).unwrap_or(0);
-        // Dismiss the prompt either way: it has served its purpose.
-        erase_lines(2);
+        // Dismiss the question: it is pure UI and has served its purpose. The
+        // line above it stays, because that is the only place the filename is
+        // named.
+        erase_lines(1);
         if read == 0 {
             return ConflictDecision::Cancel;
         }
@@ -388,10 +391,12 @@ fn ask_conflict(
     });
 
     if matches!(decision, ConflictDecision::Cancel) {
+        // The name is already on screen from the line above the prompt, so the
+        // outcome just states what happened.
         cancelled
             .lock()
             .unwrap()
-            .insert(name.clone(), format!("Cancelled: {name}"));
+            .insert(name.clone(), "Task cancelled.".to_string());
     }
     decision
 }
@@ -923,14 +928,26 @@ fn main() -> Result<()> {
         })
     };
 
-    tracing_subscriber::fmt()
+    let subscriber = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
         )
-        .compact()
-        .with_writer(writer)
-        .init();
+        .with_writer(writer);
+
+    // On a terminal, a timestamp and a module path in front of every line make
+    // the state output read like a log dump. Drop both, and keep the level so a
+    // real error still stands out. A log file has no such problem and is much
+    // more useful with them, so keep the full format there.
+    if args.log.is_some() {
+        subscriber.compact().init();
+    } else {
+        subscriber
+            .compact()
+            .without_time()
+            .with_target(false)
+            .init();
+    }
 
     // The native messaging host is spawned by the browser and keeps its own
     // single-threaded runtime on stdin/stdout. Run it outside the CLI's
@@ -1670,6 +1687,9 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let quit_requested = Arc::new(AtomicBool::new(false));
+    // Set once every task has wound down, so the Ctrl+C handler can stay quiet
+    // when shutdown was immediate.
+    let shutdown_settled = Arc::new(AtomicBool::new(false));
     let cookie_jar_sig = cookie_jar.clone();
     let save_cookies_path_sig = args.save_cookies.clone();
 
@@ -1687,11 +1707,23 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let quit = Arc::clone(&quit_requested);
         let jar = cookie_jar_sig.clone();
         let save_path = save_cookies_path_sig.clone();
+        let settled = Arc::clone(&shutdown_settled);
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
             save_cookies_on_interrupt(&jar, &save_path);
             quit.store(true, Ordering::Release);
-            tracing::info!("Ctrl+C received, shutting down...");
+            // No log line here: shutdown is reported once, when the paused
+            // summary is printed, and a line saying "shutting down" only adds a
+            // second thing to read while the terminal is still busy.
+            // Say something only once it is clear the current segments need
+            // time to wind down, so a Ctrl+C that appears to do nothing still
+            // explains itself.
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                if !settled.load(Ordering::Acquire) {
+                    print_below_bars("\x1b[2mFinishing current segments\u{2026}\x1b[0m");
+                }
+            });
             let _ = tx.send(());
         });
     }
@@ -1710,7 +1742,6 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             sigterm.recv().await;
             save_cookies_on_interrupt(&jar, &save_path);
             quit.store(true, Ordering::Release);
-            tracing::info!("SIGTERM received, shutting down...");
             let _ = tx.send(());
         });
     }
@@ -1959,10 +1990,14 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 // Keep the control file: the download stopped cleanly and
                 // re-running the same command resumes from here. Deleting it
                 // here threw away the whole partial download.
-                tracing::info!(
-                    "Quit requested. Partial download saved; run the same command to resume."
-                );
-                return Ok(None);
+                let (bytes, total) = task.progress().await;
+                return Ok(Some(TaskOutcome::Paused {
+                    // The name the engine settled on: Content-Disposition or a
+                    // conflict rename may have replaced the URL-derived one.
+                    filename: task.filename().await,
+                    bytes,
+                    total,
+                }));
             }
 
             // Stopped without finishing and a control file exists: the
@@ -1977,7 +2012,14 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     bytes_downloaded: 0,
                     total_bytes: 0,
                 });
-                return Ok(None);
+                let (bytes, total) = task.progress().await;
+                return Ok(Some(TaskOutcome::Paused {
+                    // The name the engine settled on: Content-Disposition or a
+                    // conflict rename may have replaced the URL-derived one.
+                    filename: task.filename().await,
+                    bytes,
+                    total,
+                }));
             }
 
             // Normal completion. Use the name the engine actually settled on: a
@@ -2032,12 +2074,18 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     if let Some(h) = bar_handle {
         h.await??;
     }
+    shutdown_settled.store(true, Ordering::Release);
     for outcome in &outcomes {
         match outcome {
             TaskOutcome::Completed(s) => {
                 print_download_summary(&s.filename, s.elapsed, s.checksum_ok)
             }
             TaskOutcome::Cancelled(msg) => print_below_bars(msg),
+            TaskOutcome::Paused {
+                filename,
+                bytes,
+                total,
+            } => print_paused(filename, *bytes, *total),
         }
     }
     Ok(())
@@ -2889,11 +2937,43 @@ fn print_daemon_summary(done: &daemon_client::Completion) {
     ));
 }
 
+/// Report an interrupted download as one line.
+///
+/// Ctrl+C used to produce three timestamped log lines that repeated the same
+/// news; the only thing the user needs is how far it got and how to continue.
+fn print_paused(filename: &str, bytes: u64, total: Option<u64>) {
+    let yellow = "\x1b[33m";
+    let dim = "\x1b[2m";
+    let reset = "\x1b[0m";
+
+    let progress = match total.filter(|t| *t > 0) {
+        Some(t) => format!(
+            "{} of {} ({:.1}%)",
+            zing_ext::human::human_bytes(bytes),
+            zing_ext::human::human_bytes(t),
+            bytes as f64 / t as f64 * 100.0
+        ),
+        None => zing_ext::human::human_bytes(bytes),
+    };
+    print_below_bars(&format!(
+        "{yellow}\u{23f8}{reset} Paused {bold_white}{filename}{reset_bold_white} {dim}\u{2014} {progress}. \
+         Run the same command to resume.{reset}",
+        bold_white = "\x1b[1m",
+        reset_bold_white = "\x1b[0m"
+    ));
+}
+
 /// How a task ended, reported once the progress display is done.
 enum TaskOutcome {
     Completed(Summary),
     /// The user declined a filename conflict; carries the line to print.
     Cancelled(String),
+    /// An interrupted transfer, with how far it got.
+    Paused {
+        filename: String,
+        bytes: u64,
+        total: Option<u64>,
+    },
 }
 
 /// A finished task, reported once the progress display is done.
@@ -2955,6 +3035,7 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
             Ok(EngineEvent::TaskCreated { id, url }) => {
                 display.on_created(id, &filename::from_url(&url));
             }
+            Ok(EngineEvent::TaskRenamed { id, filename }) => display.on_renamed(id, &filename),
             Ok(EngineEvent::TaskPhase { id, phase }) => {
                 display.on_phase(id, &phase.to_string());
             }

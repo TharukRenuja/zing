@@ -178,6 +178,31 @@ pub struct ProgressView {
     pub endgame: bool,
 }
 
+/// Shorten a name to `max` display columns, keeping the tail.
+///
+/// The tail is what identifies a file — its extension and the end of a
+/// generated token — so a long name loses its head rather than its end, and the
+/// cut is marked so it is obvious the name is not whole.
+pub fn truncate_name(name: &str, max: usize) -> String {
+    const ELLIPSIS: &str = "...";
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= max {
+        return name.to_string();
+    }
+    if max <= ELLIPSIS.len() {
+        return chars.iter().take(max).collect();
+    }
+    // Keep a little of the head for context, and the rest of the budget for the
+    // tail.
+    let tail = max - ELLIPSIS.len();
+    let head = (tail / 4).max(1);
+    let tail_len = tail - head;
+    let mut out: String = chars.iter().take(head).collect();
+    out.push_str(ELLIPSIS);
+    out.extend(chars[chars.len() - tail_len..].iter());
+    out
+}
+
 /// Per-task render state.
 struct Entry {
     bar: ProgressBar,
@@ -187,6 +212,10 @@ struct Entry {
     paused: bool,
     /// Most recent pre-transfer stage, shown until real progress arrives.
     phase: Option<String>,
+    /// The full name, re-truncated on every tick. The prefix is not width
+    /// limited by indicatif, so a long name would push the right-hand status off
+    /// the edge; keeping the whole name here means a resize can re-truncate it.
+    name: String,
 }
 
 /// Renders one bar per task and adapts as the terminal changes size.
@@ -220,6 +249,7 @@ impl BarDisplay {
     /// to look like two.
     pub fn on_created(&mut self, id: u64, name: &str) {
         let layout = self.layout;
+        let width = self.width;
         let entry = self.bars.entry(id).or_insert_with(|| {
             let bar = self.mp.add(ProgressBar::new(0));
             bar.enable_steady_tick(std::time::Duration::from_millis(100));
@@ -229,14 +259,31 @@ impl BarDisplay {
                 layout,
                 paused: false,
                 phase: None,
+                name: String::new(),
             }
         });
-        entry.bar.set_prefix(format!(" {name}"));
+        entry.name = name.to_string();
+        // The status is not known yet, so leave the right-hand side free.
+        Self::set_prefix(entry, width, 0);
         entry.bar.set_style(bar_style_unknown(entry.layout));
         entry.bar.set_length(0);
         entry.total = None;
         entry.paused = false;
         entry.phase = None;
+    }
+
+    /// Adopt the name the engine settled on.
+    ///
+    /// The name first seen comes from the URL, which for many download links is
+    /// an opaque token rather than the file name. The real one only arrives with
+    /// Content-Disposition, so without this the bar keeps naming a file the user
+    /// never asked for.
+    pub fn on_renamed(&mut self, id: u64, filename: &str) {
+        if let Some(entry) = self.bars.get_mut(&id) {
+            entry.name = filename.to_string();
+            let width = self.width;
+            Self::set_prefix(entry, width, 0);
+        }
     }
 
     /// Record a pre-transfer stage, shown until real progress arrives.
@@ -265,9 +312,24 @@ impl BarDisplay {
             self.on_created(id, name.unwrap_or_default());
         }
         let glyphs = self.glyphs;
+        let width = self.width;
         if let Some(entry) = self.bars.get_mut(&id) {
-            Self::apply(entry, view, layout, glyphs);
+            Self::apply(entry, view, layout, glyphs, width);
         }
+    }
+
+    /// Fit the name to whatever the right-hand status leaves over.
+    ///
+    /// `wide_msg` right-aligns whatever it is given, but the prefix is not width
+    /// limited, so an untruncated name pushes the status off the right edge
+    /// instead of being clipped. Budgeting the name against the status keeps
+    /// both halves on screen at any width.
+    fn set_prefix(entry: &mut Entry, width: usize, status_cols: usize) {
+        // One column of gap, so the two halves never touch.
+        let avail = width.saturating_sub(status_cols + 1);
+        entry
+            .bar
+            .set_prefix(format!(" {}", truncate_name(&entry.name, avail)));
     }
 
     fn apply(
@@ -275,6 +337,7 @@ impl BarDisplay {
         view: &ProgressView,
         layout: BarLayout,
         glyphs: (&'static str, &'static str, &'static str),
+        width: usize,
     ) {
         let stats = status_text(
             view.connections,
@@ -304,6 +367,8 @@ impl BarDisplay {
             stats
         };
         entry.phase = None;
+
+        Self::set_prefix(entry, width, status.chars().count());
 
         if entry.paused {
             entry
@@ -417,6 +482,33 @@ mod tests {
                 let _ = bar_style_unknown(layout);
             }
         }
+    }
+
+    #[test]
+    fn long_names_are_shortened_and_keep_their_tail() {
+        // A generated name is told apart by its end, so the cut keeps the tail.
+        let long = "gAAAAABqukLmxGwnsCJ7J9ZHWJvHTJur-qcxHZHxGx2xyU1IsVTqVy8_GGCHsELy6CZm0H8q4xho84Q9JgrEhql7gU5X90xH0qvKs-vKXQpPGd1Sgp4JomQ=";
+        let short = truncate_name(long, 40);
+        assert!(short.chars().count() <= 40, "{}", short.chars().count());
+        assert!(short.contains("..."), "{short}");
+        assert!(long.ends_with(&short[short.len() - 10..]), "{short}");
+
+        // A name that already fits is left alone, including its exact width.
+        assert_eq!(truncate_name("movie.mkv", 40), "movie.mkv");
+        assert_eq!(truncate_name("exactly-ten", 12), "exactly-ten");
+        // Degenerate budgets must not panic.
+        assert_eq!(truncate_name("abc", 0), "");
+        assert_eq!(truncate_name("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn a_renamed_task_drops_the_guessed_name() {
+        let mut d = BarDisplay::new();
+        d.on_created(5, "gAAAAABqukLmxGwnsCJ7J9ZHWJvHTJur-longtoken");
+        d.on_renamed(5, "/home/u/Downloads/movie.mkv");
+        let entry = d.bars.get(&5).unwrap();
+        assert_eq!(entry.name, "/home/u/Downloads/movie.mkv");
+        assert!(entry.bar.prefix().to_string().contains("movie.mkv"));
     }
 
     #[test]

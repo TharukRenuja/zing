@@ -144,6 +144,11 @@ fn event_to_json(event: &EngineEvent) -> Value {
             "total_block_count": p.total_blocks,
             "endgame": p.endgame,
         }),
+        TaskRenamed { id, filename } => serde_json::json!({
+            "event": "TaskRenamed",
+            "id": id,
+            "filename": filename,
+        }),
         TaskPhase { id, phase } => serde_json::json!({
             "event": "TaskPhase",
             "id": id,

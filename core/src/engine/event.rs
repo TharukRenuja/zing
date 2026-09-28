@@ -71,6 +71,16 @@ pub enum EngineEvent {
         id: TaskId,
         url: String,
     },
+    /// The task's target name changed after `TaskCreated`.
+    ///
+    /// The name first seen is guessed from the URL, which is often an opaque
+    /// token. Once the server answers, Content-Disposition (or a conflict
+    /// rename) gives the real name, and a display that keeps showing the guess
+    /// is showing the user the wrong file.
+    TaskRenamed {
+        id: TaskId,
+        filename: String,
+    },
     TaskProgress(TaskProgress),
     /// A pre-transfer stage, so the UI can report what it is waiting for.
     TaskPhase {
@@ -143,6 +153,9 @@ impl fmt::Display for EngineEvent {
             }
             EngineEvent::TaskPhase { id, phase } => {
                 write!(f, "Task({id}) phase: {phase}")
+            }
+            EngineEvent::TaskRenamed { id, filename } => {
+                write!(f, "Task({id}) renamed to: {filename}")
             }
             EngineEvent::TaskProgress(p) => {
                 let pct = p

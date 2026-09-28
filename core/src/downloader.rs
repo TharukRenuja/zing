@@ -209,6 +209,21 @@ impl DownloadTask {
         self.state.pause_rx.clone()
     }
 
+    /// Bytes fetched so far, and the total if it is known.
+    ///
+    /// A caller reporting an interrupted download needs this to say how far it
+    /// got, and reading it from the event stream would mean tracking progress
+    /// separately just to print one line.
+    pub async fn progress(&self) -> (u64, Option<u64>) {
+        let snap = self.snapshot().await;
+        let total = if snap.total_bytes > 0 {
+            Some(snap.total_bytes)
+        } else {
+            None
+        };
+        (snap.bytes_downloaded, total)
+    }
+
     /// Flush the current bitfield to the control file so the download can be
     /// resumed from the exact byte offset even if the worker exits.
     pub async fn save_control_file(&self) {
@@ -369,6 +384,15 @@ impl DownloadTask {
         &self.state.bus
     }
 
+    /// Report the name the task settled on, so a display can replace the
+    /// URL-derived guess shown before the server answered.
+    fn emit_renamed(&self, filename: &str) {
+        self.state.bus.emit(EngineEvent::TaskRenamed {
+            id: self.state.id,
+            filename: filename.to_string(),
+        });
+    }
+
     /// Tell observers what pre-transfer work is happening, so a progress display
     /// is not left at 0 B looking hung.
     fn emit_phase(&self, phase: TaskPhase) {
@@ -431,7 +455,7 @@ impl DownloadTask {
         let handle = tokio::spawn(async move {
             match shutdown.recv().await {
                 Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    tracing::info!("Shutdown received, finishing current segments...");
+                    tracing::debug!("Shutdown received, finishing current segments...");
                     state_clone.done.store(true, Ordering::Release);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
@@ -563,7 +587,8 @@ impl DownloadTask {
                     } else {
                         cd_name
                     };
-                    *self.state.filename.lock().await = new_name;
+                    *self.state.filename.lock().await = new_name.clone();
+                    self.emit_renamed(&new_name);
                 }
             }
         }
@@ -583,7 +608,8 @@ impl DownloadTask {
                 ConflictDecision::Rename => {
                     let new_name = pick_rename_name(&filename);
                     tracing::debug!("File exists, renamed to: {new_name}");
-                    *self.state.filename.lock().await = new_name;
+                    *self.state.filename.lock().await = new_name.clone();
+                    self.emit_renamed(&new_name);
                 }
                 ConflictDecision::Cancel => {
                     bail!("File already exists: {filename}");
@@ -785,7 +811,7 @@ impl DownloadTask {
                     max_conns,
                 );
 
-                tracing::info!(
+                tracing::debug!(
                     "Adaptive: measured {:.1} MB/s, probe {:.1} MB/s → {} connections (max {:?}) for {} MB file",
                     measured_speed / 1048576.0,
                     probe_bw / 1048576.0,
