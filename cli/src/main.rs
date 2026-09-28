@@ -25,7 +25,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 #[cfg(not(windows))]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
@@ -1687,13 +1687,6 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let quit_requested = Arc::new(AtomicBool::new(false));
-    // Shutdown state, so a transient notice and the real outcome cannot both
-    // end up on screen:
-    //   0 = still running, 1 = slow-wind-down notice shown, 2 = settled.
-    // The notice claims the slot with a compare-exchange, and settling claims it
-    // with a swap, so exactly one of them can win and the notice is always
-    // erased if the outcome arrives after it.
-    let shutdown_state = Arc::new(AtomicU8::new(SHUTDOWN_RUNNING));
     let cookie_jar_sig = cookie_jar.clone();
     let save_cookies_path_sig = args.save_cookies.clone();
 
@@ -1711,30 +1704,17 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let quit = Arc::clone(&quit_requested);
         let jar = cookie_jar_sig.clone();
         let save_path = save_cookies_path_sig.clone();
-        let state = Arc::clone(&shutdown_state);
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
             save_cookies_on_interrupt(&jar, &save_path);
             quit.store(true, Ordering::Release);
-            // No log line here: shutdown is reported once, when the paused
-            // summary is printed, and a line saying "shutting down" only adds a
-            // second thing to read while the terminal is still busy. Say
-            // something only once it is clear the current segments need time to
-            // wind down, so a Ctrl+C that appears to do nothing explains itself.
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                if state
-                    .compare_exchange(
-                        SHUTDOWN_RUNNING,
-                        SHUTDOWN_FINISHING,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
-                    .is_ok()
-                {
-                    print_below_bars("\x1b[2mFinishing current segments\u{2026}\x1b[0m");
-                }
-            });
+            // Nothing is printed here. The transfer winds down, the bar keeps
+            // showing where it got to, and the outcome line is printed once
+            // everything has stopped. An interim notice would be a second line
+            // to erase afterwards, and erasing a line that sits under a live
+            // multi-line display depends on cursor arithmetic that goes wrong
+            // whenever a rendered line is exactly the terminal width — which is
+            // why the bar was being left behind.
             let _ = tx.send(());
         });
     }
@@ -1757,8 +1737,14 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         });
     }
 
+    // Final lines are handed to the display rather than printed directly: while
+    // the display is alive it owns the cursor arithmetic. Once it has been
+    // dropped, positioning a line under a two-line bar means guessing how many
+    // rows the bar left behind, and indicatif's own clear is off by one for a
+    // two-line bar, so the first row survives.
+    let (final_tx, final_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, Vec<String>)>();
     let bar_handle = match progress_type {
-        ProgressType::Bar => Some(tokio::spawn(progress_bar_listener(rx))),
+        ProgressType::Bar => Some(tokio::spawn(progress_bar_listener(rx, final_rx))),
         ProgressType::Json => Some(tokio::spawn(progress_json_writer(rx))),
         ProgressType::None => None,
     };
@@ -1984,14 +1970,19 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 Err(e) => {
                     // A conflict the user declined is a decision, not a
                     // failure: one clean line, no ERROR styling, and no
-                    // repeated filename. Reported after the progress display is
-                    // done, so it is not erased along with the bars.
-                    let msg = cancelled_paths.lock().unwrap().remove(&filename);
+                    // repeated filename.
+                    //
+                    // Key the lookup on the name the engine settled on, which is
+                    // the name it asked about. Keying on the name derived from
+                    // the URL misses whenever Content-Disposition renamed the
+                    // target, and the decline is then reported as an error.
+                    let name = task.filename().await;
+                    let msg = cancelled_paths.lock().unwrap().remove(&name);
                     if let Some(ref cmd) = on_error {
-                        run_hook(cmd, &filename);
+                        run_hook(cmd, &name);
                     }
                     return Ok(msg.map(TaskOutcome::Cancelled).or_else(|| {
-                        tracing::error!("{filename}: {e}");
+                        tracing::error!("{name}: {e}");
                         None
                     }));
                 }
@@ -2016,6 +2007,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     total_bytes: total.unwrap_or(0),
                 });
                 return Ok(Some(TaskOutcome::Paused {
+                    id: task_id,
                     // The name the engine settled on: Content-Disposition or a
                     // conflict rename may have replaced the URL-derived one.
                     filename: task.filename().await,
@@ -2048,6 +2040,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                     }
                 }
                 return Ok(Some(TaskOutcome::Completed(Summary {
+                    id: task_id,
                     filename: final_name,
                     elapsed: started_at.elapsed(),
                     checksum_ok,
@@ -2072,27 +2065,29 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         }
     }
 
-    drop(bus);
-    if let Some(h) = bar_handle {
-        h.await??;
-    }
-    // Claim the shutdown slot: if the slow-wind-down notice already printed,
-    // take it back off the screen so the outcome is the only line left.
-    if shutdown_state.swap(SHUTDOWN_SETTLED, Ordering::AcqRel) == SHUTDOWN_FINISHING {
-        erase_lines(1);
-    }
+    // Hand the outcome lines to the display before closing the bus, so they are
+    // printed while it still owns the terminal.
     for outcome in &outcomes {
-        match outcome {
-            TaskOutcome::Completed(s) => {
-                print_download_summary(&s.filename, s.elapsed, s.checksum_ok)
-            }
-            TaskOutcome::Cancelled(msg) => print_below_bars(msg),
+        let (id, lines) = match outcome {
+            TaskOutcome::Completed(s) => (
+                s.id,
+                download_summary_line(&s.filename, s.elapsed, s.checksum_ok),
+            ),
+            TaskOutcome::Cancelled(msg) => (0, vec![msg.clone()]),
             TaskOutcome::Paused {
+                id,
                 filename,
                 bytes,
                 total,
-            } => print_paused(filename, *bytes, *total),
-        }
+            } => (*id, vec![paused_line(filename, *bytes, *total)]),
+        };
+        let _ = final_tx.send((id, lines));
+    }
+    drop(final_tx);
+
+    drop(bus);
+    if let Some(h) = bar_handle {
+        h.await??;
     }
     Ok(())
 }
@@ -2943,18 +2938,11 @@ fn print_daemon_summary(done: &daemon_client::Completion) {
     ));
 }
 
-/// Shutdown is still running; nothing has claimed the notice slot yet.
-const SHUTDOWN_RUNNING: u8 = 0;
-/// The slow-wind-down notice is on screen.
-const SHUTDOWN_FINISHING: u8 = 1;
-/// Every task has wound down and the outcome line is about to print.
-const SHUTDOWN_SETTLED: u8 = 2;
-
-/// Report an interrupted download as one line.
+/// Build the one line that reports an interrupted download.
 ///
 /// Ctrl+C used to produce three timestamped log lines that repeated the same
-/// news; the only thing the user needs is how far it got and how to continue.
-fn print_paused(filename: &str, bytes: u64, total: Option<u64>) {
+/// news; the only thing the user needs is how far it got.
+fn paused_line(filename: &str, bytes: u64, total: Option<u64>) -> String {
     let yellow = "\x1b[33m";
     let dim = "\x1b[2m";
     let reset = "\x1b[0m";
@@ -2973,12 +2961,12 @@ fn print_paused(filename: &str, bytes: u64, total: Option<u64>) {
     let suffix = format!(" \u{2014} {progress}");
     let name = crate::progress::base_name(filename);
     let budget = progress::terminal_width().saturating_sub(suffix.chars().count() + 12);
-    print_below_bars(&format!(
+    format!(
         "{yellow}\u{23f8}{reset} Paused {bold_white}{name}{reset_bold_white}{dim}{suffix}{reset}",
         name = crate::progress::truncate_name(name, budget),
         bold_white = "\x1b[1m",
         reset_bold_white = "\x1b[0m"
-    ));
+    )
 }
 
 /// How a task ended, reported once the progress display is done.
@@ -2988,6 +2976,7 @@ enum TaskOutcome {
     Cancelled(String),
     /// An interrupted transfer, with how far it got.
     Paused {
+        id: u64,
         filename: String,
         bytes: u64,
         total: Option<u64>,
@@ -2996,12 +2985,17 @@ enum TaskOutcome {
 
 /// A finished task, reported once the progress display is done.
 struct Summary {
+    id: u64,
     filename: String,
     elapsed: std::time::Duration,
     checksum_ok: Option<bool>,
 }
 
-fn print_download_summary(filename: &str, elapsed: std::time::Duration, checksum_ok: Option<bool>) {
+fn download_summary_line(
+    filename: &str,
+    elapsed: std::time::Duration,
+    checksum_ok: Option<bool>,
+) -> Vec<String> {
     let size = std::fs::metadata(filename).map(|m| m.len()).unwrap_or(0);
     let avg_speed = if elapsed.as_secs_f64() > 0.0 {
         (size as f64 / elapsed.as_secs_f64()) as u64
@@ -3034,22 +3028,46 @@ fn print_download_summary(filename: &str, elapsed: std::time::Duration, checksum
         },
         speed = zing_ext::human::human_speed(avg_speed),
     );
-    print_below_bars(&line);
-
+    let mut out = vec![line];
     match checksum_ok {
-        Some(true) => print_below_bars(&format!("{green}  Checksum: OK{reset}")),
-        Some(false) => print_below_bars(&format!("{red}  Checksum: MISMATCH{reset}")),
+        Some(true) => out.push(format!("{green}  Checksum: OK{reset}")),
+        Some(false) => out.push(format!("{red}  Checksum: MISMATCH{reset}")),
         None => {}
     }
+    out
 }
 
 /// Drive the shared bar display from in-process engine events.
-async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Result<()> {
+///
+/// `finals` carries the closing lines for each transfer. They are printed here
+/// rather than by the caller because this task owns the display, and only the
+/// display knows how many rows its bars are holding.
+async fn progress_bar_listener(
+    mut rx: broadcast::Receiver<EngineEvent>,
+    mut finals: tokio::sync::mpsc::UnboundedReceiver<(u64, Vec<String>)>,
+) -> Result<()> {
     use tokio::sync::broadcast::error::RecvError;
 
     let mut display = BarDisplay::new();
     loop {
-        match rx.recv().await {
+        // A final line is ordered ahead of further events so a transfer's
+        // closing line cannot be overtaken by another task's progress frame.
+        let event = tokio::select! {
+            biased;
+            line = finals.recv() => {
+                match line {
+                    Some((id, lines)) => {
+                        display.print_final(id, &lines);
+                        continue;
+                    }
+                    // Sender dropped: the outcomes are all in, so only events
+                    // remain.
+                    None => rx.recv().await,
+                }
+            }
+            event = rx.recv() => event,
+        };
+        match event {
             Ok(EngineEvent::TaskCreated { id, url }) => {
                 display.on_created(id, &filename::from_url(&url));
             }
@@ -3079,6 +3097,10 @@ async fn progress_bar_listener(mut rx: broadcast::Receiver<EngineEvent>) -> Resu
             Err(RecvError::Closed) => break,
             Err(RecvError::Lagged(n)) => tracing::warn!("Bus lagged by {n}"),
         }
+    }
+    // Any line that arrived after the last event still has to be printed.
+    while let Some((id, lines)) = finals.recv().await {
+        display.print_final(id, &lines);
     }
     display.finish_all();
     Ok(())

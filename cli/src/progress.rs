@@ -164,6 +164,30 @@ pub fn terminal_width() -> usize {
     80
 }
 
+/// Erase the last `rows` rows the cursor sits below, and leave the cursor on
+/// the first of them.
+///
+/// Every rendered bar line ends in a newline, so after a draw the cursor is
+/// exactly `rows` below the top of the block. That makes the block's position
+/// known without asking the terminal where the cursor is, which is what lets the
+/// rows be cleared precisely.
+fn erase_rows(rows: usize) {
+    use std::io::Write;
+    if rows == 0 {
+        return;
+    }
+    let mut err = std::io::stderr();
+    let _ = write!(err, "\x1b[{rows}A");
+    for i in 0..rows {
+        let _ = write!(err, "\r\x1b[2K");
+        if i + 1 < rows {
+            let _ = write!(err, "\x1b[1B");
+        }
+    }
+    let _ = write!(err, "\x1b[{rows}A");
+    let _ = err.flush();
+}
+
 /// Everything the bar needs about one transfer, independent of where the
 /// event came from.
 #[derive(Debug, Clone, Default)]
@@ -233,6 +257,9 @@ struct Entry {
 pub struct BarDisplay {
     mp: Arc<MultiProgress>,
     bars: HashMap<u64, Entry>,
+    /// Tasks that have already reported their outcome. Their bars are gone, and
+    /// any event still in flight for them must not bring the bar back.
+    finished: std::collections::HashSet<u64>,
     glyphs: (&'static str, &'static str, &'static str),
     width: usize,
     layout: BarLayout,
@@ -246,6 +273,7 @@ impl BarDisplay {
         Self {
             mp,
             bars: HashMap::new(),
+            finished: std::collections::HashSet::new(),
             glyphs: BAR_GLYPHS[0],
             width,
             layout: BarLayout::for_width(width),
@@ -259,6 +287,9 @@ impl BarDisplay {
     /// with the MultiProgress and keeps rendering, which is how one task came
     /// to look like two.
     pub fn on_created(&mut self, id: u64, name: &str) {
+        if self.finished.contains(&id) {
+            return;
+        }
         let layout = self.layout;
         let width = self.width;
         let entry = self.bars.entry(id).or_insert_with(|| {
@@ -309,6 +340,13 @@ impl BarDisplay {
     /// when the daemon subscription opened after `TaskCreated` was emitted and
     /// so the name from that event was never seen.
     pub fn on_progress(&mut self, id: u64, name: Option<&str>, view: &ProgressView) {
+        // A task that has already reported its outcome must not be drawn again:
+        // progress events are broadcast, so a frame that was queued before the
+        // closing line still arrives afterwards and would redraw the bar over
+        // the line that replaced it.
+        if self.finished.contains(&id) {
+            return;
+        }
         // Re-read the width every tick so a resize is picked up live.
         let now = terminal_width();
         if now != self.width {
@@ -424,6 +462,27 @@ impl BarDisplay {
         }
     }
 
+    /// Print the closing lines for a task, replacing its bar.
+    ///
+    /// The bar goes first so the line does not land under something about to be
+    /// torn down, and the task is marked finished so late progress frames cannot
+    /// redraw over it. The lines go through the display rather than straight to
+    /// stderr, because only the display knows how many rows its bars are holding.
+    pub fn print_final(&mut self, id: u64, lines: &[String]) {
+        self.finished.insert(id);
+        if let Some(entry) = self.bars.remove(&id) {
+            entry.bar.finish_and_clear();
+            // indicatif's erase walks up from the cursor and, because every bar
+            // line ends in a newline, it takes out the last row of the bar and
+            // the row below it, and stops on the bar's first row. Clear that
+            // one, or the filename line outlives the bar it belonged to.
+            erase_rows(1);
+        }
+        for line in lines {
+            let _ = self.mp.println(line);
+        }
+    }
+
     pub fn finish_all(&mut self) {
         for (_, entry) in self.bars.drain() {
             entry.bar.finish_and_clear();
@@ -531,6 +590,24 @@ mod tests {
         let entry = d.bars.get(&5).unwrap();
         assert_eq!(entry.name, "movie.mkv");
         assert!(entry.bar.prefix().to_string().contains("movie.mkv"));
+    }
+
+    #[test]
+    fn a_reported_task_is_never_drawn_again() {
+        // Progress events are broadcast, so a frame queued before the closing
+        // line still arrives after it. Redrawing then would put the bar back
+        // over the line that replaced it.
+        let mut d = BarDisplay::new();
+        d.on_created(3, "movie.mkv");
+        d.on_progress(3, None, &ProgressView::default());
+        d.print_final(3, &["done".to_string()]);
+        assert!(d.bars.is_empty(), "the bar must be gone");
+
+        // Late frames must not resurrect it.
+        d.on_progress(3, Some("movie.mkv"), &ProgressView::default());
+        d.on_created(3, "movie.mkv");
+        d.on_renamed(3, "other.mkv");
+        assert!(d.bars.is_empty(), "a reported task must stay gone");
     }
 
     #[test]
