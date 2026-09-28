@@ -3244,6 +3244,98 @@ mod curl_compat_tests {
     }
 }
 
+/// A short letter must mean one thing, or nothing — never two things in
+/// different subcommands. `-d` was a request body at the root and an output
+/// directory in `tui` and `schedule add`, so `zing -d foo URL` and
+/// `zing tui -d foo URL` did unrelated things.
+#[cfg(test)]
+mod short_flag_consistency_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Which short letters a command surface accepts.
+    fn shorts(v: &clap::Command) -> std::collections::BTreeSet<char> {
+        v.get_arguments().filter_map(|a| a.get_short()).collect()
+    }
+
+    /// The long name a letter resolves to — what the user actually types. The
+    /// clap arg id comes from the field name, which is an internal detail and
+    /// differs between surfaces for the same flag.
+    fn find(v: &clap::Command, letter: char) -> Option<String> {
+        v.get_arguments()
+            .find(|a| a.get_short() == Some(letter))
+            .and_then(|a| a.get_long())
+            .map(|s| s.to_string())
+    }
+
+    fn root() -> clap::Command {
+        Args::command()
+    }
+
+    fn sub(name: &str) -> clap::Command {
+        Args::command()
+            .get_subcommands_mut()
+            .find(|s| s.get_name() == name)
+            .expect("subcommand exists")
+            .clone()
+    }
+
+    #[test]
+    fn root_letters_are_unambiguous() {
+        let r = root();
+        assert_eq!(find(&r, 'd').as_deref(), Some("data"));
+        assert_eq!(find(&r, 'R').as_deref(), Some("referer"));
+        // -e belonged to --referer, which moved to -R; it must not creep back.
+        assert_eq!(find(&r, 'e'), None);
+    }
+
+    #[test]
+    fn tui_shares_the_root_output_directory_letter() {
+        let t = sub("tui");
+        assert_eq!(
+            find(&t, 'W').as_deref(),
+            Some("output-dir"),
+            "tui must use the root's -W, not its own -d"
+        );
+        assert!(
+            !shorts(&t).contains(&'d'),
+            "-d is --data at the root and must not reappear in tui"
+        );
+    }
+
+    #[test]
+    fn schedule_keeps_e_for_end_and_uses_R_for_referer() {
+        let s = sub("schedule");
+        let mut s = s;
+        let add = s
+            .get_subcommands_mut()
+            .find(|c| c.get_name() == "add")
+            .expect("schedule add exists")
+            .clone();
+        assert_eq!(find(&add, 'e').as_deref(), Some("end"));
+        assert_eq!(find(&add, 'R').as_deref(), Some("referer"));
+        assert_eq!(find(&add, 'W').as_deref(), Some("output-dir"));
+        assert!(!shorts(&add).contains(&'d'));
+    }
+
+    /// No letter may be claimed twice on one surface, which clap permits and
+    /// which would resolve to an arbitrary one of them.
+    #[test]
+    fn no_duplicate_short_letters_per_surface() {
+        for (name, cmd) in [
+            ("root", root()),
+            ("tui", sub("tui")),
+            ("schedule", sub("schedule")),
+        ] {
+            let all: Vec<char> = cmd.get_arguments().filter_map(|a| a.get_short()).collect();
+            let mut seen = std::collections::BTreeSet::new();
+            for c in all {
+                assert!(seen.insert(c), "{name}: -{c} is declared twice");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod conflict_prompt_tests {
     use super::*;

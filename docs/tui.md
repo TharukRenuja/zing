@@ -16,7 +16,7 @@ keywords: zing, tui, terminal, interface, ratatui, keybindings, task table, prog
 zing tui https://example.com/file1.zip https://example.com/file2.zip
 
 # With download options
-zing tui -d downloads/ -n 8 -r 2MB https://example.com/file.zip
+zing tui -W downloads/ -n 8 -r 2MB https://example.com/file.zip
 
 # Standalone (skip daemon)
 zing tui --standalone https://example.com/file.zip

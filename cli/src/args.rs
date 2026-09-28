@@ -107,7 +107,7 @@ pub struct Args {
 
     #[arg(
         long = "referer",
-        short = 'e',
+        short = 'R',
         help = "Referer URL (sets the Referer header)"
     )]
     pub referer: Option<String>,
@@ -444,7 +444,12 @@ pub enum Commands {
         )]
         connections: Option<usize>,
 
-        #[arg(long = "dir", short = 'd', help = "Output directory")]
+        #[arg(
+            long = "output-dir",
+            visible_alias = "dir",
+            short = 'W',
+            help = "Output directory"
+        )]
         dir: Option<PathBuf>,
 
         #[arg(long = "output", short = 'o', help = "Output filename")]
@@ -696,7 +701,7 @@ pub enum ScheduleAction {
         #[arg(short = 'o', long, help = "Output file path")]
         output: Option<String>,
 
-        #[arg(long, short = 'd', help = "Output directory")]
+        #[arg(long, short = 'W', help = "Output directory")]
         output_dir: Option<String>,
 
         #[arg(
@@ -735,7 +740,11 @@ pub enum ScheduleAction {
         )]
         user: Option<String>,
 
-        #[arg(long = "referer", help = "Referer URL (sets the Referer header)")]
+        #[arg(
+            long = "referer",
+            short = 'R',
+            help = "Referer URL (sets the Referer header)"
+        )]
         referer: Option<String>,
 
         #[arg(long = "checksum", short = 'c', help = "Verify checksum")]

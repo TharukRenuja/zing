@@ -101,7 +101,7 @@ accepted by `-X`.
 | `curl --netrc URL` | `zing -N URL` |
 | `curl -H 'X-Foo: bar' URL` | `zing -H 'X-Foo: bar' URL` |
 | `curl -A 'MyApp/1.0' URL` | `zing -A 'MyApp/1.0' URL` |
-| `curl -e https://ref.example URL` | `zing -e https://ref.example URL` |
+| `curl -e https://ref.example URL` | `zing -R https://ref.example URL` |
 | `curl -k URL` | `zing -k URL` |
 | `curl -x http://proxy:8080 URL` | `zing -x http://proxy:8080 URL` |
 | `curl --cert c.pem --key k.pem URL` | `zing --cert c.pem --cert-key k.pem URL` |
