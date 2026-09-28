@@ -1594,7 +1594,6 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let quit_requested = Arc::new(AtomicBool::new(false));
-    let resume_requested = Arc::new(AtomicBool::new(false));
     let cookie_jar_sig = cookie_jar.clone();
     let save_cookies_path_sig = args.save_cookies.clone();
 
@@ -1637,44 +1636,6 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             quit.store(true, Ordering::Release);
             tracing::info!("SIGTERM received, shutting down...");
             let _ = tx.send(());
-        });
-    }
-
-    // SIGTSTP (Ctrl+Z): save control files then suspend
-    #[cfg(unix)]
-    {
-        let tx = shutdown_tx.clone();
-        tokio::spawn(async move {
-            let mut sigtstp = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::from_raw(libc::SIGTSTP),
-            )
-            .expect("sigtstp handler");
-            sigtstp.recv().await;
-            tracing::info!("SIGTSTP received, saving state before suspend...");
-            let _ = tx.send(());
-            // Yield to let the runtime process the shutdown and save
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            // Restore default SIGTSTP and re-raise to actually suspend
-            unsafe {
-                libc::signal(libc::SIGTSTP, libc::SIG_DFL);
-                libc::raise(libc::SIGTSTP);
-            }
-        });
-    }
-
-    // SIGCONT: resume
-    #[cfg(unix)]
-    {
-        let resume = Arc::clone(&resume_requested);
-        tokio::spawn(async move {
-            let mut sigcont = tokio::signal::unix::signal(
-                tokio::signal::unix::SignalKind::from_raw(libc::SIGCONT),
-            )
-            .expect("sigcont handler");
-            loop {
-                sigcont.recv().await;
-                resume.store(true, Ordering::Release);
-            }
         });
     }
 
@@ -1793,7 +1754,6 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let bus = bus.clone();
         let shutdown_tx = shutdown_tx.clone();
         let quit_requested = Arc::clone(&quit_requested);
-        let resume_requested = Arc::clone(&resume_requested);
         let sem = semaphore.clone();
         let on_complete = args.on_download_complete.clone();
         let on_error = args.on_download_error.clone();
@@ -1852,136 +1812,115 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             let task_id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
             let started_at = std::time::Instant::now();
 
-            loop {
-                bus.emit(EngineEvent::TaskCreated {
-                    id: task_id,
-                    url: url.clone(),
-                });
+            bus.emit(EngineEvent::TaskCreated {
+                id: task_id,
+                url: url.clone(),
+            });
 
-                let task = DownloadTask::new(
-                    task_id,
-                    &url,
-                    &filename,
-                    is_auto_name,
-                    to_stdout,
-                    connections,
-                    bus.clone(),
-                    insecure,
-                    max_rate,
-                    proxy.clone(),
-                    effective_mirrors.clone(),
-                    bwlimit.clone(),
-                    headers.clone(),
-                    max_fsize,
-                    retry,
-                    retry_wait,
-                    connect_timeout,
-                    max_time,
-                    user_agent.clone(),
-                    use_cd,
-                    jar.clone(),
-                    save_cookies.clone(),
-                    low_speed_limit,
-                    low_speed_time,
-                    save_interval,
-                    chunk_hashes.clone(),
-                    cert_path.clone(),
-                    cert_key_path.clone(),
-                    digest,
-                    endgame_enabled,
-                    throttle_reprobe_enabled,
-                    spec.as_ref().clone(),
+            let task = DownloadTask::new(
+                task_id,
+                &url,
+                &filename,
+                is_auto_name,
+                to_stdout,
+                connections,
+                bus.clone(),
+                insecure,
+                max_rate,
+                proxy.clone(),
+                effective_mirrors.clone(),
+                bwlimit.clone(),
+                headers.clone(),
+                max_fsize,
+                retry,
+                retry_wait,
+                connect_timeout,
+                max_time,
+                user_agent.clone(),
+                use_cd,
+                jar.clone(),
+                save_cookies.clone(),
+                low_speed_limit,
+                low_speed_time,
+                save_interval,
+                chunk_hashes.clone(),
+                cert_path.clone(),
+                cert_key_path.clone(),
+                digest,
+                endgame_enabled,
+                throttle_reprobe_enabled,
+                spec.as_ref().clone(),
+            );
+            task.set_conflict_policy(conflict_policy.clone());
+            if digest {
+                if let Some(ref creds) = user_creds {
+                    if let Some((u, p)) = creds.split_once(':') {
+                        task.set_auth_credentials(u, p).await;
+                    }
+                }
+            }
+
+            let task_shutdown = shutdown_tx.subscribe();
+            match task.run_with_shutdown(task_shutdown).await {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!("{filename}: {e}");
+                    if let Some(ref cmd) = on_error {
+                        run_hook(cmd, &filename);
+                    }
+                    return Ok(());
+                }
+            }
+
+            if quit_requested.load(Ordering::Acquire) {
+                // Keep the control file: the download stopped cleanly and
+                // re-running the same command resumes from here. Deleting it
+                // here threw away the whole partial download.
+                tracing::info!(
+                    "Quit requested. Partial download saved; run the same command to resume."
                 );
-                task.set_conflict_policy(conflict_policy.clone());
-                if digest {
-                    if let Some(ref creds) = user_creds {
-                        if let Some((u, p)) = creds.split_once(':') {
-                            task.set_auth_credentials(u, p).await;
-                        }
-                    }
-                }
+                return Ok(());
+            }
 
-                let task_shutdown = shutdown_tx.subscribe();
-                match task.run_with_shutdown(task_shutdown).await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        tracing::error!("{filename}: {e}");
-                        if let Some(ref cmd) = on_error {
-                            run_hook(cmd, &filename);
-                        }
-                        break;
-                    }
-                }
+            // Stopped without finishing and a control file exists: the
+            // download is resumable by re-running the same command. Ctrl+Z
+            // support used to live here; the terminal now handles suspend
+            // itself, so this only reports where the transfer stopped.
+            let control_path =
+                zing_core::storage::control::ControlFile::control_path(Path::new(&filename));
+            if control_path.exists() {
+                bus.emit(EngineEvent::Paused {
+                    id: task_id,
+                    bytes_downloaded: 0,
+                    total_bytes: 0,
+                });
+                return Ok(());
+            }
 
-                if quit_requested.load(Ordering::Acquire) {
-                    // Keep the control file: the download stopped cleanly and
-                    // re-running the same command resumes from here. Deleting it
-                    // here threw away the whole partial download.
-                    tracing::info!(
-                        "Quit requested. Partial download saved; run the same command to resume."
-                    );
-                    break;
-                }
-
-                let control_path =
-                    zing_core::storage::control::ControlFile::control_path(Path::new(&filename));
-                if control_path.exists() {
-                    tracing::info!(
-                        "Download paused. Send SIGCONT (fg) to resume, or Ctrl+C to quit."
-                    );
-                    bus.emit(EngineEvent::Paused {
+            // Normal completion
+            let mut checksum_ok = None;
+            if !to_stdout {
+                if let Some(ref chk) = effective_checksum {
+                    // verify_file is synchronous and can hash gigabytes, so
+                    // announce it instead of freezing the bar at 100%.
+                    bus.emit(EngineEvent::TaskPhase {
                         id: task_id,
-                        bytes_downloaded: 0,
-                        total_bytes: 0,
+                        phase: zing_core::engine::event::TaskPhase::VerifyingChecksum,
                     });
-
-                    // Wait for resume or quit
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        if resume_requested.swap(false, Ordering::AcqRel) {
-                            tracing::info!("Resuming download...");
-                            break;
-                        }
-                        if quit_requested.load(Ordering::Acquire) {
-                            // Same as above: the control file is the resume
-                            // point, so leave it in place.
-                            tracing::info!("Quit requested. Partial download kept for resume.");
-                            break;
+                    let path = Path::new(&filename);
+                    match checksum::verify_file(path, chk) {
+                        Ok(true) => checksum_ok = Some(true),
+                        Ok(false) => checksum_ok = Some(false),
+                        Err(e) => {
+                            tracing::error!("Checksum: {e}");
+                            checksum_ok = Some(false);
                         }
                     }
-
-                    if quit_requested.load(Ordering::Acquire) {
-                        break;
-                    }
-                    continue;
                 }
-
-                // Normal completion
-                let mut checksum_ok = None;
-                if !to_stdout {
-                    if let Some(ref chk) = effective_checksum {
-                        // verify_file is synchronous and can hash gigabytes, so
-                        // announce it instead of freezing the bar at 100%.
-                        bus.emit(EngineEvent::TaskPhase {
-                            id: task_id,
-                            phase: zing_core::engine::event::TaskPhase::VerifyingChecksum,
-                        });
-                        let path = Path::new(&filename);
-                        match checksum::verify_file(path, chk) {
-                            Ok(true) => checksum_ok = Some(true),
-                            Ok(false) => checksum_ok = Some(false),
-                            Err(e) => {
-                                tracing::error!("Checksum: {e}");
-                                checksum_ok = Some(false);
-                            }
-                        }
-                    }
-                    print_download_summary(&filename, started_at, checksum_ok);
-                }
-                if let Some(ref cmd) = on_complete {
-                    run_hook(cmd, &filename);
-                }
-                break;
+                print_download_summary(&filename, started_at, checksum_ok);
+            }
+            if let Some(ref cmd) = on_complete {
+                run_hook(cmd, &filename);
             }
 
             Ok::<(), color_eyre::Report>(())
