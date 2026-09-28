@@ -25,7 +25,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 #[cfg(not(windows))]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
@@ -1687,9 +1687,13 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let quit_requested = Arc::new(AtomicBool::new(false));
-    // Set once every task has wound down, so the Ctrl+C handler can stay quiet
-    // when shutdown was immediate.
-    let shutdown_settled = Arc::new(AtomicBool::new(false));
+    // Shutdown state, so a transient notice and the real outcome cannot both
+    // end up on screen:
+    //   0 = still running, 1 = slow-wind-down notice shown, 2 = settled.
+    // The notice claims the slot with a compare-exchange, and settling claims it
+    // with a swap, so exactly one of them can win and the notice is always
+    // erased if the outcome arrives after it.
+    let shutdown_state = Arc::new(AtomicU8::new(SHUTDOWN_RUNNING));
     let cookie_jar_sig = cookie_jar.clone();
     let save_cookies_path_sig = args.save_cookies.clone();
 
@@ -1707,20 +1711,27 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         let quit = Arc::clone(&quit_requested);
         let jar = cookie_jar_sig.clone();
         let save_path = save_cookies_path_sig.clone();
-        let settled = Arc::clone(&shutdown_settled);
+        let state = Arc::clone(&shutdown_state);
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
             save_cookies_on_interrupt(&jar, &save_path);
             quit.store(true, Ordering::Release);
             // No log line here: shutdown is reported once, when the paused
             // summary is printed, and a line saying "shutting down" only adds a
-            // second thing to read while the terminal is still busy.
-            // Say something only once it is clear the current segments need
-            // time to wind down, so a Ctrl+C that appears to do nothing still
-            // explains itself.
+            // second thing to read while the terminal is still busy. Say
+            // something only once it is clear the current segments need time to
+            // wind down, so a Ctrl+C that appears to do nothing explains itself.
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                if !settled.load(Ordering::Acquire) {
+                if state
+                    .compare_exchange(
+                        SHUTDOWN_RUNNING,
+                        SHUTDOWN_FINISHING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
                     print_below_bars("\x1b[2mFinishing current segments\u{2026}\x1b[0m");
                 }
             });
@@ -2074,7 +2085,11 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
     if let Some(h) = bar_handle {
         h.await??;
     }
-    shutdown_settled.store(true, Ordering::Release);
+    // Claim the shutdown slot: if the slow-wind-down notice already printed,
+    // take it back off the screen so the outcome is the only line left.
+    if shutdown_state.swap(SHUTDOWN_SETTLED, Ordering::AcqRel) == SHUTDOWN_FINISHING {
+        erase_lines(1);
+    }
     for outcome in &outcomes {
         match outcome {
             TaskOutcome::Completed(s) => {
@@ -2937,6 +2952,13 @@ fn print_daemon_summary(done: &daemon_client::Completion) {
     ));
 }
 
+/// Shutdown is still running; nothing has claimed the notice slot yet.
+const SHUTDOWN_RUNNING: u8 = 0;
+/// The slow-wind-down notice is on screen.
+const SHUTDOWN_FINISHING: u8 = 1;
+/// Every task has wound down and the outcome line is about to print.
+const SHUTDOWN_SETTLED: u8 = 2;
+
 /// Report an interrupted download as one line.
 ///
 /// Ctrl+C used to produce three timestamped log lines that repeated the same
@@ -2955,9 +2977,14 @@ fn print_paused(filename: &str, bytes: u64, total: Option<u64>) {
         ),
         None => zing_ext::human::human_bytes(bytes),
     };
+    // Keep the line to one row: a long name wrapped onto a second line reads as
+    // two separate messages.
+    let suffix = format!(" \u{2014} {progress}");
+    let name = crate::progress::base_name(filename);
+    let budget = progress::terminal_width().saturating_sub(suffix.chars().count() + 12);
     print_below_bars(&format!(
-        "{yellow}\u{23f8}{reset} Paused {bold_white}{filename}{reset_bold_white} {dim}\u{2014} {progress}. \
-         Run the same command to resume.{reset}",
+        "{yellow}\u{23f8}{reset} Paused {bold_white}{name}{reset_bold_white}{dim}{suffix}{reset}",
+        name = crate::progress::truncate_name(name, budget),
         bold_white = "\x1b[1m",
         reset_bold_white = "\x1b[0m"
     ));

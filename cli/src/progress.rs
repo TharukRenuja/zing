@@ -178,6 +178,17 @@ pub struct ProgressView {
     pub endgame: bool,
 }
 
+/// The trailing file name, without its directory.
+///
+/// The directory is the same for every file in a run and the user already
+/// chose it, so spending bar columns on it pushes the status off the edge and
+/// eats into the part that actually identifies the file.
+pub fn base_name(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
+}
+
 /// Shorten a name to `max` display columns, keeping the tail.
 ///
 /// The tail is what identifies a file — its extension and the end of a
@@ -262,7 +273,7 @@ impl BarDisplay {
                 name: String::new(),
             }
         });
-        entry.name = name.to_string();
+        entry.name = base_name(name).to_string();
         // The status is not known yet, so leave the right-hand side free.
         Self::set_prefix(entry, width, 0);
         entry.bar.set_style(bar_style_unknown(entry.layout));
@@ -280,7 +291,7 @@ impl BarDisplay {
     /// never asked for.
     pub fn on_renamed(&mut self, id: u64, filename: &str) {
         if let Some(entry) = self.bars.get_mut(&id) {
-            entry.name = filename.to_string();
+            entry.name = base_name(filename).to_string();
             let width = self.width;
             Self::set_prefix(entry, width, 0);
         }
@@ -502,12 +513,23 @@ mod tests {
     }
 
     #[test]
+    fn base_name_drops_the_directory() {
+        assert_eq!(base_name("/home/u/Downloads/movie.mkv"), "movie.mkv");
+        assert_eq!(base_name("relative/movie.mkv"), "movie.mkv");
+        assert_eq!(base_name(r"C:\Users\u\movie.mkv"), "movie.mkv");
+        // A bare name, a trailing slash, and an empty path must not panic.
+        assert_eq!(base_name("movie.mkv"), "movie.mkv");
+        assert_eq!(base_name("/a/b/"), "b");
+        assert_eq!(base_name(""), "");
+    }
+
+    #[test]
     fn a_renamed_task_drops_the_guessed_name() {
         let mut d = BarDisplay::new();
         d.on_created(5, "gAAAAABqukLmxGwnsCJ7J9ZHWJvHTJur-longtoken");
         d.on_renamed(5, "/home/u/Downloads/movie.mkv");
         let entry = d.bars.get(&5).unwrap();
-        assert_eq!(entry.name, "/home/u/Downloads/movie.mkv");
+        assert_eq!(entry.name, "movie.mkv");
         assert!(entry.bar.prefix().to_string().contains("movie.mkv"));
     }
 
