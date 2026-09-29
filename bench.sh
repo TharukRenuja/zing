@@ -22,23 +22,40 @@ set -uo pipefail
 # --------------------------------------------------------------------------
 # Config — edit freely
 # --------------------------------------------------------------------------
-ZING_BIN="${ZING_BIN:-zing}"          # use the installed binary on PATH
-CONNECTIONS="${CONNECTIONS:-4}"       # segments for zing / aria2c
-ROUNDS="${ROUNDS:-3}"                 # passes over every tool (median)
-PAUSE="${PAUSE:-3}"                   # seconds between downloads
-SELF_TEST_BYTES=5242880               # 5 MB for --self-test
+ZING_BIN="${ZING_BIN:-zing}"    # use the installed binary on PATH
+CONNECTIONS="${CONNECTIONS:-4}" # segments for zing / aria2c
+ROUNDS="${ROUNDS:-3}"           # passes over every tool (median)
+PAUSE="${PAUSE:-3}"             # seconds between downloads
+SELF_TEST_BYTES=3507952         # 3 MB for --self-test
 
-# name|bytes|url   NOTE: on the free-data network this host returns HTTP 403
-# for single downloads above ~90 MB, so keep sizes under that cap.
+# name|bytes|url
+#
+# These must all honour Range requests. zing only segments when the probe sees
+# a 206, and aria2 only splits at its -k min-split-size; against a host that
+# answers 200 to every range, every tool silently drops to one connection and
+# the segmented comparison measures nothing. speed.cloudflare.com/__down was
+# here before and does exactly that, so it is deliberately gone.
+#
+# Keep sizes under ~90 MB: on the free-data network Cloudflare answered 403 to
+# single downloads above that.
+#
+# Caveat when reading these results: zing uses a single connection for any file
+# under SMALL_FILE_THRESHOLD (200 MiB) and ignores -N entirely below it, so zing,
+# zing-auto and zing-n1 are the same single-stream download on every entry here.
+# aria2c, by contrast, splits from its -k min-split-size (20 MB default), so the
+# aria2c row uses several connections on these files. Only URLS_LARGE exercises
+# zing's segmentation and its adaptive ramp, because every entry there is over
+# 200 MiB. Read the default run as single-stream vs multi-stream, not as a
+# comparison of zing's connection choices.
 URLS=(
-  "50MB|52428800|https://speed.cloudflare.com/__down?bytes=52428800"
-  "80MB|83886080|https://speed.cloudflare.com/__down?bytes=83886080"
-  "90MB|94371840|https://speed.cloudflare.com/__down?bytes=94371840"
+  "Go-1.23.4|73645095|https://go.dev/dl/go1.23.4.linux-amd64.tar.gz"
+  "GCC-13.2.0|87858592|https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz"
+  "Docker-27.3.1|75324256|https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz"
 )
 URLS_LARGE=(
   "Ubuntu-24.04|6655619072|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-desktop-amd64.iso"
   "Ubuntu-Server|3405469696|https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso"
-  "Fedora-42|2398523392|https://download.fedoraproject.org/pub/fedora/linux/releases/42/Workstation/x86_64/iso/Fedora-Workstation-Live-42-1.1.x86_64.iso"
+  "Arch-Linux|1608286208|https://geo.mirror.pkgbuild.com/iso/latest/archlinux-x86_64.iso"
   "Debian-12|704643072|https://cdimage.debian.org/images/archive/12.12.0/amd64/iso-cd/debian-12.12.0-amd64-netinst.iso"
 )
 # Override the test set (e.g. for loopback validation): BENCH_URLS="a|n|http://..."
@@ -47,7 +64,10 @@ if [ -n "${BENCH_URLS:-}" ]; then
 fi
 # --------------------------------------------------------------------------
 
-SELF_TEST_URL="https://speed.cloudflare.com/__down?bytes=${SELF_TEST_BYTES}"
+# Ranged on purpose, same as URLS: against a host that answers 200 to every
+# range, zing-auto, zing -N4 and zing-n1 all collapse to one connection and the
+# smoke test would pass without ever touching the adaptive path.
+SELF_TEST_URL="https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz"
 
 DOWNLOADS="${DOWNLOADS:-}"
 if [ -z "$DOWNLOADS" ] && command -v xdg-user-dir >/dev/null 2>&1; then
@@ -78,15 +98,26 @@ run_zing()    { echo $$ > "$PIDFILE"; exec "$ZING_BIN" "$1" -o "$2/$OUTFILE" \
                     -N "$CONNECTIONS" --progress none --allow-overwrite --standalone; }
 run_zing1()   { echo $$ > "$PIDFILE"; exec "$ZING_BIN" "$1" -o "$2/$OUTFILE" \
                     -N 1 --progress none --allow-overwrite --standalone; }
+# The real zing: no -N, so the probe runs and the segment allocator decides.
+# It starts on one connection, measures that connection, combines the rate with
+# the probe estimate and the file size, and ramps to min(optimal, 8). This is
+# the row that measures the thing the other tools cannot do, and it is the only
+# reason the adaptive code exists, so it is compared against zing-n1 (does
+# ramping help at all) and zing -N4 (does measuring beat guessing).
+#
+# Read its wall time together with the max-connections column: it may spend up
+# to 8 where aria2c is pinned to 4, so a faster time is not free.
+run_zing_auto() { echo $$ > "$PIDFILE"; exec "$ZING_BIN" "$1" -o "$2/$OUTFILE" \
+                    --progress none --allow-overwrite --standalone; }
 run_aria2c()  { echo $$ > "$PIDFILE"; exec aria2c -x "$CONNECTIONS" -s "$CONNECTIONS" \
                     -d "$2" -o "$OUTFILE" --file-allocation=none \
                     --allow-overwrite=true --auto-file-renaming=false \
                     --summary-interval=0 --console-log-level=notice "$1"; }
 run_curl()    { echo $$ > "$PIDFILE"; exec curl -sS -o "$2/$OUTFILE" "$1"; }
 
-TOOLS=(zing zing-n1 aria2c curl)
+TOOLS=(zing zing-auto zing-n1 aria2c curl)
 
-export -f run_zing run_zing1 run_aria2c run_curl 2>/dev/null
+export -f run_zing run_zing_auto run_zing1 run_aria2c run_curl 2>/dev/null
 export ZING_BIN CONNECTIONS OUTFILE PIDFILE
 
 clean_outdir() {
@@ -103,6 +134,7 @@ clean_previous() { # $1=name $2=current_tool — delete other tools' copies
 dispatch() { # $1=tool $2=url $3=outdir
     case "$1" in
         zing)    run_zing "$2" "$3" ;;
+        zing-auto) run_zing_auto "$2" "$3" ;;
         zing-n1) run_zing1 "$2" "$3" ;;
         aria2c)  run_aria2c "$2" "$3" ;;
         curl)    run_curl "$2" "$3" ;;
@@ -177,7 +209,7 @@ PY
 parse_retries() { # $1=tool $2=run.log ; sets RETRIES ERRORS
     RETRIES=0; ERRORS=0
     case "$1" in
-        zing|zing-n1)
+        zing|zing-auto|zing-n1)
             RETRIES=$(grep -ciE 'retry|retrying|resum(e|ing)' "$2" 2>/dev/null)
             ERRORS=$(grep -ciE '\berror\b|failed to|connection (reset|refused)' "$2" 2>/dev/null)
             ;;
@@ -360,10 +392,10 @@ def med(field, test, tool):
 print("== per-round detail (elapsed s) ==")
 for test in tests:
     rounds = sorted({int(r["round"]) for r in rows if r["test"] == test})
-    header = f"{'test':<8}{'tool':<9}" + "".join(f"r{r:<10}" for r in rounds)
+    header = f"{'test':<8}{'tool':<11}" + "".join(f"r{r:<10}" for r in rounds)
     print(header)
     for tool in tools:
-        line = f"{test:<8}{tool:<9}"
+        line = f"{test:<8}{tool:<11}"
         for r in rounds:
             v = [float(x["elapsed_sec"]) for x in rows
                  if x["test"] == test and x["tool"] == tool and int(x["round"]) == r]
@@ -372,7 +404,7 @@ for test in tests:
     print()
 
 print("== median summary ==")
-print(f"{'test':<8}{'tool':<9}{'med s':>8}{'med MB/s':>10}{'peak MB/s':>10}"
+print(f"{'test':<8}{'tool':<11}{'med s':>8}{'med MB/s':>10}{'peak MB/s':>10}"
       f"{'conns':>7}{'RSS MB':>8}{'vs curl':>9}{'vs aria2':>9}")
 for test in tests:
     curl_med = med("elapsed_sec", test, "curl")
@@ -380,7 +412,7 @@ for test in tests:
     for tool in tools:
         m = med("elapsed_sec", test, tool)
         if m is None:
-            print(f"{test:<8}{tool:<9}{'n/a':>8}")
+            print(f"{test:<8}{tool:<11}{'n/a':>8}")
             continue
         mb = med("mbps", test, tool) or 0.0
         pk = med("peak_mbps", test, tool) or 0.0
@@ -388,7 +420,7 @@ for test in tests:
         rss = med("max_rss_kb", test, tool) or 0.0
         vc = f"{100*(curl_med-m)/curl_med:+.0f}%" if curl_med else ""
         va = f"{100*(aria_med-m)/aria_med:+.0f}%" if aria_med else ""
-        print(f"{test:<8}{tool:<9}{m:>8.2f}{mb:>10.2f}{pk:>10.2f}{conn:>7.0f}"
+        print(f"{test:<8}{tool:<11}{m:>8.2f}{mb:>10.2f}{pk:>10.2f}{conn:>7.0f}"
               f"{rss/1024:>8.1f}{vc:>9}{va:>9}")
 print()
 print("medians of wall time; '% vs curl/aria2' = faster/slower than that tool")
