@@ -140,6 +140,7 @@ here, and the behaviours that differ.
 | `-W, --output-dir` | | Directory to save files in (alias: `--dir`) |
 | `--auto-file-renaming` | | Auto-rename if file exists (`file-1.ext`, `file-2.ext`, ...) |
 | `--allow-overwrite` | | Overwrite existing files without prompting |
+| | | *Default:* asks on a terminal, overwrites when stdin is not one (as curl and aria2 do) |
 | `-C, --content-disposition` | | Use server-provided filename from Content-Disposition (on by default) |
 | `--no-content-disposition` | | Ignore server-provided filename |
 

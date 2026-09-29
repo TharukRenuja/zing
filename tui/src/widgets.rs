@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph, Row, Table};
 use ratatui::Frame;
 use zing_core::downloader::TaskSnapshot;
-use zing_ext::human::{human_bytes, human_speed};
+use zing_core::human::{human_bytes, human_speed};
 
 use crate::app::Entry;
 use crate::layout;

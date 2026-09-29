@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "daemon", "ext", "tui"]
+members = ["core", "cli", "daemon", "tui"]
 default-members = ["cli"]
 
 # Single source for the version. `env!("CARGO_PKG_VERSION")` expands per crate,

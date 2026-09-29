@@ -8,7 +8,6 @@ license = "AGPL-3.0"
 
 [dependencies]
 zing-core = { path = "../core" }
-zing-ext = { path = "../ext" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"] }
 ratatui = "0.30"
 crossterm = "0.28"

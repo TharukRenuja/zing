@@ -16,7 +16,6 @@ zing/
 ├── cli/            zing: CLI frontend (default member)
 ├── tui/           zing-tui: terminal UI
 ├── daemon/         zing-daemon: background process
-├── ext/            zing-ext: utilities (checksum, metalink, etc.)
 └── docs/           documentation
 ```
 
@@ -25,21 +24,16 @@ zing/
 ```
 zing (cli)
 ├── zing-core
-├── zing-ext
 └── zing-tui (optional, feature="tui")
 
 zing-daemon
-├── zing-core
-└── zing-ext
+└── zing-core
 
 zing-tui
 └── zing-core
 
-zing-ext
-└── (standalone, no internal deps)
-
 zing-core
-└── (standalone, external deps only)
+└── (standalone, no internal deps)
 ```
 
 ## Crate responsibilities
@@ -103,9 +97,11 @@ Background download server. Features:
 - Event streaming (`zing.subscribe`)
 - Systemd service support
 
-### zing-ext
+#### Utility modules
 
-Standalone utility library:
+These live in `zing-core` rather than a separate crate: the engine already used
+all of them, and a frontend needed the second manifest just to format a byte
+count.
 
 | Module | Purpose |
 |--------|---------|
@@ -113,9 +109,8 @@ Standalone utility library:
 | `filename` | URL-to-filename extraction, Content-Disposition parsing |
 | `metalink` | .meta4 XML parser (mirrors, checksums, chunk hashes) |
 | `bandwidth` | Human-readable bandwidth string parser (`"2MB"` → bytes) |
-| `human` | Human-readable byte/speed formatting |
+| `human` | Human-readable byte/speed formatting (presentation only) |
 | `digest_auth` | HTTP Digest auth (RFC 2617) |
-| `aria2` | Aria2 session file importer |
 
 ## Transport layer
 

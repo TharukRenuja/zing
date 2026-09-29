@@ -112,9 +112,125 @@ pub fn compute_digest_auth(
     Some(auth)
 }
 
+/// The request-target a Digest response must be computed over.
+///
+/// RFC 7616 hashes the request-target, i.e. `/path?query`, not the absolute
+/// URL. Handing `compute_digest_auth` a full URL yields a response the server
+/// will never match, which is what the ranged path used to do.
+pub fn request_uri(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) => {
+            let mut target = parsed.path().to_string();
+            if let Some(query) = parsed.query() {
+                target.push('?');
+                target.push_str(query);
+            }
+            if target.is_empty() {
+                "/".to_string()
+            } else {
+                target
+            }
+        }
+        Err(_) => url.to_string(),
+    }
+}
+
+/// Whether to answer a Digest challenge, and with what credentials.
+///
+/// Grouping the flag and the credentials lets every request site -- probe,
+/// streaming, stdout, and the ranged path -- retry a 401 the same way. Only the
+/// ranged path did this before, and since a 401 carries no Content-Length an
+/// authenticated resource always looked like an unknown size, which routed it
+/// to streaming and left digest auth unreachable.
+#[derive(Clone, Default)]
+pub struct DigestAuth {
+    pub enabled: bool,
+    pub username: String,
+    pub password: String,
+}
+
+impl DigestAuth {
+    /// Build the `Authorization` value answering a `WWW-Authenticate` challenge.
+    ///
+    /// Returns `None` when digest is off, when the challenge is not Digest, or
+    /// when it lacks the parameters a response cannot be computed from.
+    pub fn header_for(&self, challenge: &str, method: &str, uri: &str) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        if !challenge
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("digest")
+        {
+            return None;
+        }
+        compute_digest_auth(challenge, &self.username, &self.password, method, uri)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_request_uri_strips_scheme_and_authority() {
+        // This is the bug: the ranged path hashed the whole URL, so the
+        // response never matched what a server computes.
+        assert_eq!(request_uri("http://127.0.0.1:8099/auth"), "/auth");
+        assert_eq!(request_uri("https://example.com/a/b.txt"), "/a/b.txt");
+        assert_eq!(request_uri("http://example.com/p?q=1&r=2"), "/p?q=1&r=2");
+        assert_eq!(request_uri("http://example.com"), "/");
+    }
+
+    #[test]
+    fn test_header_for_requires_digest_to_be_enabled() {
+        let challenge = r#"Digest realm="r", nonce="n""#;
+        let off = DigestAuth {
+            enabled: false,
+            username: "u".into(),
+            password: "p".into(),
+        };
+        assert_eq!(off.header_for(challenge, "GET", "/x"), None);
+
+        let on = DigestAuth {
+            enabled: true,
+            username: "u".into(),
+            password: "p".into(),
+        };
+        assert!(on.header_for(challenge, "GET", "/x").is_some());
+    }
+
+    #[test]
+    fn test_header_for_ignores_a_non_digest_challenge() {
+        // Basic and Bearer challenges must not be answered with a Digest header.
+        let auth = DigestAuth {
+            enabled: true,
+            username: "u".into(),
+            password: "p".into(),
+        };
+        assert_eq!(auth.header_for(r#"Basic realm="r""#, "GET", "/x"), None);
+        assert_eq!(auth.header_for("Bearer abc123", "GET", "/x"), None);
+    }
+
+    #[test]
+    fn test_header_for_uses_the_request_target_given() {
+        let auth = DigestAuth {
+            enabled: true,
+            username: "tester".into(),
+            password: "s3cret".into(),
+        };
+        let header = auth
+            .header_for(
+                r#"Digest realm="zing-test", qop="auth", nonce="testnonce""#,
+                "GET",
+                "/auth",
+            )
+            .expect("header");
+        assert!(header.starts_with("Digest "), "{header}");
+        assert!(header.contains(r#"uri="/auth""#), "{header}");
+        assert!(header.contains("qop=auth"), "{header}");
+    }
 
     #[test]
     fn test_parse_auth_params_simple() {

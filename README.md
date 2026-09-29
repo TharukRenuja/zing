@@ -149,7 +149,7 @@ zing --standalone https://example.com/file.zip
 - **Token bucket rate limiter** and **bandwidth scheduling** for time-of-day limits
 - **Retry with exponential backoff + jitter** and multi-URL mirror fallback
 - **Checksum verification** (auto-detect by length), **digest auth** (RFC 7616), **TLS client certificates**
-- **Auto-naming** from URL or server (Content-Disposition on by default), **conflict handling** that prompts to overwrite/rename/cancel (or `--auto-file-renaming` / `--allow-overwrite`), **dry-run** preview
+- **Auto-naming** from URL or server (Content-Disposition on by default), **conflict handling** that asks before overwriting when a terminal is attached and overwrites silently otherwise — the same default as curl and aria2 (or `--auto-file-renaming` / `--allow-overwrite`), **dry-run** preview
 
 </details>
 
@@ -477,11 +477,10 @@ zing -p https://raw.githubusercontent.com/TharukRenuja/zing/main/uninstall.sh | 
 
 5 crates in a workspace:
 
-- **core** → Download engine: probe, segment management, adaptive connections, rate limiting, retry, bandwidth scheduling, connection pool, cookie store, cross-platform IPC (transport layer)
+- **core** → Download engine: probe, segment management, adaptive connections, rate limiting, retry, bandwidth scheduling, connection pool, cookie store, cross-platform IPC (transport layer), plus checksum verification, filename extraction, metalink parsing, bandwidth and digest-auth utilities
 - **cli** → CLI frontend with progress bar, daemon auto-detection, checksum verification, config/schedule management, pipe modes, cookie/netrc auth, event hooks
 - **tui** → Terminal UI: task list, per-connection view, pause/resume/stop/remove, add-URL prompt, logs panel
 - **daemon** → JSON-RPC server for background and scheduled downloads (Unix socket on Linux, TCP on Windows)
-- **ext** → Utilities: checksum verification, filename extraction, aria2 session import, metalink parsing
 
 ## Design
 

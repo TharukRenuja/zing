@@ -12,7 +12,7 @@ fn parse_bandwidth(s: &str) -> Result<u64, String> {
     if s.trim() == "0" {
         return Ok(0);
     }
-    zing_ext::bandwidth::parse_rate(s).ok_or_else(|| format!("invalid bandwidth value: '{s}'"))
+    zing_core::bandwidth::parse_rate(s).ok_or_else(|| format!("invalid bandwidth value: '{s}'"))
 }
 
 #[derive(Parser, Debug)]

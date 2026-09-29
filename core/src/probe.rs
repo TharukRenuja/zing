@@ -1,4 +1,5 @@
 use crate::connection::pool::{ConnectionPool, Protocol};
+use crate::digest_auth::{request_uri, DigestAuth};
 use crate::http_method::HttpMethod;
 use std::time::{Duration, Instant};
 
@@ -38,12 +39,12 @@ pub async fn probe(
     url: &str,
     max_connections: Option<usize>,
     method: &HttpMethod,
+    digest: Option<&DigestAuth>,
 ) -> ServerProfile {
     let start = Instant::now();
-    let mut req = pool.client().request(
-        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET),
-        url,
-    );
+    let verb =
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
+    let mut req = pool.client().request(verb.clone(), url);
     // HEAD must not carry a body or a Range: a HEAD response has no content to
     // measure and servers commonly reject ranged HEAD requests.
     if !method.is_head() {
@@ -55,13 +56,47 @@ pub async fn probe(
     for (k, v) in pool.header_list() {
         req = req.header(k, v);
     }
-    let resp = match req.send().await {
+    let mut resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("Probe failed: {e}");
             return ServerProfile::default();
         }
     };
+
+    // Answering the challenge here is what keeps an authenticated download
+    // segmented. A 401 has no Content-Length, so a probe that gave up would
+    // report an unknown size and the task would drop to streaming -- where
+    // nothing ever applied the credentials.
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        let challenge = resp
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        if let Some(challenge) = challenge {
+            let uri = request_uri(url);
+            if let Some(auth) = digest.and_then(|d| d.header_for(&challenge, method.as_str(), &uri))
+            {
+                tracing::debug!("Probe: retrying with Digest auth");
+                let mut retry = pool.client().request(verb, url);
+                if !method.is_head() {
+                    retry = retry.header("Range", "bytes=0-65535");
+                }
+                for (k, v) in pool.header_list() {
+                    retry = retry.header(k, v);
+                }
+                resp = match retry.header("Authorization", auth).send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::debug!("Probe digest retry failed: {e}");
+                        return ServerProfile::default();
+                    }
+                };
+            }
+        }
+    }
+
     let rtt = start.elapsed();
     let protocol = ConnectionPool::detect_protocol(&resp);
     let content_disposition = resp

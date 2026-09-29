@@ -37,8 +37,7 @@ zing cli ──┬── standalone (in-process download)
 
 | Crate | Path | Role |
 |-------|------|------|
-| `zing-core` | `core/` | Download engine, probe, segments, adaptive connections, rate limit, storage, transport, RPC client |
+| `zing-core` | `core/` | Download engine, probe, segments, adaptive connections, rate limit, storage, transport, RPC client, plus checksum, filename, metalink, bandwidth and digest-auth utilities |
 | `zing` (cli) | `cli/` | CLI frontend, progress bar, config, event hooks, pipe modes |
 | `zing-tui` | `tui/` | Terminal UI: ratatui rendering, task table, per-connection view |
 | `zing-daemon` | `daemon/` | Background daemon: RPC server, task manager, scheduler |
-| `zing-ext` | `ext/` | Utilities: checksum, filename, metalink, bandwidth, digest auth, aria2 import |

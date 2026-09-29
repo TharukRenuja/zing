@@ -727,7 +727,7 @@ impl TaskManager {
                                     // Verify checksum if provided
                                     if let Some(ref chk) = checksum2 {
                                         let path = std::path::Path::new(&t.filename);
-                                        match zing_ext::checksum::verify_file(path, chk) {
+                                        match zing_core::checksum::verify_file(path, chk) {
                                             Ok(true) => {
                                                 tracing::info!("Checksum: OK ({chk})");
                                             }

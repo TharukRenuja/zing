@@ -210,6 +210,13 @@ fi
 Note that a declined filename conflict — a user answering `c` at the overwrite
 prompt — is a decision, not a failure, and exits 0.
 
+**Existing files are overwritten, like curl.** curl has no overwrite prompt, and
+neither does zing unless a terminal is attached. Run from a terminal, zing asks
+before replacing a file. Run from a script, a cron job, or a pipe, where nobody
+can answer, it overwrites without asking — matching curl, aria2, the zing daemon
+and the zing TUI. Pass `--auto-file-renaming` to keep the old copy as
+`file-1.ext`, or `--allow-overwrite` to skip even the terminal prompt.
+
 **Response header names are lowercased.** `-i` prints them as the HTTP stack
 normalised them, so `Content-Type:` appears as `content-type:`. HTTP/1.1 header
 names are case-insensitive, but a strict `grep` against a curl transcript can

@@ -2,8 +2,10 @@ use crate::connection::happy_eyeballs::resolve_host;
 use crate::connection::ConnectionPool;
 use crate::constants;
 use crate::cookie_store::ZingCookieStore;
+use crate::digest_auth::{request_uri, DigestAuth};
 use crate::engine::event::{EngineEvent, EventBus, TaskId, TaskPhase, TaskProgress};
-use crate::http_method::RequestSpec;
+use crate::http_method::{RequestBody, RequestSpec};
+use crate::metalink::ChunkHashes;
 use crate::probe;
 use crate::ratelimit::{SharedRateLimiter, TokenBucket};
 use crate::retry::RetryManager;
@@ -25,7 +27,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-use zing_ext::metalink::ChunkHashes;
 
 /// What to do when the target file already exists and the download is not a
 /// resumable one (no control file).
@@ -163,6 +164,67 @@ pub struct TaskSnapshot {
     pub connections: Vec<crate::segment::manager::ConnectionInfo>,
     pub completed_blocks: u32,
     pub total_blocks: u32,
+}
+
+impl SharedState {
+    /// The digest credentials, assembled from the flag and the stored
+    /// credentials under a single lock.
+    async fn digest_auth_ctx(&self) -> DigestAuth {
+        let creds = self.auth_credentials.lock().await.clone();
+        let (username, password) = creds.unwrap_or_default();
+        DigestAuth {
+            enabled: self.digest_auth,
+            username,
+            password,
+        }
+    }
+}
+
+/// Issue a request, answering a Digest challenge once when digest is enabled.
+///
+/// Returns the final response. A 401 in the result means the challenge went
+/// unanswered, which is either because digest is off, the challenge was not
+/// Digest, or the credentials were wrong.
+async fn request_with_digest(
+    state: &SharedState,
+    method: &str,
+    url: &str,
+    body: Option<&RequestBody>,
+) -> Result<reqwest::Response> {
+    let resp = state
+        .pool
+        .request(method, url, None, body, state.id)
+        .await?;
+    if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return Ok(resp.into_inner());
+    }
+
+    let challenge = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let Some(challenge) = challenge else {
+        return Ok(resp.into_inner());
+    };
+
+    let ctx = state.digest_auth_ctx().await;
+    let uri = request_uri(url);
+    let Some(auth) = ctx.header_for(&challenge, method, &uri) else {
+        return Ok(resp.into_inner());
+    };
+
+    tracing::debug!("Retrying with Digest auth");
+    let verb = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| anyhow::anyhow!("Invalid HTTP method: {method}"))?;
+    let mut req = state.pool.client().request(verb, url);
+    for (k, v) in state.pool.header_list() {
+        req = req.header(k, v);
+    }
+    if let Some(body) = body {
+        req = req.body(body.bytes().to_vec());
+    }
+    Ok(req.header("Authorization", auth).send().await?)
 }
 
 pub struct DownloadTask {
@@ -540,11 +602,13 @@ impl DownloadTask {
         }
 
         self.emit_phase(TaskPhase::Probing);
+        let digest_ctx = self.state.digest_auth_ctx().await;
         let profile = probe::probe(
             &self.state.pool,
             &current_url,
             self.state.segment_mgr.lock().await.max_connections,
             &self.state.spec.method,
+            digest_ctx.enabled.then_some(&digest_ctx),
         )
         .await;
 
@@ -591,7 +655,7 @@ impl DownloadTask {
 
         if self.state.is_auto_name && self.state.use_cd {
             if let Some(ref cd) = profile.content_disposition {
-                if let Some(cd_name) = zing_ext::filename::from_content_disposition(cd) {
+                if let Some(cd_name) = crate::filename::from_content_disposition(cd) {
                     tracing::debug!("Using server-provided filename: {cd_name}");
                     let current = self.state.filename.lock().await.clone();
                     let new_name = if let Some(parent) = std::path::Path::new(&current).parent() {
@@ -651,18 +715,16 @@ impl DownloadTask {
 
         if profile.total_size.is_none_or(|s| s == 0) && !resume.is_some() {
             // Surface a bad status here rather than silently streaming an error
-            // page to disk. Uses the configured method and headers.
-            let resp = self
-                .state
-                .pool
-                .request(
-                    self.state.spec.method.as_str(),
-                    &current_url,
-                    None,
-                    self.state.spec.body.as_ref(),
-                    self.state.id,
-                )
-                .await?;
+            // page to disk. Uses the configured method and headers, and answers
+            // a Digest challenge so an authenticated resource is not reported as
+            // a failure just because the probe could not authenticate.
+            let resp = request_with_digest(
+                &self.state,
+                self.state.spec.method.as_str(),
+                &current_url,
+                self.state.spec.body.as_ref(),
+            )
+            .await?;
             if !resp.status().is_success() {
                 bail!("HTTP {} from {}", resp.status(), current_url);
             }
@@ -1188,17 +1250,13 @@ impl DownloadTask {
         let filename = self.state.filename.lock().await.clone();
 
         let stream_url = self.state.url.lock().await.clone();
-        let resp = self
-            .state
-            .pool
-            .request(
-                self.state.spec.method.as_str(),
-                &stream_url,
-                None,
-                self.state.spec.body.as_ref(),
-                self.state.id,
-            )
-            .await?;
+        let resp = request_with_digest(
+            &self.state,
+            self.state.spec.method.as_str(),
+            &stream_url,
+            self.state.spec.body.as_ref(),
+        )
+        .await?;
         self.state
             .last_status
             .store(resp.status().as_u16(), std::sync::atomic::Ordering::Relaxed);
@@ -1218,7 +1276,7 @@ impl DownloadTask {
         // Created lazily: a 204/empty response (e.g. DELETE) must not leave a
         // zero-byte file behind.
         let mut file: Option<tokio::fs::File> = None;
-        let mut stream = resp.into_inner().bytes_stream();
+        let mut stream = resp.bytes_stream();
         let mut downloaded: u64 = 0;
         let start = Instant::now();
         let mut pause_rx = self.state.pause_rx.clone();
@@ -1323,17 +1381,13 @@ impl DownloadTask {
 
     async fn run_to_stdout(&self, url: &str) -> Result<()> {
         tracing::debug!("Streaming to stdout");
-        let resp = self
-            .state
-            .pool
-            .request(
-                self.state.spec.method.as_str(),
-                url,
-                None,
-                self.state.spec.body.as_ref(),
-                self.state.id,
-            )
-            .await?;
+        let resp = request_with_digest(
+            &self.state,
+            self.state.spec.method.as_str(),
+            url,
+            self.state.spec.body.as_ref(),
+        )
+        .await?;
         self.state
             .last_status
             .store(resp.status().as_u16(), std::sync::atomic::Ordering::Relaxed);
@@ -1363,7 +1417,7 @@ impl DownloadTask {
             head.push_str("\r\n");
             stdout.write_all(head.as_bytes()).await?;
         }
-        let mut stream = resp.into_inner().bytes_stream();
+        let mut stream = resp.bytes_stream();
         let mut downloaded: u64 = 0;
         let start = Instant::now();
         let mut pause_rx = self.state.pause_rx.clone();
@@ -1727,12 +1781,15 @@ async fn download_range(
                 let creds = state.auth_credentials.lock().await.clone();
                 if let Some((username, password)) = creds {
                     let url_str = state.url.lock().await.clone();
-                    if let Some(auth_header) = zing_ext::digest_auth::compute_digest_auth(
+                    // Hash the request-target, not the absolute URL: a response
+                    // computed over "http://host/path" never matches.
+                    let digest_uri = request_uri(&url_str);
+                    if let Some(auth_header) = crate::digest_auth::compute_digest_auth(
                         challenge,
                         &username,
                         &password,
                         state.spec.method.as_str(),
-                        &url_str,
+                        &digest_uri,
                     ) {
                         tracing::debug!("Conn {conn_id}: retrying with Digest auth");
                         let end = offset + length - 1;
@@ -2029,7 +2086,7 @@ async fn process_range_response(
                                         bail!("Failed to read block {block_idx}: {e}");
                                     }
                                 };
-                                let computed = zing_ext::checksum::hash_bytes(&buf[..n], &kind);
+                                let computed = crate::checksum::hash_bytes(&buf[..n], &kind);
                                 if !computed.eq_ignore_ascii_case(expected_hex) {
                                     mismatches.push((
                                         block_idx as u32,
@@ -2246,7 +2303,7 @@ async fn download_endgame_block(
                         guard.as_ref().and_then(|file| {
                             let mut buf = vec![0u8; block_size as usize];
                             match util::read_at(file, &mut buf, offset) {
-                                Ok(n) => Some(zing_ext::checksum::hash_bytes(&buf[..n], &kind)),
+                                Ok(n) => Some(crate::checksum::hash_bytes(&buf[..n], &kind)),
                                 Err(_) => None,
                             }
                         })

@@ -15,7 +15,6 @@ depends = "libc6, libssl3"
 
 [dependencies]
 zing-core = { path = "../core" }
-zing-ext = { path = "../ext" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs", "time"] }
 chrono = "0.4"
 dirs = "6"

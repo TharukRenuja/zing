@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use zing_ext::filename;
+use zing_core::filename;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ScheduleEntry {

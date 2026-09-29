@@ -29,12 +29,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
+use zing_core::checksum;
 use zing_core::cookie_store::ZingCookieStore;
 use zing_core::downloader::DownloadTask;
 use zing_core::engine::event::{EngineEvent, EventBus};
+use zing_core::filename;
 use zing_core::http_method::{HttpMethod, RequestSpec};
-use zing_ext::checksum;
-use zing_ext::filename;
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -511,30 +511,61 @@ fn ask_conflict(
     decision
 }
 
+/// Which conflict policy the flags ask for, before the prompt is considered.
+///
+/// `interactive` is whether a person can answer a question. curl and aria2
+/// never prompt and overwrite silently, and so does the zing daemon and TUI;
+/// only the CLI asks, and only when someone is there to be asked. Split out
+/// from [`conflict_policy_from_args`] so the decision is testable without a pty.
+fn policy_from_flags(args: &Args, interactive: bool) -> PolicyChoice {
+    if args.allow_overwrite {
+        PolicyChoice::Overwrite
+    } else if args.auto_file_renaming {
+        PolicyChoice::AutoRename
+    } else if interactive {
+        PolicyChoice::Ask
+    } else {
+        // Nobody can answer a prompt from a script, a cron job, or a pipe. Ask
+        // anyway and the download silently does not happen while still exiting
+        // 0, so a script checking only the exit code reads it as a success.
+        // Overwriting is what curl, aria2, the daemon and the TUI all do.
+        PolicyChoice::Overwrite
+    }
+}
+
+enum PolicyChoice {
+    Overwrite,
+    AutoRename,
+    Ask,
+}
+
 fn conflict_policy_from_args(
     args: &Args,
 ) -> (
     zing_core::downloader::ConflictPolicy,
     Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
 ) {
+    use std::io::IsTerminal;
     use zing_core::downloader::ConflictPolicy;
     // Paths the user declined, with the line to print for each.
     let cancelled: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>> =
         Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    if args.allow_overwrite {
-        (ConflictPolicy::Overwrite, cancelled)
-    } else if args.auto_file_renaming {
-        (ConflictPolicy::AutoRename, cancelled)
-    } else {
-        let registry = Arc::clone(&cancelled);
-        (
-            ConflictPolicy::Ask(Arc::new(move |filename: &str| {
-                let filename = filename.to_string();
-                let registry = Arc::clone(&registry);
-                Box::pin(async move { ask_conflict(&filename, &registry) })
-            })),
-            cancelled,
-        )
+    // The prompt reads from stdin, so that is the terminal worth testing.
+    let interactive = std::io::stdin().is_terminal();
+    match policy_from_flags(args, interactive) {
+        PolicyChoice::Overwrite => (ConflictPolicy::Overwrite, cancelled),
+        PolicyChoice::AutoRename => (ConflictPolicy::AutoRename, cancelled),
+        PolicyChoice::Ask => {
+            let registry = Arc::clone(&cancelled);
+            (
+                ConflictPolicy::Ask(Arc::new(move |filename: &str| {
+                    let filename = filename.to_string();
+                    let registry = Arc::clone(&registry);
+                    Box::pin(async move { ask_conflict(&filename, &registry) })
+                })),
+                cancelled,
+            )
+        }
     }
 }
 
@@ -804,7 +835,7 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             let _ = child.wait().await;
         }
         "app" => {
-            let fname = zing_ext::filename::from_url(url);
+            let fname = zing_core::filename::from_url(url);
             if fname.is_empty() {
                 return Err(color_eyre::eyre::eyre!(
                     "Cannot determine filename from URL"
@@ -823,7 +854,7 @@ async fn run_pipe_mode(mode: &str, url: &str, _args: &Args) -> Result<()> {
             );
         }
         "install" => {
-            let fname = zing_ext::filename::from_url(url);
+            let fname = zing_core::filename::from_url(url);
             if fname.is_empty() {
                 return Err(color_eyre::eyre::eyre!(
                     "Cannot determine filename from URL"
@@ -1318,7 +1349,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         let params = build_params(url);
                         match daemon_client::add_uri(params).await {
                             Ok(id) => {
-                                let label = zing_ext::filename::from_url(url);
+                                let label = zing_core::filename::from_url(url);
                                 let initial_status = daemon_client::tell_status(id)
                                     .await
                                     .ok()
@@ -1347,7 +1378,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                         let params = build_params(&url);
                         Box::pin(async move {
                             let id = daemon_client::add_uri(params).await?;
-                            let label = zing_ext::filename::from_url(&url);
+                            let label = zing_core::filename::from_url(&url);
                             let initial_status = daemon_client::tell_status(id)
                                 .await
                                 .ok()
@@ -1744,7 +1775,7 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
                 Ok(resp) => {
                     let id = resp.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
                     daemon_ids.push(id);
-                    let name = zing_ext::filename::from_url(url_str);
+                    let name = zing_core::filename::from_url(url_str);
                     let pt = progress_type;
                     let display = Arc::clone(&display);
                     handles.push(tokio::spawn(async move {
@@ -1910,14 +1941,14 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
         checksum: Option<String>,
         is_auto_name: bool,
         filename: String,
-        chunk_hashes: Option<zing_ext::metalink::ChunkHashes>,
+        chunk_hashes: Option<zing_core::metalink::ChunkHashes>,
     }
 
     let metalink_override = if let Some(ref path) = args.metalink {
         let content = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| color_eyre::eyre::eyre!("Cannot read metalink '{}': {e}", path))?;
-        let files = zing_ext::metalink::parse_metalink_str(&content)
+        let files = zing_core::metalink::parse_metalink_str(&content)
             .map_err(|e| color_eyre::eyre::eyre!("Failed to parse metalink '{}': {e}", path))?;
         if let Some(entry) = files.into_iter().next() {
             let chunk_hashes = entry.chunk_hashes.clone();
@@ -1979,18 +2010,32 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             args.output.is_none() && metalink.is_none_or(|m| i == 0 && m.is_auto_name);
 
         let filename = match &args.output {
-            Some(name) => name.to_string_lossy().to_string(),
+            // `-o` is a full target path, so it is used verbatim and the
+            // output dir does not apply. That matches curl, but silently
+            // dropping `--output-dir` is surprising enough to be worth saying
+            // once: a relative `-o` lands in the current directory, not in the
+            // directory the user just asked for.
+            Some(name) => {
+                if args.dir.is_some() && !std::path::Path::new(name).is_absolute() {
+                    tracing::warn!(
+                        "Both --output and --output-dir given; -o takes precedence, \
+                         writing to '{}' in the current directory",
+                        name.to_string_lossy()
+                    );
+                }
+                name.to_string_lossy().to_string()
+            }
             None => {
                 let base = if i == 0 {
                     metalink.map_or_else(
-                        || zing_ext::filename::from_url(&url),
+                        || zing_core::filename::from_url(&url),
                         |m| m.filename.clone(),
                     )
                 } else {
-                    zing_ext::filename::from_url(&url)
+                    zing_core::filename::from_url(&url)
                 };
                 if base.is_empty() {
-                    zing_ext::filename::from_url(&url)
+                    zing_core::filename::from_url(&url)
                 } else {
                     download_dir.join(base).to_string_lossy().to_string()
                 }
@@ -2247,7 +2292,14 @@ async fn run(args: Args, logs: LogHandle) -> Result<()> {
             Err(e) => Some(TaskOutcome::Failed(format!("{e}"))),
         };
         if let Some(outcome) = outcome {
-            if matches!(outcome, TaskOutcome::Failed(_)) {
+            // A checksum that does not match means the bytes on disk are not
+            // the bytes that were asked for, so the transfer failed even though
+            // every segment arrived. Counting only TaskOutcome::Failed here let
+            // a corrupt download exit 0, and any `&&` chain, Makefile or CI
+            // step would treat it as success.
+            if matches!(outcome, TaskOutcome::Failed(_))
+                || matches!(&outcome, TaskOutcome::Completed(s) if s.checksum_ok == Some(false))
+            {
                 failed += 1;
             }
             outcomes.push(outcome);
@@ -3020,14 +3072,14 @@ async fn run_list() -> Result<()> {
                             format!(
                                 "{:>5.1}% ({}/{})",
                                 pct,
-                                zing_ext::human::human_bytes(downloaded),
-                                zing_ext::human::human_bytes(total)
+                                zing_core::human::human_bytes(downloaded),
+                                zing_core::human::human_bytes(total)
                             )
                         } else {
-                            zing_ext::human::human_bytes(downloaded)
+                            zing_core::human::human_bytes(downloaded)
                         };
                         let speed_str = if speed > 0.0 {
-                            format!("{}/s", zing_ext::human::human_speed(speed as u64))
+                            format!("{}/s", zing_core::human::human_speed(speed as u64))
                         } else {
                             "-".to_string()
                         };
@@ -3145,9 +3197,9 @@ fn print_daemon_summary(done: &daemon_client::Completion) {
     print_below_bars(&format!(
         "{green}\u{2713}{reset} \u{1b}[1m{}\u{1b}[0m {dim}({} · {} · {}){reset}",
         done.filename,
-        zing_ext::human::human_bytes(done.total_bytes),
+        zing_core::human::human_bytes(done.total_bytes),
         elapsed,
-        zing_ext::human::human_speed(speed),
+        zing_core::human::human_speed(speed),
     ));
 }
 
@@ -3163,11 +3215,11 @@ fn paused_line(filename: &str, bytes: u64, total: Option<u64>) -> String {
     let progress = match total.filter(|t| *t > 0) {
         Some(t) => format!(
             "{} of {} ({:.1}%)",
-            zing_ext::human::human_bytes(bytes),
-            zing_ext::human::human_bytes(t),
+            zing_core::human::human_bytes(bytes),
+            zing_core::human::human_bytes(t),
             bytes as f64 / t as f64 * 100.0
         ),
-        None => zing_ext::human::human_bytes(bytes),
+        None => zing_core::human::human_bytes(bytes),
     };
     // Keep the line to one row: a long name wrapped onto a second line reads as
     // two separate messages.
@@ -3241,7 +3293,7 @@ fn download_summary_line(
 
     let line = format!(
         "{status} {dim}({size} · {elapsed} · {speed}){reset}",
-        size = zing_ext::human::human_bytes(size),
+        size = zing_core::human::human_bytes(size),
         elapsed = {
             let s = elapsed.as_secs_f64();
             if s < 60.0 {
@@ -3250,7 +3302,7 @@ fn download_summary_line(
                 format!("{}m{:02}s", (s as u64) / 60, (s as u64) % 60)
             }
         },
-        speed = zing_ext::human::human_speed(avg_speed),
+        speed = zing_core::human::human_speed(avg_speed),
     );
     let mut out = vec![line];
     match checksum_ok {
@@ -3755,5 +3807,55 @@ mod output_target_tests {
     fn dash_output_still_streams() {
         assert!(streams(&["-o", "-"]));
         assert!(streams(&["-o", "-", "-X", "GET"]));
+    }
+}
+
+#[cfg(test)]
+mod conflict_policy_tests {
+    use super::*;
+
+    fn args_of(v: &[&str]) -> Args {
+        let mut full = vec!["zing", "--standalone"];
+        full.extend_from_slice(v);
+        full.push("https://example.com/file.bin");
+        Args::parse_from(full)
+    }
+
+    fn is_overwrite(choice: PolicyChoice) -> bool {
+        matches!(choice, PolicyChoice::Overwrite)
+    }
+    fn is_rename(choice: PolicyChoice) -> bool {
+        matches!(choice, PolicyChoice::AutoRename)
+    }
+    fn is_ask(choice: PolicyChoice) -> bool {
+        matches!(choice, PolicyChoice::Ask)
+    }
+
+    #[test]
+    fn a_terminal_is_asked_and_a_pipe_is_not() {
+        // The prompt is a courtesy for a person who can answer it. With nobody
+        // there it used to cancel the download and still exit 0.
+        assert!(
+            is_ask(policy_from_flags(&args_of(&[]), true)),
+            "an interactive run should still ask"
+        );
+        assert!(
+            is_overwrite(policy_from_flags(&args_of(&[]), false)),
+            "a script must overwrite, matching curl and aria2"
+        );
+    }
+
+    #[test]
+    fn explicit_flags_win_in_both_modes() {
+        for interactive in [true, false] {
+            assert!(is_overwrite(policy_from_flags(
+                &args_of(&["--allow-overwrite"]),
+                interactive
+            )));
+            assert!(is_rename(policy_from_flags(
+                &args_of(&["--auto-file-renaming"]),
+                interactive
+            )));
+        }
     }
 }

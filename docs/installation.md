@@ -69,7 +69,6 @@ zing/
 ├── cli/        # zing: CLI frontend
 ├── tui/        # zing-tui: terminal UI
 ├── daemon/     # zing-daemon: background daemon
-└── ext/        # zing-ext: utilities
 ```
 
 ## Systemd service (Linux)
