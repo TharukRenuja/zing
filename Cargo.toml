@@ -7,7 +7,7 @@ default-members = ["cli"]
 # so anything that reports a version from two different crates — the CLI's
 # `--version` and core's User-Agent, for instance — needs these to agree.
 [workspace.package]
-version = "0.2.6"
+version = "0.2.7"
 
 [profile.release]
 codegen-units = 1
