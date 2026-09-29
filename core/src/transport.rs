@@ -23,7 +23,7 @@ pub type DaemonWriteHalf = tokio::net::unix::OwnedWriteHalf;
 pub type DaemonWriteHalf = tokio::net::tcp::OwnedWriteHalf;
 
 pub fn default_addr() -> String {
-    if let Ok(addr) = std::env::var("RXD_SOCKET") {
+    if let Ok(addr) = std::env::var("ZING_SOCKET") {
         return addr;
     }
     #[cfg(unix)]

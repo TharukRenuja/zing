@@ -16,21 +16,3 @@ pub mod util;
 
 pub use engine::event::EventBus;
 pub use http_method::{HttpMethod, RequestBody, RequestSpec};
-
-pub struct Rxdl {
-    pub event_bus: EventBus,
-}
-
-impl Rxdl {
-    pub fn new() -> Self {
-        Self {
-            event_bus: EventBus::new(),
-        }
-    }
-}
-
-impl Default for Rxdl {
-    fn default() -> Self {
-        Self::new()
-    }
-}
