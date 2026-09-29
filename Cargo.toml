@@ -3,6 +3,12 @@ resolver = "2"
 members = ["core", "cli", "daemon", "ext", "tui"]
 default-members = ["cli"]
 
+# Single source for the version. `env!("CARGO_PKG_VERSION")` expands per crate,
+# so anything that reports a version from two different crates — the CLI's
+# `--version` and core's User-Agent, for instance — needs these to agree.
+[workspace.package]
+version = "0.2.6"
+
 [profile.release]
 codegen-units = 1
 lto = "fat"

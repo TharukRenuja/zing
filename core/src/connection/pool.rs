@@ -51,7 +51,11 @@ impl ConnectionPool {
         cert_key_path: Option<&str>,
         dns_overrides: &[(String, Vec<std::net::SocketAddr>)],
     ) -> anyhow::Result<reqwest::Client> {
-        let ua = user_agent.unwrap_or("zing/0.1.0");
+        // Derived from the crate version so it can never drift from what
+        // `--version` reports. The version is inherited from [workspace.package],
+        // which matters because this expands against *core*'s version while
+        // `--version` reports the CLI's.
+        let ua = user_agent.unwrap_or(concat!("zing/", env!("CARGO_PKG_VERSION")));
         let mut builder = reqwest::Client::builder()
             .user_agent(ua)
             .no_gzip()

@@ -306,8 +306,9 @@ notes](download-engine.md), and [pipe mode](pipe-mode.md).
 - **Compression is off.** zing does not request `Accept-Encoding` and does not
   decode gzip, brotli, or deflate, so `--compressed` has no equivalent and is
   unnecessary.
-- **The default User-Agent is `zing/0.1.0`.** Set it with `-A` if a server
-  cares.
+- **The default User-Agent is `zing/<version>`,** the same version `--version`
+  prints. It used to be hardcoded and drifted behind. Set it with `-A` if a
+  server cares.
 - **`--data` sends `application/x-www-form-urlencoded`, `-T` sends no
   `Content-Type` at all.** The second one is deliberate: it matches what curl
   does with `-T`, so it will not add a header you did not ask for. Use

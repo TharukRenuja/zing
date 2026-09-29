@@ -6,7 +6,7 @@ eula = "wix/License.rtf"
 
 [package]
 name = "zing"
-version = "0.2.6"
+version.workspace = true
 edition = "2021"
 description = "A modern HTTP downloader with segmented concurrent downloads"
 authors = ["Tharuk Renuja"]
